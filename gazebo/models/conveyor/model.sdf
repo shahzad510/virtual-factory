@@ -1,0 +1,87 @@
+<?xml version="1.0"?>
+
+<sdf version="1.9">
+
+  <model name="CV-001">
+
+    <!--
+      The model origin is at the center of the conveyor.
+      The conveyor is 4 m long and 1.2 m wide.
+    -->
+
+    <static>true</static>
+
+    <!-- =========================================================
+         CONVEYOR FRAME
+         ========================================================= -->
+
+    <link name="frame">
+
+      <pose>0 0 0.5 0 0 0</pose>
+
+      <!-- What we see -->
+      <visual name="frame_visual">
+
+        <geometry>
+
+          <box>
+            <size>4.0 1.2 1.0</size>
+          </box>
+
+        </geometry>
+
+      </visual>
+
+      <!-- What physics sees -->
+      <collision name="frame_collision">
+
+        <geometry>
+
+          <box>
+            <size>4.0 1.2 1.0</size>
+          </box>
+
+        </geometry>
+
+      </collision>
+
+    </link>
+
+
+    <!-- =========================================================
+         CONVEYOR BELT SURFACE
+         ========================================================= -->
+
+    <link name="belt">
+
+      <pose>0 0 1.05 0 0 0</pose>
+
+      <visual name="belt_visual">
+
+        <geometry>
+
+          <box>
+            <size>4.0 1.0 0.1</size>
+          </box>
+
+        </geometry>
+
+      </visual>
+
+      <collision name="belt_collision">
+
+        <geometry>
+
+          <box>
+            <size>4.0 1.0 0.1</size>
+          </box>
+
+        </geometry>
+
+      </collision>
+
+    </link>
+
+  </model>
+
+</sdf>
