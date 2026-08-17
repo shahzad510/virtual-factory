@@ -2,24 +2,33 @@
 
 <sdf version="1.9">
 
+  <!-- =========================================================
+       CONVEYOR MODEL
+       Equipment ID: CV-001
+       ========================================================= -->
+
   <model name="CV-001">
 
-    <!--
-      The model origin is at the center of the conveyor.
-      The conveyor is 4 m long and 1.2 m wide.
-    -->
-
-    <static>true</static>
-
-    <!-- =========================================================
+    <!-- =======================================================
          CONVEYOR FRAME
-         ========================================================= -->
+
+         Dimensions:
+           Length = 4.0 m
+           Width  = 1.2 m
+           Height = 1.0 m
+
+         Center:
+           Z = 0.5 m
+
+         Therefore:
+           Bottom = 0.0 m
+           Top    = 1.0 m
+         ======================================================= -->
 
     <link name="frame">
 
       <pose>0 0 0.5 0 0 0</pose>
 
-      <!-- What we see -->
       <visual name="frame_visual">
 
         <geometry>
@@ -32,7 +41,6 @@
 
       </visual>
 
-      <!-- What physics sees -->
       <collision name="frame_collision">
 
         <geometry>
@@ -50,6 +58,22 @@
 
     <!-- =========================================================
          CONVEYOR BELT SURFACE
+
+         Belt dimensions:
+           Length = 4.0 m
+           Width  = 1.0 m
+           Thickness = 0.1 m
+
+         Floor = Z 0.0
+
+         Frame:
+           Bottom = Z 0.0
+           Top    = Z 1.0
+
+         Belt:
+           Bottom = Z 1.0
+           Center = Z 1.05
+           Top    = Z 1.10
          ========================================================= -->
 
     <link name="belt">
@@ -81,6 +105,25 @@
       </collision>
 
     </link>
+
+
+    <!-- =========================================================
+         CONVEYOR SYSTEM PLUGIN
+
+         This connects the physical SDF model to our C++ system.
+
+         Shared library:
+           libConveyorSystem.so
+
+         C++ class:
+           virtual_factory::ConveyorSystem
+         ========================================================= -->
+
+    <plugin
+        filename="libConveyorSystem.so"
+        name="virtual_factory::ConveyorSystem">
+    </plugin>
+
 
   </model>
 
