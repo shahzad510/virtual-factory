@@ -3,7 +3,7 @@
 
 #include <memory>
 #include <string>
-
+#include <cstdint>
 #include <gz/sim/System.hh>
 
 namespace virtual_factory
@@ -48,6 +48,9 @@ private:
 
   // Fault state.
   bool fault_{false};
+
+  // Number of simulation updates processed by PreUpdate().
+  std::uint64_t updateCount_{0};
 };
 
 }  // namespace virtual_factory

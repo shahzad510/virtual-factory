@@ -44,17 +44,29 @@ void ConveyorSystem::Configure(
 }
 
 //////////////////////////////////////////////////
+
+
 void ConveyorSystem::PreUpdate(
     const gz::sim::UpdateInfo &_info,
     gz::sim::EntityComponentManager & /*_ecm*/)
 {
-  // Phase 1.3B-1:
-  // We are only proving that the update callback works.
-
+  // Do nothing while the simulation is paused.
   if (_info.paused)
     return;
 
-  // Nothing physically changes yet.
+  // Count this simulation update.
+  ++this->updateCount_;
+
+  // Print a diagnostic message every 1000 updates.
+  if (this->updateCount_ % 100 == 0)
+  {
+    gzmsg << "[VirtualFactory] ConveyorSystem heartbeat"
+          << " | equipment=" << this->name_
+          << " | updates=" << this->updateCount_
+          << " | running=" << std::boolalpha << this->running_
+          << " | speed=" << this->speed_ << " m/s"
+          << std::endl;
+  }
 }
 
 }  // namespace virtual_factory
