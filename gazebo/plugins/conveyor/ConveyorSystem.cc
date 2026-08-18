@@ -18,6 +18,53 @@ ConveyorSystem::~ConveyorSystem()
 }
 
 //////////////////////////////////////////////////
+void ConveyorSystem::Start()
+{
+  this->running_ = true;
+
+if (this->speed_ <= 0.0)
+  {
+    this->speed_ = 0.5;
+  }
+
+  gzmsg << "[VirtualFactory] Conveyor START command accepted"
+        << " | equipment=" << this->name_
+        << std::endl;
+}
+
+//////////////////////////////////////////////////
+void ConveyorSystem::Stop()
+{
+  this->running_ = false;
+  this->speed_ = 0.0;
+
+  gzmsg << "[VirtualFactory] Conveyor STOP command accepted"
+        << " | equipment=" << this->name_
+        << std::endl;
+}
+
+
+//////////////////////////////////////////////////
+void ConveyorSystem::SetSpeed(double _speed)
+{
+  if (_speed < 0.0)
+  {
+    gzmsg << "[VirtualFactory] Invalid conveyor speed: "
+          << _speed << " m/s"
+          << std::endl;
+
+    return;
+  }
+
+  this->speed_ = _speed;
+
+  gzmsg << "[VirtualFactory] Conveyor speed set to "
+        << this->speed_ << " m/s"
+        << std::endl;
+}
+
+
+//////////////////////////////////////////////////
 void ConveyorSystem::Configure(
     const gz::sim::Entity &_entity,
     const std::shared_ptr<const sdf::Element> & /*_sdf*/,
@@ -45,7 +92,6 @@ void ConveyorSystem::Configure(
 
 //////////////////////////////////////////////////
 
-
 void ConveyorSystem::PreUpdate(
     const gz::sim::UpdateInfo &_info,
     gz::sim::EntityComponentManager & /*_ecm*/)
@@ -57,7 +103,21 @@ void ConveyorSystem::PreUpdate(
   // Count this simulation update.
   ++this->updateCount_;
 
-  // Print a diagnostic message every 1000 updates.
+  // Temporary development test.
+  // Start the conveyor after 1000 updates.
+  if (this->updateCount_ == 1000)
+  {
+    this->Start();
+  }
+
+  // Temporary development test.
+  // Stop the conveyor after 5000 updates.
+  if (this->updateCount_ == 5000)
+  {
+    this->Stop();
+  }
+
+  // Print diagnostic information every 100 updates.
   if (this->updateCount_ % 100 == 0)
   {
     gzmsg << "[VirtualFactory] ConveyorSystem heartbeat"
@@ -68,6 +128,7 @@ void ConveyorSystem::PreUpdate(
           << std::endl;
   }
 }
+
 
 }  // namespace virtual_factory
 

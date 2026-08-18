@@ -20,6 +20,16 @@ public:
 
   ~ConveyorSystem() override;
 
+  // Start the conveyor.
+  void Start();
+
+  // Stop the conveyor.
+  void Stop();
+
+  // Set the conveyor speed.
+  void SetSpeed(double _speed);
+
+
   // Called once when the plugin is configured.
   void Configure(
       const gz::sim::Entity &_entity,
