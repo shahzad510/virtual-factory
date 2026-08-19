@@ -107,9 +107,32 @@
       <name>CV-001</name>
 
       <pose>0 0 0 0 0 0</pose>
-
+	
     </include>
 
+<!-- =========================================================
+     PRODUCT-001
+     ========================================================= -->
+
+<include>
+
+  <uri>model://product</uri>
+
+  <name>PRODUCT-001</name>
+
+  <!--
+    X = -1.5 m
+    Y =  0 m
+    Z =  1.25 m
+
+    Product is near the conveyor start,
+    centered across the belt,
+    and sitting on top of it.
+  -->
+
+  <pose>-1.5 0 1.25 0 0 0</pose>
+
+</include>
 
   </world>
 </sdf>
