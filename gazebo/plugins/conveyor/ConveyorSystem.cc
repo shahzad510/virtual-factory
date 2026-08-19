@@ -4,6 +4,8 @@
 
 #include <gz/sim/Model.hh>
 
+#include <gz/sim/Link.hh>
+
 namespace virtual_factory
 {
 
@@ -79,6 +81,19 @@ void ConveyorSystem::Configure(
 
   this->name_ = model.Name(_ecm);
 
+  // Find the belt link inside CV-001.
+  this->beltEntity_ = model.LinkByName(_ecm, "belt");
+
+  if (this->beltEntity_ == gz::sim::kNullEntity)
+  {
+    gzerr << "[VirtualFactory] ERROR: Could not find belt link"
+          << std::endl;
+    return;
+  }
+
+  gzmsg << "[VirtualFactory] Belt link found"
+        << " | entity=" << this->beltEntity_
+        << std::endl;
   gzmsg << "[VirtualFactory] ConveyorSystem configured for: "
         << this->name_ << std::endl;
 
@@ -94,7 +109,7 @@ void ConveyorSystem::Configure(
 
 void ConveyorSystem::PreUpdate(
     const gz::sim::UpdateInfo &_info,
-    gz::sim::EntityComponentManager & /*_ecm*/)
+    gz::sim::EntityComponentManager &_ecm)
 {
   // Do nothing while the simulation is paused.
   if (_info.paused)
@@ -117,7 +132,31 @@ void ConveyorSystem::PreUpdate(
     this->Stop();
   }
 
-  // Print diagnostic information every 100 updates.
+  // ------------------------------------------------------------
+  // Control the physical belt
+  // ------------------------------------------------------------
+
+  gz::sim::Link belt(this->beltEntity_);
+
+  if (this->running_)
+  {
+    // Move the belt in the +X direction.
+    belt.SetLinearVelocity(
+        _ecm,
+        gz::math::Vector3d(this->speed_, 0, 0));
+  }
+  else
+  {
+    // Keep the belt stationary.
+    belt.SetLinearVelocity(
+        _ecm,
+        gz::math::Vector3d(0, 0, 0));
+  }
+
+  // ------------------------------------------------------------
+  // Diagnostic heartbeat
+  // ------------------------------------------------------------
+
   if (this->updateCount_ % 100 == 0)
   {
     gzmsg << "[VirtualFactory] ConveyorSystem heartbeat"
