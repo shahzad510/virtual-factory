@@ -1,0 +1,87 @@
+<?xml version="1.0"?>
+
+<sdf version="1.9">
+
+  <model name="PRODUCT-001">
+
+    <!-- =========================================================
+         PRODUCT BODY
+
+         Dimensions:
+           Length = 0.4 m
+           Width  = 0.4 m
+           Height = 0.3 m
+         ========================================================= -->
+
+    <link name="body">
+
+      <!--
+        Product center Z = 1.25 m
+
+        Why?
+
+        Conveyor belt top = 1.10 m
+
+        Product height = 0.30 m
+        Half height    = 0.15 m
+
+        Therefore:
+
+        product center
+        = 1.10 + 0.15
+        = 1.25 m
+      -->
+
+      <pose>0 0 1.25 0 0 0</pose>
+
+      <!-- =======================================================
+           VISUAL
+           ======================================================= -->
+
+      <visual name="body_visual">
+
+        <geometry>
+
+          <box>
+            <size>0.4 0.4 0.3</size>
+          </box>
+
+        </geometry>
+
+        <!-- Product appearance -->
+
+        <material>
+
+          <ambient>0.15 0.15 0.8 1</ambient>
+
+          <diffuse>0.2 0.3 0.9 1</diffuse>
+
+          <specular>0.4 0.4 0.4 1</specular>
+
+        </material>
+
+      </visual>
+
+      <!-- =======================================================
+           COLLISION
+
+           This allows the physics engine to detect the product.
+           ======================================================= -->
+
+      <collision name="body_collision">
+
+        <geometry>
+
+          <box>
+            <size>0.4 0.4 0.3</size>
+          </box>
+
+        </geometry>
+
+      </collision>
+
+    </link>
+
+  </model>
+
+</sdf>
