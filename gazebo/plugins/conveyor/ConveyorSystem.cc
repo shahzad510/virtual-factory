@@ -1,10 +1,17 @@
 #include "ConveyorSystem.hh"
 
+#include <chrono>
+#include <sstream>
+
 #include <gz/plugin/Register.hh>
 
 #include <gz/sim/Model.hh>
 
 #include <gz/sim/Link.hh>
+
+#include <gz/sim/components/Name.hh>
+
+#include <gz/sim/components/Pose.hh>
 
 namespace virtual_factory
 {
@@ -91,6 +98,10 @@ void ConveyorSystem::Configure(
     return;
   }
 
+
+
+
+
   gzmsg << "[VirtualFactory] Belt link found"
         << " | entity=" << this->beltEntity_
         << std::endl;
@@ -118,6 +129,31 @@ void ConveyorSystem::PreUpdate(
   // Count this simulation update.
   ++this->updateCount_;
 
+    // ------------------------------------------------------------
+  // Find PRODUCT-001 once it becomes available in the ECM
+  // ------------------------------------------------------------
+
+  if (this->productEntity_ == gz::sim::kNullEntity)
+  {
+    _ecm.Each<gz::sim::components::Name>(
+        [&](const gz::sim::Entity &_entity,
+            const gz::sim::components::Name *_name)
+        {
+          if (_name && _name->Data() == "PRODUCT-001")
+          {
+            this->productEntity_ = _entity;
+
+            gzmsg << "[VirtualFactory] Product found"
+                  << " | entity=" << this->productEntity_
+                  << std::endl;
+
+            return false;
+          }
+
+          return true;
+        });
+  }
+
   // Temporary development test.
   // Start the conveyor after 1000 updates.
   if (this->updateCount_ == 1000)
@@ -130,6 +166,37 @@ void ConveyorSystem::PreUpdate(
   if (this->updateCount_ == 5000)
   {
     this->Stop();
+  }
+
+  // ------------------------------------------------------------
+  // Move PRODUCT-001 with the conveyor
+  // ------------------------------------------------------------
+  //
+  // _info.dt is std::chrono::steady_clock::duration.
+  // On this platform that duration's tick is one nanosecond.
+  // _info.dt.count() is therefore nanoseconds, not seconds.
+  // Convert to seconds before applying speed (m/s).
+
+  const double dt =
+      std::chrono::duration<double>(_info.dt).count();
+
+  if (this->running_ &&
+      this->productEntity_ != gz::sim::kNullEntity)
+  {
+    auto *pose =
+        _ecm.Component<gz::sim::components::Pose>(
+            this->productEntity_);
+
+    if (pose)
+    {
+      auto currentPose = pose->Data();
+
+      currentPose.Pos().X() += this->speed_ * dt;
+
+      _ecm.SetComponentData<gz::sim::components::Pose>(
+          this->productEntity_,
+          currentPose);
+    }
   }
 
   // ------------------------------------------------------------
@@ -159,12 +226,33 @@ void ConveyorSystem::PreUpdate(
 
   if (this->updateCount_ % 100 == 0)
   {
-    gzmsg << "[VirtualFactory] ConveyorSystem heartbeat"
-          << " | equipment=" << this->name_
-          << " | updates=" << this->updateCount_
-          << " | running=" << std::boolalpha << this->running_
-          << " | speed=" << this->speed_ << " m/s"
-          << std::endl;
+    double productX = 0.0;
+    bool haveProductPose = false;
+
+    if (this->productEntity_ != gz::sim::kNullEntity)
+    {
+      auto *pose =
+          _ecm.Component<gz::sim::components::Pose>(
+              this->productEntity_);
+      if (pose)
+      {
+        productX = pose->Data().Pos().X();
+        haveProductPose = true;
+      }
+    }
+
+    std::ostringstream line;
+    line << "[VirtualFactory] ConveyorSystem heartbeat"
+         << " | equipment=" << this->name_
+         << " | updates=" << this->updateCount_
+         << " | running=" << std::boolalpha << this->running_
+         << " | speed=" << this->speed_ << " m/s"
+         << " | dt=" << dt << " s";
+    if (haveProductPose)
+    {
+      line << " | product_x=" << productX << " m";
+    }
+    gzmsg << line.str() << std::endl;
   }
 }
 

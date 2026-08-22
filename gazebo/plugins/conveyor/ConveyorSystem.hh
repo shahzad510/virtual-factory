@@ -5,7 +5,7 @@
 #include <string>
 #include <cstdint>
 #include <gz/sim/System.hh>
-#include <gz/sim/Link.hh>
+// #include <gz/sim/Link.hh>
 
 
 namespace virtual_factory
@@ -52,6 +52,8 @@ private:
 // Gazebo entity representing the moving belt link.
   gz::sim::Entity beltEntity_{gz::sim::kNullEntity};
 
+// Gazebo entity representing PRODUCT-001.
+gz::sim::Entity productEntity_{gz::sim::kNullEntity};
 
   // Equipment identity.
   std::string name_;

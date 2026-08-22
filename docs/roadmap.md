@@ -1,205 +1,73 @@
-# Virtual Factory + MES Roadmap
+# Roadmap
 
-## Stage 0 — Foundation
+Official implementation sequence: **SoT Phases 1–11** (see [`architecture.md`](architecture.md) §12).
 
-- Development environment verification
-- Git repository
-- Project structure
-- Architecture documentation
-- Development decisions
+This file is **not** a second architecture. It states what is DONE, IN PROGRESS, NEXT, PLANNED, or DEFERRED.
 
-## Stage 1 — Gazebo Physical Simulation
+Older “Stage 0–25” numbering is **retired**. Useful leftover ideas are listed under [Capability backlog](#capability-backlog) without stage numbers.
 
-- Minimal Gazebo world
-- Factory floor
-- Conveyor CV-001
-- Product model
-- Product sensor SEN-001
+---
 
-## Stage 2 — Virtual Machine Model
+## Implementation phases
 
-- Machine identity
-- Machine states
-- Operating modes
-- Industrial I/O
-- Fault simulation
+| Phase | Name | Status |
+| --- | --- | --- |
+| 1 | Factory Foundation | **DONE** |
+| 2 | Equipment Plugin Foundation | **DONE** |
+| 3 | Conveyor Control | **DONE** |
+| 4 | Product Motion | **DONE** (runtime verified 2026-08-22) |
+| 5 | Industrial Equipment Abstraction | **NEXT** (not started) |
+| 6 | Industrial Adapter Layer | **PLANNED** |
+| 7 | MES Core | **PLANNED** |
+| 8 | SCADA / Operational HMI | **PLANNED** |
+| 9 | Security & Authorization | **PLANNED** |
+| 10 | Real Factory Integration | **PLANNED** |
+| 11 | Commercial Hardening | **PLANNED** |
 
-## Stage 3 — C++ Gazebo Systems
+Nothing is IN PROGRESS after the Phase 4 close-out.
 
-- CMake project
-- ConveyorSystem
-- Machine control
-- Product counting
-- C++ testing
+---
 
-## Stage 4 — Industrial I/O Abstraction
+## Phase notes
 
-- Logical inputs
-- Logical outputs
-- Machine interfaces
-- Protocol-independent machine model
+### DONE — Phases 1–4
 
-## Stage 5 — Virtual PLC
+- World, floor, static CV-001, PRODUCT-001 poses/geometry.
+- `ConveyorSystem` plugin loads, configures, heartbeats.
+- Start/Stop/SetSpeed; development timers 1000/5000.
+- PRODUCT-001 ECM discovery; pose X += speed × dt_seconds.
+- `dt` bug fixed and verified (`dt=0.001 s`; travel −1.5 m → 0.5 m).
 
-- OpenPLC
-- PLC program
-- Machine state control
-- Interlocks
-- Automatic/manual operation
+### NEXT — Phase 5
 
-## Stage 6 — Modbus TCP
+Gazebo-independent equipment contract. Plugin implements it. No MES, no OPC UA, no Blazor in this phase.
 
-- PLC register mapping
-- C++ Modbus communication
-- PLC ↔ gateway communication
-- Gateway ↔ Gazebo I/O
+### PLANNED — Phases 6–11
 
-## Stage 7 — Industrial Gateway
+Adapters (OPC UA, Modbus, REST fallback, later MQTT/EtherNet/IP), MES, SCADA, RBAC, real hardware, hardening. Details and “done” gates: `architecture.md`.
 
-- Gateway architecture
-- Protocol abstraction
-- Machine abstraction
-- Communication management
+---
 
-## Stage 8 — OPC UA
+## Capability backlog
 
-- open62541
-- OPC UA server
-- Factory information model
-- Equipment nodes
-- Measurements
-- Commands
-- Alarms
+Items that matter later but **must not** be mistaken for current work or for extra phases.
 
-## Stage 9 — UAExpert
+| Capability | Maps toward | Status |
+| --- | --- | --- |
+| Product sensor SEN-001 | Equipment/sensors after Phase 5 | **DEFERRED** (was old Stage 1; not required to close Phases 1–4) |
+| OpenPLC / interlocks / auto-manual | Behind adapters / PLC, not inside Gazebo-as-MES | **DEFERRED** |
+| Modbus register map, OPC UA nodes, UAExpert | Phase 6 (+ diagnostics) | **PLANNED** |
+| Multi-machine line (robot, process, inspection, pack) | After contract exists | **DEFERRED** |
+| Production events catalog, OEE, downtime, maintenance, scheduling, scenarios | MES Phases 7+ | **PLANNED** as MES increments |
+| Automated MES/quality/traceability tests | Phase 11 and earlier test debt | **PLANNED** (`tests/` empty today) |
+| Containerized demo environment | Phase 11 | **PLANNED** |
 
-- Server connection
-- Node browsing
-- Reads
-- Writes
-- Subscriptions
-- Diagnostics
+---
 
-## Stage 10 — SCADA
+## Explicitly out of scope until named
 
-- HMI
-- Machine monitoring
-- Operator commands
-- Alarms
-- Production visualization
-
-## Stage 11 — Multi-Machine Factory
-
-- Additional conveyors
-- Robot
-- Processing machine
-- Inspection station
-- Packaging station
-
-## Stage 12 — Standard Equipment Model
-
-- Equipment identity
-- Equipment state
-- Equipment mode
-- Equipment metrics
-- Common equipment interface
-
-## Stage 13 — Product Model
-
-- Product identity
-- Product type
-- Material batch
-- Production order
-- Current operation
-- Product status
-
-## Stage 14 — Production Events
-
-- Production started
-- Production completed
-- Product produced
-- Product rejected
-- Cycle started
-- Cycle completed
-- Machine started
-- Machine stopped
-- Fault started
-- Fault cleared
-
-## Stage 15 — MES Foundation
-
-- MES database
-- Production orders
-- Equipment
-- Operations
-- Production events
-
-## Stage 16 — Quality
-
-- Inspection
-- Pass/fail
-- Reject tracking
-- Quality statistics
-
-## Stage 17 — Traceability
-
-- Material genealogy
-- Product genealogy
-- Operation history
-- Machine history
-
-## Stage 18 — Downtime
-
-- Fault events
-- Downtime records
-- Availability
-
-## Stage 19 — OEE
-
-- Availability
-- Performance
-- Quality
-- OEE
-
-## Stage 20 — Maintenance
-
-- Maintenance events
-- Work orders
-- MTBF
-- MTTR
-
-## Stage 21 — Scheduling
-
-- Production scheduling
-- Machine capabilities
-- Priorities
-- Constraints
-- Rescheduling
-
-## Stage 22 — Scenario Engine
-
-- Normal production
-- Machine failures
-- Quality degradation
-- Material shortage
-- Emergency stop
-- Machine slowdown
-- Scheduling conflicts
-
-## Stage 23 — Automated Testing
-
-- Production tests
-- Fault tests
-- Quality tests
-- Traceability tests
-- MES integration tests
-
-## Stage 24 — Deployment
-
-- Containerization where appropriate
-- Reproducible development environment
-- Demonstration environment
-
-## Stage 25 — Final Virtual Factory
-
-A complete virtual manufacturing environment capable of producing realistic industrial data for MES development, testing, and demonstration.
+- Starting Phase 5 without owner instruction
+- Treating plugin timers as SCADA
+- Treating Gazebo as the industrial adapter
+- Building the product GUI in C++
+- Implementing RBAC as scattered if-statements

@@ -1,43 +1,16 @@
-# Virtual Factory + MES
+# Virtual Factory
 
-A virtual industrial manufacturing environment built for MES development, testing, and demonstration.
+MES + SCADA + industrial adapter platform. Gazebo Sim is the virtual plant.
 
-## Core Technologies
+**Start here:** [docs/README.md](docs/README.md)
 
-- Gazebo Sim
-- C++
-- CMake
-- OpenPLC
-- Modbus TCP
-- open62541
-- OPC UA
-- UAExpert
-- SCADA
-- MES
+| Document | Role |
+| --- | --- |
+| [docs/MES_SCADA_Virtual_Factory_Source_of_Truth.pdf](docs/MES_SCADA_Virtual_Factory_Source_of_Truth.pdf) | Architectural source of truth |
+| [docs/implementation-status.md](docs/implementation-status.md) | What is actually implemented |
+| [docs/architecture.md](docs/architecture.md) | Layers, flows, SoT phases 1–11 |
+| [docs/decisions.md](docs/decisions.md) | ADRs |
+| [docs/roadmap.md](docs/roadmap.md) | Next work |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | What changed |
 
-## Project Goal
-
-The project simulates a physical manufacturing environment and progressively connects it to industrial control, communication, SCADA, and MES layers.
-
-The ultimate goal is to create a repeatable virtual factory capable of generating realistic manufacturing events for MES testing.
-
-## Current Status
-
-Stage 0 — Development foundation complete.
-
-Next:
-
-Stage 1 — First Gazebo physical simulation.
-
-## First Milestone
-
-The first physical simulation will contain:
-
-```text
-Product
-   |
-   v
-Conveyor CV-001
-   |
-   v
-Sensor SEN-001
+Current implementation phase: **SoT Phase 4 (Product Motion) complete.** Next: **Phase 5 (Industrial Equipment Abstraction).**
