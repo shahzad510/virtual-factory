@@ -13,6 +13,8 @@
 
 #include <gz/sim/components/Pose.hh>
 
+#include <virtual_factory/equipment/Conveyor.hh>
+
 namespace virtual_factory
 {
 
@@ -29,26 +31,30 @@ ConveyorSystem::~ConveyorSystem()
 //////////////////////////////////////////////////
 void ConveyorSystem::Start()
 {
-  this->running_ = true;
-
-if (this->speed_ <= 0.0)
+  if (!this->equipment_)
   {
-    this->speed_ = 0.5;
+    return;
   }
 
+  this->equipment_->start();
+
   gzmsg << "[VirtualFactory] Conveyor START command accepted"
-        << " | equipment=" << this->name_
+        << " | equipment=" << this->equipment_->id()
         << std::endl;
 }
 
 //////////////////////////////////////////////////
 void ConveyorSystem::Stop()
 {
-  this->running_ = false;
-  this->speed_ = 0.0;
+  if (!this->equipment_)
+  {
+    return;
+  }
+
+  this->equipment_->stop();
 
   gzmsg << "[VirtualFactory] Conveyor STOP command accepted"
-        << " | equipment=" << this->name_
+        << " | equipment=" << this->equipment_->id()
         << std::endl;
 }
 
@@ -56,19 +62,21 @@ void ConveyorSystem::Stop()
 //////////////////////////////////////////////////
 void ConveyorSystem::SetSpeed(double _speed)
 {
-  if (_speed < 0.0)
+  if (!this->equipment_)
+  {
+    return;
+  }
+
+  if (!this->equipment_->setSpeed(_speed))
   {
     gzmsg << "[VirtualFactory] Invalid conveyor speed: "
           << _speed << " m/s"
           << std::endl;
-
     return;
   }
 
-  this->speed_ = _speed;
-
   gzmsg << "[VirtualFactory] Conveyor speed set to "
-        << this->speed_ << " m/s"
+        << this->equipment_->speed() << " m/s"
         << std::endl;
 }
 
@@ -86,7 +94,7 @@ void ConveyorSystem::Configure(
   // so interpret the entity as a Gazebo model.
   gz::sim::Model model(this->entity_);
 
-  this->name_ = model.Name(_ecm);
+  const std::string name = model.Name(_ecm);
 
   // Find the belt link inside CV-001.
   this->beltEntity_ = model.LinkByName(_ecm, "belt");
@@ -98,21 +106,19 @@ void ConveyorSystem::Configure(
     return;
   }
 
-
-
-
+  this->equipment_ = std::make_unique<Conveyor>(name);
 
   gzmsg << "[VirtualFactory] Belt link found"
         << " | entity=" << this->beltEntity_
         << std::endl;
   gzmsg << "[VirtualFactory] ConveyorSystem configured for: "
-        << this->name_ << std::endl;
+        << this->equipment_->id() << std::endl;
 
   gzmsg << "[VirtualFactory] Initial state: STOPPED"
         << std::endl;
 
   gzmsg << "[VirtualFactory] Initial speed: "
-        << this->speed_ << " m/s"
+        << this->equipment_->speed() << " m/s"
         << std::endl;
 }
 
@@ -126,10 +132,15 @@ void ConveyorSystem::PreUpdate(
   if (_info.paused)
     return;
 
+  if (!this->equipment_)
+  {
+    return;
+  }
+
   // Count this simulation update.
   ++this->updateCount_;
 
-    // ------------------------------------------------------------
+  // ------------------------------------------------------------
   // Find PRODUCT-001 once it becomes available in the ECM
   // ------------------------------------------------------------
 
@@ -180,7 +191,7 @@ void ConveyorSystem::PreUpdate(
   const double dt =
       std::chrono::duration<double>(_info.dt).count();
 
-  if (this->running_ &&
+  if (this->equipment_->running() &&
       this->productEntity_ != gz::sim::kNullEntity)
   {
     auto *pose =
@@ -191,7 +202,7 @@ void ConveyorSystem::PreUpdate(
     {
       auto currentPose = pose->Data();
 
-      currentPose.Pos().X() += this->speed_ * dt;
+      currentPose.Pos().X() += this->equipment_->speed() * dt;
 
       _ecm.SetComponentData<gz::sim::components::Pose>(
           this->productEntity_,
@@ -205,12 +216,12 @@ void ConveyorSystem::PreUpdate(
 
   gz::sim::Link belt(this->beltEntity_);
 
-  if (this->running_)
+  if (this->equipment_->running())
   {
     // Move the belt in the +X direction.
     belt.SetLinearVelocity(
         _ecm,
-        gz::math::Vector3d(this->speed_, 0, 0));
+        gz::math::Vector3d(this->equipment_->speed(), 0, 0));
   }
   else
   {
@@ -241,13 +252,21 @@ void ConveyorSystem::PreUpdate(
       }
     }
 
+    const EquipmentStatus status = this->equipment_->status();
+
     std::ostringstream line;
     line << "[VirtualFactory] ConveyorSystem heartbeat"
-         << " | equipment=" << this->name_
+         << " | equipment=" << status.id
+         << " | type=" << status.type
          << " | updates=" << this->updateCount_
-         << " | running=" << std::boolalpha << this->running_
-         << " | speed=" << this->speed_ << " m/s"
+         << " | running=" << std::boolalpha << this->equipment_->running()
+         << " | fault=" << std::boolalpha << status.fault
          << " | dt=" << dt << " s";
+
+    for (const auto &point : this->equipment_->telemetry())
+    {
+      line << " | " << point.name << "=" << point.value << " " << point.unit;
+    }
     if (haveProductPose)
     {
       line << " | product_x=" << productX << " m";

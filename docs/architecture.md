@@ -1,393 +1,459 @@
 # Architecture
 
-How the Virtual Factory MES + SCADA platform is structured, and how the current Gazebo plant sits inside that structure.
+How the Virtual Factory platform is structured, and how the current Gazebo plant sits inside it.
 
-**Authority:** [`MES_SCADA_Virtual_Factory_Source_of_Truth.pdf`](MES_SCADA_Virtual_Factory_Source_of_Truth.pdf) defines the architecture. This file explains it technically and records how implementation maps onto it.
+**Architectural authority:** [`MES_SCADA_Virtual_Factory_Source_of_Truth.pdf`](MES_SCADA_Virtual_Factory_Source_of_Truth.pdf) — the **only** active Source of Truth.
 
-**Current reality:** [`implementation-status.md`](implementation-status.md). If this file describes a layer as intended, that layer is not claimed to exist unless status says so.
+**Implementation reality:** [`implementation-status.md`](implementation-status.md). Layers marked **PLANNED** do not exist in code.
+
+**Do not trust** [`archive/`](archive/) for current architecture.
+
+Status labels used below: **IMPLEMENTED** | **PARTIALLY IMPLEMENTED** | **PLANNED**.
 
 ---
 
-## 1. Purpose
+## 1. Overall system
 
-Build industrial MES + SCADA software that can run against a **simulated factory** (Gazebo) now and **real equipment** later **without rewriting the MES/SCADA core**.
-
-That requires strict layering:
+Intended production stack (SoT):
 
 ```text
-PHYSICAL / SIMULATED EQUIPMENT
-        ↓
-INDUSTRIAL ADAPTER LAYER
-        ↓
-NORMALIZED INDUSTRIAL DATA / COMMANDS
-        ↓
-MES / SCADA CORE
-        ↓
-APPLICATION SERVICES / API
-        ↓
-GUI / WEB CLIENT
+PHYSICAL FACTORY
+  PLCs / sensors / machines / other equipment
+        │
+        ▼
+INDUSTRIAL ADAPTERS          (protocol-oriented)
+  ┌─────┼──────┐
+  ▼     ▼      ▼
+OPC UA  Modbus REST
+  └─────┼──────┘
+        ▼
+NORMALIZED EQUIPMENT MODEL
+        │
+   ┌────┴────┐
+   ▼         ▼
+ SCADA      MES
+   └────┬────┘
+        ▼
+APPLICATION / API
+        ▼
+     .NET / C#
+        ▼
+  Blazor / Web GUI
 ```
 
-Gazebo is the safe plant. It is not the MES. The C++ plugin is simulated equipment behavior. It is not the GUI and not the adapter layer for real hardware.
+Gazebo is a **simulation environment**, not this production stack.
+
+MES/SCADA must never depend directly on Gazebo ECM, Gazebo System plugins, Siemens/Allen-Bradley APIs, Modbus register maps, OPC UA node IDs, or vendor SDKs.
+
+### Diagram A — Real factory path — PARTIALLY IMPLEMENTED (Equipment + mock + OPC UA)
+
+```text
+Actual machine / PLC
+        │
+Industrial Adapter          PARTIALLY IMPLEMENTED
+  mock IMPLEMENTED
+  OPC UA IMPLEMENTED
+  Modbus / REST NOT IMPLEMENTED
+        │
+Equipment abstraction       IMPLEMENTED
+        │
+MES / SCADA                 PLANNED
+```
+
+### Diagram B — Simulation path — IMPLEMENTED through Equipment; MES/SCADA PLANNED
+
+```text
+Gazebo
+        │
+Gazebo integration          IMPLEMENTED (ConveyorSystem)
+        │
+Equipment abstraction       IMPLEMENTED
+        │
+MES / SCADA                 PLANNED
+```
+
+### Diagram D — Overall architecture
+
+```text
+Factory equipment
+        │
+PLCs / sensors / machines   (real)     Gazebo plant (simulation)
+        │                                    │
+Industrial Adapters                          ConveyorSystem
+  mock IMPLEMENTED                           IMPLEMENTED
+  OPC UA IMPLEMENTED
+  Modbus / REST NOT IMPLEMENTED
+        │
+Normalized Equipment Model  IMPLEMENTED
+        │
++---------------------------+
+| MES                       | PLANNED (Phase 7) — includes Resource Management
+| SCADA                     | PLANNED (Phase 8)
+| Future API                | PLANNED
++---------------------------+
+        │
+Future .NET / Blazor GUI    PLANNED
+```
 
 ---
 
-## 2. Why these boundaries exist
+## 2. Physical factory path — PARTIALLY IMPLEMENTED (adapter contract + mock + OPC UA)
 
-| Boundary | Why |
+```text
+Physical equipment
+        ▼
+Industrial adapter          PARTIALLY IMPLEMENTED (contract + mock + OPC UA)
+        ▼
+Normalized Equipment        IMPLEMENTED (Phase 5)
+        ▼
+MES / SCADA                 PLANNED
+```
+
+Production OPC UA adapter: **IMPLEMENTED** (open62541 client + node mapping; ADR-025).
+Production Modbus / REST adapters: **NOT IMPLEMENTED**.
+
+---
+
+## 3. Simulation path — IMPLEMENTED (Phases 1–5)
+
+```text
+Gazebo Sim 8
+        ▼
+ConveyorSystem              IMPLEMENTED (Gazebo System plugin)
+        ▼
+Conveyor                    IMPLEMENTED (simulation-specific Equipment)
+        ▼
+Equipment abstraction       IMPLEMENTED (generic contract)
+```
+
+`ConveyorSystem` is **not** an `IndustrialAdapter`. It is Gazebo-only plant behaviour.
+
+---
+
+## 4. Industrial adapter boundary — PARTIALLY IMPLEMENTED
+
+Adapters sit below the equipment model. They are protocol-oriented (`opcua`, `modbus`, `rest`, `mock`), not one class per PLC vendor or machine type.
+
+```text
+MES / SCADA                 PLANNED
+        ▼
+Equipment                   IMPLEMENTED
+        ▼
+IndustrialAdapter           IMPLEMENTED (contract)
+  MockIndustrialAdapter     IMPLEMENTED
+  OpcUaIndustrialAdapter    IMPLEMENTED
+  Modbus / REST             NOT IMPLEMENTED
+```
+
+`IndustrialAdapter` (C++): `id()`, `protocol()`, `connectionState()`, `lastError()`, `connect()` / `disconnect()`, `equipment()` / `equipmentById()`, `poll()`.
+
+`ConnectionState::Faulted` is a **communication** fault. `Equipment::fault()` is a **machine** fault.
+
+Library `virtual_factory_industrial` links `virtual_factory_equipment` and **open62541** (OPC UA client). `IndustrialAdapter.hh` does not include open62541. The Gazebo plugin does not link industrial or open62541.
+
+**One adapter instance = one industrial source.** Several OPC UA servers ⇒ several `OpcUaIndustrialAdapter` instances (ADR-026). `connectionState()` is per-server. A faulted PLC does not take down equipment on other adapters.
+
+### 4.1 OPC UA adapter — IMPLEMENTED (ADR-025, ADR-026)
+
+```text
+PLC-1 OPC UA server          PLC-2 OPC UA server
+        │                            │
+OpcUaIndustrialAdapter        OpcUaIndustrialAdapter
+  (one UA_Client)               (one UA_Client)
+        │                            │
+        └────────────┬───────────────┘
+                     ▼
+              IndustrialAdapter*
+                     ▼
+              GenericEquipment
+                     ▼
+              MES / SCADA later
+```
+
+```text
+OPC UA server / PLC
+        │
+OpcUaIndustrialAdapter (open62541 client)
+        │
+IndustrialAdapter
+        │
+GenericEquipment
+        │
+MES / SCADA later
+```
+
+Mapping is C++ config (`OpcUaAdapterConfig`): equipment id/type, command name → node, telemetry name/unit → node, optional Running/Fault nodes. MES/SCADA never see NodeIds.
+
+Command path: `execute("start")` → adapter → OPC UA write. Telemetry path: node read → `poll()` → `GenericEquipment.telemetry()`.
+
+`connect()` after `Faulted` recreates the client and reconnects if the endpoint is reachable. Automatic background reconnect is **NOT IMPLEMENTED**.
+
+`TelemetryPoint` remains `{name, value, unit}`. OPC UA timestamps/quality are **NOT IMPLEMENTED** (later enhancement; do not redesign telemetry for this milestone).
+
+The in-process test server exposes several **test-only** machines (mixer, pump, unknown machine) as string NodeIds. They are not a required machine catalog and have no C++ subclasses.
+
+**DEVELOPMENT ONLY security:** tests use localhost, `SecurityPolicy#None`, anonymous access. Not production industrial security. SignAndEncrypt, certificates, subscriptions, history, and alarms/conditions are **NOT IMPLEMENTED**.
+
+REST remains a **fallback** for gateway/vendor APIs (ADR-013). REST does not replace OPC UA or Modbus.
+
+---
+
+## 5. Normalized equipment model — IMPLEMENTED
+
+Open-ended contract. **Not** a required catalog:
+
+```text
+Equipment                    REQUIRED ARCHITECTURE
+   └── GenericEquipment      ordinary machines (id, type metadata, capabilities, …)
+
+Conveyor                     ALLOWED EXCEPTION — Gazebo belt example only
+```
+
+Do **not** require `Robot.hh` / `Pump.hh` / `Oven.hh` / `Mixer.hh`. Add specialized C++ only when behaviour cannot be expressed as capabilities + commands + telemetry.
+
+`type()` is metadata (e.g. `belt_conveyor`). MES/SCADA must not `switch` on type.
+
+Headers:
+
+- `equipment/include/virtual_factory/equipment/Equipment.hh`
+- `equipment/include/virtual_factory/equipment/GenericEquipment.hh`
+- `equipment/include/virtual_factory/equipment/Conveyor.hh`
+
+No `#include <gz/...>`.
+
+---
+
+## 6. Equipment commands — IMPLEMENTED (generic)
+
+`commands()` and `execute(name, parameter)`. `start()` / `stop()` wrap `execute("start"|"stop")`.
+
+Do not put every industrial verb on `Equipment` (`setPressure`, `move`, `loadRecipe`, …). Capabilities decide what is valid. Parameter is currently a single `double`.
+
+---
+
+## 7. Equipment state — IMPLEMENTED (coarse)
+
+`operationalState()` → Stopped / Running. `running()` helper. `status()` snapshot: id, type, operational state, fault.
+
+Timestamps, modes, counters: **NOT IMPLEMENTED** (long-term SoT model).
+
+---
+
+## 8. Telemetry — IMPLEMENTED (generic)
+
+`telemetry()` → `{name, value, unit}`. Names are open-ended (`speed`, `pressure`, `temperature`, …). No fixed struct of every industrial measurement. Conveyor speed is telemetry `"speed"` (m/s), not a field on `Equipment`.
+
+---
+
+## 9. Alarms / faults — PARTIALLY IMPLEMENTED
+
+- Machine fault: `Equipment::fault()`; `setFault` on GenericEquipment/Conveyor. Plugin does not inject faults.
+- Communication fault: adapter `ConnectionState::Faulted`.
+- Alarm lists, ack, escalation: **PLANNED** (SCADA / MES).
+
+---
+
+## 10. MES boundary — PLANNED (Phase 7) — **NOT IMPLEMENTED**
+
+MES consumes `Equipment` (and adapter connection state), not Gazebo or raw tags. It does **not** live inside `Equipment` or `IndustrialAdapter`.
+
+### 10.1 Intended MES Core scope (all PLANNED)
+
+1. Production order management  
+2. Product / process definitions  
+3. Routing and operations  
+4. **Resource Management** (see §10.2–10.6)  
+5. Scheduling  
+6. Dispatching  
+7. Production execution tracking  
+8. Material management  
+9. Quality management  
+10. Sampling and test results  
+11. Traceability / genealogy  
+12. Downtime  
+13. OEE  
+14. Maintenance integration (constraint/boundary; not a full CMMS in Phase 7)  
+15. Production reporting  
+
+### 10.2 Equipment vs MES resource — PLANNED
+
+| `Equipment` (Phase 5, IMPLEMENTED) | MES resource (Phase 7, PLANNED) |
 | --- | --- |
-| Gazebo = plant | Same MES/SCADA must eventually talk to real PLCs/sensors/machines. |
-| C++ plugin ≠ MES | Equipment behavior stays replaceable. |
-| Equipment contract | Higher software sees identity, state, commands, telemetry — not SDF, ECM, or vendor tags. |
-| Industrial adapters | Hide Siemens vs Allen-Bradley vs Modbus vs REST. |
-| REST is a fallback | Unsupported devices enter through a gateway/API, still normalized at the adapter boundary. REST does not replace OPC UA/Modbus. |
-| MES ≠ SCADA | MES: production/quality/materials/traceability. SCADA: live monitor/control/alarms. |
-| API ≠ GUI | Web/.NET UI can change without touching industrial runtime. |
-| C++ vs .NET | C++ for simulation, protocols, performance. .NET/Blazor for enterprise UI (dashboards, RBAC, forms). |
+| Technical asset | How production uses that asset (and others) |
+| Identity, type, operational state, commands, telemetry, fault | Capability, availability, allocation, reservation, scheduling/maintenance constraints, relationships |
 
----
+A physical machine may be both. Do **not** put scheduling, allocation, or reservation on `Equipment`.
 
-## 3. Intended system layers
+### 10.3 Resource Management — PLANNED (ADR-024)
 
-```text
-USERS
-  |
-  v
-.NET / Blazor GUI
-  |
-  v
-Application / API
-  |
-  +----------------+
-  |                |
-  v                v
- MES              SCADA
-  |                |
-  +-------+--------+
-          |
-          v
-  INDUSTRIAL CORE
-          |
-          v
- EQUIPMENT CONTRACT
-          |
-          v
- INDUSTRIAL ADAPTERS
-    |       |       |
-    v       v       v
- OPC UA   Modbus   REST
-    |       |       |
-    +-------+-------+
-            |
-            v
-        EQUIPMENT
-       /    |     \
-     PLC  Sensors Machines
-```
+Resources may include equipment, machines, work centers, production lines, operators, technicians, materials, tools, fixtures, inspection resources, and other production resources.
 
-**Today only the bottom of the simulation path exists** (Gazebo + ConveyorSystem). Everything from Equipment Contract upward is PLANNED.
+**Capability** ≠ **availability.** Example: M-001 can make Product X but is unavailable; another machine is free but cannot make Product X. Both facts are required before dispatch.
 
----
+Resource Management must eventually consider: capability, availability, allocation, reservation, utilization, maintenance state, fault state, scheduling commitments, resource dependencies, qualifications, material availability, tooling availability.
 
-## 4. Simulation path vs real-factory path
-
-Both paths must present the **same equipment contract** to Industrial Core / MES / SCADA.
-
-### Simulation path (current plant)
+#### Diagram C — MES resource architecture — PLANNED
 
 ```text
-Industrial Core          PLANNED
-      |
-Equipment Contract       PLANNED (Phase 5)
-      |
-Gazebo / simulation
-implementation           PLANNED as an adapter
-      |
-ConveyorSystem           IMPLEMENTED (Phases 2–4)
-      |
-Gazebo Sim 8             IMPLEMENTED (Phase 1)
-      |
-Virtual factory
-CV-001, PRODUCT-001      IMPLEMENTED
+Production Order
+       │
+       ▼
+MES
+ |
+ +-- Order Management
+ +-- Routing
+ +-- Resource Management
+ |     +-- Equipment
+ |     +-- Work Centers
+ |     +-- Personnel
+ |     +-- Tools
+ |     +-- Materials
+ |     +-- Availability
+ |     +-- Capability
+ |     +-- Allocation
+ |     +-- Reservation
+ |
+ +-- Scheduling
+ +-- Dispatching
+ +-- Production Tracking
+ +-- Quality
+ +-- Traceability
+ +-- OEE
 ```
 
-### Real factory path (future)
+### 10.4 Work Centers — PLANNED
+
+First-class MES concepts. Example:
 
 ```text
-Industrial Core
-      |
-Equipment Contract
-      |
-Industrial Adapter (OPC UA / Modbus / REST / …)
-      |
-PLC / sensor / machine
+Plant: Factory-01
+ └── Area: Assembly
+      └── Work Center: WC-ASSY-01
+            ├── Robot-001, Press-001, Conveyor-001   (as MES resources over Equipment)
+            ├── Operator group
+            └── Inspection station
 ```
 
-The plugin is the **simulation implementation** of conveyor behavior. A future “Gazebo adapter” may sit between the contract and the plugin. Do not collapse MES into `ConveyorSystem.cc`.
+No Work Center C++/classes exist in the repository.
 
----
-
-## 5. Component relationships (current code)
+### 10.5 Production-order resource readiness — PLANNED
 
 ```text
-gz sim
-  factory.sdf
-    factory_floor (static)
-    include model://conveyor  → CV-001 (static)
-      plugin libConveyorSystem.so
-        virtual_factory::ConveyorSystem
-          entity_       → CV-001 model
-          beltEntity_   → link "belt"
-          productEntity_→ PRODUCT-001 (ECM Name search)
-          running_, speed_, fault_, updateCount_
-    include model://product   → PRODUCT-001 at (-1.5, 0, 1.25)
+Production Order → required operations → required resources
+  (equipment capability/availability, work center, material,
+   operator qualification, tools, maintenance, quality)
+        │
+        ▼
+ RESOURCE READY?
+    │         │
+   YES        NO
+    │         │
+ Schedule    HOLD
+    │
+ Dispatch → Production execution
 ```
 
-Control flow today:
+### 10.6 Materials, personnel, tools, maintenance — PLANNED
 
-1. `Configure` — identify model and belt.
-2. `PreUpdate` each unpaused step — find product; development Start@1000 / Stop@5000; if running, `X += speed * dt_seconds`; command belt linear velocity; heartbeat.
+- **Materials:** required vs available vs allocated vs reserved vs expected inbound (example: A 500 kg needed / 720 kg available → READY; B 250 / 180 → NOT READY). No inventory database yet.  
+- **Personnel:** operator, technician, inspector, supervisor, maintenance technician; qualifications (e.g. CNC Operator Level 2). Distinct from Phase 9 authentication/RBAC.  
+- **Tools:** availability, allocation, remaining life, compatibility.  
+- **Maintenance:** scheduled windows, unavailable-for-maintenance, maintenance vs fault state. Full CMMS is out of Phase 7; MES observes the constraint boundary.
 
-Data flow today: **in-process only** (plugin members + ECM Pose). No tags, no bus, no API.
+### 10.7 Production orders and quality — PLANNED
 
----
+Orders: product, quantity, due date, routing, operations, required resources/materials, status, execution results.
 
-## 6. Equipment contract (Phase 5 — planned)
-
-Normalized concepts the rest of the system should use, independent of vendor and of Gazebo:
-
-- identity (e.g. `CV-001`)
-- running / stopped
-- speed (m/s)
-- fault
-- commands: start, stop, set-speed
-- later: mode, alarms, counters, timestamps
-
-Example: `conveyor.speed`, `conveyor.running`, `conveyor.fault` mean the same whether the backing adapter is Gazebo, Siemens, or Allen-Bradley.
+Quality: sampling, test requests, measured values, pass/fail, results, operator/tester, timestamps, traceability to order/batch/unit.
 
 ---
 
-## 7. Industrial adapters (Phase 6 — planned)
+## 11. SCADA boundary — PLANNED (Phase 8)
 
-Adapters sit **immediately below the equipment boundary**. They are not the MES.
-
-| Adapter | Role |
-| --- | --- |
-| OPC UA | Structured information model; open62541 intended |
-| Modbus TCP/RTU | Registers/coils from PLC or devices |
-| REST/HTTP | Vendor/gateway fallback |
-| Later | MQTT, EtherNet/IP, vendor SDK |
-
-UAExpert is a **diagnostic client**, not a core component (ADR-006).
+Live state, operator commands, alarms/ack, trends, role-specific HMI. Not a substitute for MES. Not a C++ desktop inside the plugin. **NOT STARTED.**
 
 ---
 
-## 8. MES architecture (Phase 7 — planned)
+## 12. API boundary — PLANNED
 
-MES owns production execution and manufacturing information, including:
-
-production orders, scheduling/routing, materials/lots, execution (start/pause/stop, scrap, downtime), quality (sampling, holds, release/reject), equipment utilization, maintenance, traceability/genealogy, alarms as production events, KPIs/OEE, work instructions.
-
-MES consumes the **equipment contract**, not Gazebo entities and not raw PLC tags.
+.NET/C# application services over MES/SCADA. **NOT IMPLEMENTED.**
 
 ---
 
-## 9. SCADA architecture (Phase 8 — planned)
+## 13. .NET / C# application layer — PLANNED
 
-SCADA owns operational monitoring and control: live equipment state, operator commands, alarms/ack, trends, role-specific HMI.
-
-SCADA is not a substitute for MES and not a C++ desktop built inside the plugin.
+Enterprise services, API, orchestration. C++ remains for simulation and industrial/protocol code (ADR-002, ADR-011). **NOT IMPLEMENTED.**
 
 ---
 
-## 10. API, GUI, security, persistence, deployment
+## 14. Blazor GUI — PLANNED
 
-| Layer | Intent | Status |
-| --- | --- | --- |
-| Application/API | .NET/C# services over MES/SCADA | PLANNED (with Phase 8/7) |
-| GUI | Web UI; **Blazor** is the preferred candidate | PLANNED (SoT §12) |
-| AuthN/AuthZ | Central RBAC, not scattered ifs. Supervisor = floor role. | PLANNED Phase 9 |
-| Persistence | MES database, events, audit | PLANNED with Phase 7+ |
-| Deployment | Reproducible env, later containers/hardening | PLANNED Phase 11 |
-
-Roles (SoT): System Administrator, Plant Manager, Production Manager, Supervisor, Technician, Quality Officer, Operator, Maintenance. Briefing also named warehouse and viewer/auditor — reconcile at Phase 9, do not implement now.
+Preferred web UI (SoT §12, ADR-011). **NOT IMPLEMENTED.**
 
 ---
 
-## 11. Current Gazebo implementation (what exists)
+## 15. Authentication / authorization — PLANNED (Phase 9)
 
-**Gazebo Sim 8.15.0**, APIs from `/usr/include/gz/sim8`.
+Central RBAC, audit, least privilege. Supervisor is the floor-management role name (ADR-014). **NOT IMPLEMENTED.**
+
+---
+
+## 16. Database — PLANNED
+
+MES persistence, events, audit. **NOT IMPLEMENTED.**
+
+---
+
+## 17. Real factory integration — PLANNED (Phase 10)
+
+Real PLCs/sensors/machines through production adapters without rewriting MES. Depends on Phase 6 protocol adapters + Phase 7. **NOT STARTED.**
+
+---
+
+## 18. Scalability to arbitrary equipment
+
+Normal path: `GenericEquipment` or adapter-populated `Equipment` with id, type metadata, capabilities, commands, telemetry, state, faults.
+
+Specialized C++ (like `Conveyor`) only when custom logic is required. Core software must not grow a closed machine-class tree.
+
+---
+
+## 19. Current Gazebo mapping (IMPLEMENTED)
 
 | Piece | Detail |
 | --- | --- |
-| World | `gazebo/worlds/phase1/factory.sdf`, ODE step 0.001 s |
-| CV-001 | static; frame + belt; plugin filename `libConveyorSystem.so` |
-| PRODUCT-001 | 0.4×0.4×0.3 m; world pose `-1.5 0 1.25 0 0 0` |
-| Plugin | `virtual_factory::ConveyorSystem` : `gz::sim::System`, `ISystemConfigure`, `ISystemPreUpdate` |
-| Build | `gazebo/plugins/conveyor/CMakeLists.txt` → `build/libConveyorSystem.so` |
+| World | `gazebo/worlds/phase1/factory.sdf`, step 0.001 s |
+| CV-001 | static; plugin `libConveyorSystem.so` |
+| PRODUCT-001 | ~0.4×0.4×0.3 m; pose `-1.5 0 1.25` |
+| Plugin | `virtual_factory::ConveyorSystem` : Configure + PreUpdate; owns `Conveyor` |
+| Motion | `dt_s = duration<double>(info.dt).count()`; `x += speed * dt_s` while running |
 
-Product motion:
-
-```text
-dt_s = duration<double>(_info.dt).count()   // seconds
-product_x += speed * dt_s                   // while running_
-```
-
-This is a **controlled simulation abstraction**, not a physically accurate conveyor. Development Start/Stop uses update counts 1000 and 5000.
-
-Verified APIs: `Model::LinkByName`, `Link::SetLinearVelocity`, `ECM::SetComponentData<components::Pose>(...)`. Do not assume other Gazebo versions.
+Development Start/Stop at updates 1000/5000 is **not** SCADA (ADR-017).
 
 ---
 
-## 12. Implementation phases (SoT 1–11)
+## 20. Official phases (SoT 1–11)
 
-These are the **official** implementation phases. Capability ideas from older Stage 0–25 lists belong on the [roadmap](roadmap.md) backlog, not as a second phase scale.
+| Phase | Name | Code status |
+| --- | --- | --- |
+| 1 | Factory Foundation | **IMPLEMENTED** |
+| 2 | Equipment Plugin Foundation | **IMPLEMENTED** |
+| 3 | Conveyor Control | **IMPLEMENTED** |
+| 4 | Product Motion | **IMPLEMENTED** |
+| 5 | Industrial Equipment Abstraction | **IMPLEMENTED** |
+| 6 | Industrial Adapter Layer | **PARTIALLY IMPLEMENTED** (contract + mock + OPC UA; Modbus/REST not implemented) |
+| 7 | MES Core | **PLANNED** |
+| 8 | SCADA / Operational HMI | **PLANNED** |
+| 9 | Security & Authorization | **PLANNED** |
+| 10 | Real Factory Integration | **PLANNED** |
+| 11 | Commercial Hardening | **PLANNED** |
 
-### Phase 1 — Factory Foundation
+Phase 6 is **IN PROGRESS**. Architecture + mock + OPC UA are done. Modbus and REST remain follow-on. Do not mark the whole phase complete.
 
-| | |
-| --- | --- |
-| **Purpose** | Create the virtual plant: world, floor, CV-001, PRODUCT-001, dimensions and poses. |
-| **Components** | `factory.sdf`, `gazebo/models/conveyor/`, `gazebo/models/product/` |
-| **Inputs** | Gazebo Sim 8, SDF 1.9 |
-| **Outputs** | Loadable world with conveyor and product |
-| **Dependencies** | None |
-| **Done means** | World loads; geometry/poses match SoT §4–5 |
-| **Status** | **COMPLETE** |
-| **Future work** | Additional machines only in later capability work, not required to close Phase 1 |
-
-### Phase 2 — Equipment Plugin Foundation
-
-| | |
-| --- | --- |
-| **Purpose** | Load `libConveyorSystem.so`; identify model and belt; `Configure` + `PreUpdate` lifecycle. |
-| **Components** | `ConveyorSystem.hh/.cc`, CMake, plugin element in conveyor SDF |
-| **Inputs** | Phase 1 models |
-| **Outputs** | Plugin configured against CV-001 / belt |
-| **Dependencies** | Phase 1, gz-sim8, gz-plugin2 |
-| **Done means** | Plugin loads; belt entity found; heartbeat possible |
-| **Status** | **COMPLETE** |
-| **Future work** | Shared library install path (optional) |
-
-### Phase 3 — Conveyor Control
-
-| | |
-| --- | --- |
-| **Purpose** | Start/Stop/SetSpeed, running/speed state, development timing test, heartbeat. |
-| **Components** | `Start()`, `Stop()`, `SetSpeed()`, `running_`, `speed_`, update 1000/5000 |
-| **Inputs** | Phase 2 plugin |
-| **Outputs** | Conveyor lifecycle in simulation |
-| **Dependencies** | Phase 2 |
-| **Done means** | Start/Stop observable in logs; default speed 0.5 m/s |
-| **Status** | **COMPLETE** (timers still development-only) |
-| **Future work** | Replace timers with external commands after Phase 5+ |
-
-### Phase 4 — Product Motion
-
-| | |
-| --- | --- |
-| **Purpose** | Discover PRODUCT-001 via ECM; advance Pose in +X while the conveyor runs. |
-| **Components** | `productEntity_`, Name scan, Pose read/write, `dt` in seconds |
-| **Inputs** | Phase 3 running/speed |
-| **Outputs** | Product translates along the belt at commanded speed |
-| **Dependencies** | Phase 3 |
-| **Done means** | Headless or GUI run shows ~0.5 m/s travel; `dt` in seconds |
-| **Status** | **COMPLETE / RUNTIME VERIFIED** (2026-08-22, 6000 iterations) |
-| **Future work** | Physics-based transport later if needed; not required to close Phase 4 |
-
-### Phase 5 — Industrial Equipment Abstraction
-
-| | |
-| --- | --- |
-| **Purpose** | Move from a Gazebo-only mental model to an equipment abstraction that adapters can back. |
-| **Components** | Equipment identity/state/command contract; plugin implements it |
-| **Inputs** | Phase 4 behavior |
-| **Outputs** | Contract usable without `#include` of gz-sim in higher layers |
-| **Dependencies** | Phase 4 |
-| **Done means** | Conveyor state/commands expressed independently of ECM |
-| **Status** | **NEXT / NOT STARTED** |
-| **Future work** | Mapping table from contract to Gazebo |
-
-### Phase 6 — Industrial Adapter Layer
-
-| | |
-| --- | --- |
-| **Purpose** | Protocol connectors (OPC UA, Modbus, REST, later MQTT/EtherNet/IP/vendor) exposing the same contract. |
-| **Components** | Adapter interface + at least a simulation adapter; protocol adapters incrementally |
-| **Inputs** | Phase 5 contract |
-| **Outputs** | Normalized data/commands from heterogeneous devices |
-| **Dependencies** | Phase 5 |
-| **Done means** | One non-Gazebo path or a clearly defined adapter interface plus simulation adapter |
-| **Status** | **PLANNED / NOT STARTED** |
-| **Future work** | OpenPLC may appear as equipment behind Modbus, not as the MES |
-
-### Phase 7 — MES Core
-
-| | |
-| --- | --- |
-| **Purpose** | Production orders, work centers, materials, execution, quality, traceability, feedback. |
-| **Components** | MES domain services and persistence |
-| **Inputs** | Equipment contract / industrial core |
-| **Outputs** | Production records and execution APIs |
-| **Dependencies** | Phase 5; realistically Phase 6 for live equipment |
-| **Done means** | Orders can be created and related to equipment events without talking to Gazebo directly |
-| **Status** | **PLANNED / NOT STARTED** |
-| **Future work** | Full MES scope in SoT §13 is multi-increment |
-
-### Phase 8 — SCADA / Operational HMI
-
-| | |
-| --- | --- |
-| **Purpose** | Live state, alarms, trends, commands, role-specific operational screens. |
-| **Components** | SCADA services + (with GUI) Blazor views |
-| **Inputs** | Equipment contract, alarms |
-| **Outputs** | Operator monitoring/control |
-| **Dependencies** | Phase 5–6; GUI may land with this phase |
-| **Done means** | Operator can see CV-001 running/speed and issue start/stop through the stack, not plugin timers |
-| **Status** | **PLANNED / NOT STARTED** |
-| **Future work** | Replace 1000/5000 test |
-
-### Phase 9 — Security & Authorization
-
-| | |
-| --- | --- |
-| **Purpose** | Authentication, RBAC, audit, least privilege. |
-| **Components** | Identity, roles, permissions, audit log |
-| **Inputs** | API/GUI |
-| **Outputs** | Enforced access by role (Supervisor, Operator, …) |
-| **Dependencies** | Phase 8 (or API surface) |
-| **Done means** | Central authorization, not per-screen if-statements |
-| **Status** | **PLANNED / NOT STARTED** |
-| **Future work** | Enterprise IdP later |
-
-### Phase 10 — Real Factory Integration
-
-| | |
-| --- | --- |
-| **Purpose** | Real PLCs/sensors/machines through adapters without rewriting MES domain. |
-| **Components** | Production adapter configs, device mapping |
-| **Inputs** | Phases 6–9 |
-| **Outputs** | Same MES/SCADA against real I/O |
-| **Dependencies** | Phase 6, 7 |
-| **Done means** | At least one real device path proven |
-| **Status** | **PLANNED / NOT STARTED** |
-| **Future work** | Site-specific commissioning |
-
-### Phase 11 — Commercial Hardening
-
-| | |
-| --- | --- |
-| **Purpose** | Configuration, deployment, observability, testing, security hardening, backups, support. |
-| **Components** | CI, packaging, docs, monitoring |
-| **Inputs** | Working platform |
-| **Outputs** | Supportable system |
-| **Dependencies** | Phases 7–10 as applicable |
-| **Done means** | Repeatable deploy and test evidence |
-| **Status** | **PLANNED / NOT STARTED** |
-| **Future work** | Ongoing |
+Do not use Stage 0–25 or other retired numbering as the live plan.
 
 ---
 
-## 13. What this file is not
+## 21. What this file is not
 
-This file is not a second SoT. If implementation forces an architectural change, record it in [`decisions.md`](decisions.md) and update the SoT PDF **intentionally**. Do not silently drift.
+This is not a second SoT. Resource Management (ADR-024) refines SoT Phase 7 in Markdown; the PDF is unchanged. Broader architectural change still requires an ADR and an intentional SoT PDF update. Do not silently drift.

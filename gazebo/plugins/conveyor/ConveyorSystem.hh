@@ -1,15 +1,15 @@
 #ifndef VIRTUAL_FACTORY_CONVEYOR_SYSTEM_HH_
 #define VIRTUAL_FACTORY_CONVEYOR_SYSTEM_HH_
 
-#include <memory>
-#include <string>
 #include <cstdint>
-#include <gz/sim/System.hh>
-// #include <gz/sim/Link.hh>
+#include <memory>
 
+#include <gz/sim/System.hh>
 
 namespace virtual_factory
 {
+
+class Conveyor;
 
 class ConveyorSystem :
     public gz::sim::System,
@@ -22,13 +22,13 @@ public:
 
   ~ConveyorSystem() override;
 
-  // Start the conveyor.
+  // Start through the generic Equipment contract.
   void Start();
 
-  // Stop the conveyor.
+  // Stop through the generic Equipment contract.
   void Stop();
 
-  // Set the conveyor speed.
+  // Conveyor-specific speed command (not part of generic Equipment).
   void SetSpeed(double _speed);
 
 
@@ -49,23 +49,14 @@ private:
   // Gazebo entity representing CV-001.
   gz::sim::Entity entity_{gz::sim::kNullEntity};
 
-// Gazebo entity representing the moving belt link.
+  // Gazebo entity representing the moving belt link.
   gz::sim::Entity beltEntity_{gz::sim::kNullEntity};
 
-// Gazebo entity representing PRODUCT-001.
-gz::sim::Entity productEntity_{gz::sim::kNullEntity};
+  // Gazebo entity representing PRODUCT-001.
+  gz::sim::Entity productEntity_{gz::sim::kNullEntity};
 
-  // Equipment identity.
-  std::string name_;
-
-  // Initial control state.
-  bool running_{false};
-
-  // Conveyor speed in metres per second.
-  double speed_{0.0};
-
-  // Fault state.
-  bool fault_{false};
+  // Gazebo-independent conveyor equipment (SoT Phase 5).
+  std::unique_ptr<Conveyor> equipment_;
 
   // Number of simulation updates processed by PreUpdate().
   std::uint64_t updateCount_{0};
