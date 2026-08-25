@@ -1,3 +1,9 @@
+# Local extract of Ubuntu libmodbus (when apt install is unavailable)
+.deps/
+
+# Downloaded Debian packages
+*.deb
+
 # Build directories
 build/
 cmake-build-*/

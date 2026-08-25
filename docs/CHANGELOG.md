@@ -8,28 +8,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Phase 6 **authority / documentation** update (2026-08-24): official Phases remain **1–11**. Phase 6 now has implementation slices **6A–6H** (ADR-041). SoT PDF regenerated. Previous PDF archived as `docs/archive/MES_SCADA_Virtual_Factory_Source_of_Truth_legacy_2026-08-24.pdf`. **No adapter implementation code in this increment.** REST/MQTT/EtherNet/IP/PROFINET remain **NOT IMPLEMENTED**. Phase 7 remains **NOT STARTED**. Do not start 6E until separately approved.
+
+- **6A** mock/architecture, **6B** OPC UA, **6D** Modbus TCP: **IMPLEMENTED** / **TESTED**.
+- **6C** 10–200 simulated OPC UA servers: **VALIDATED** only; not production capacity.
+- **6E** REST gateway (HTTP client, libcurl candidate): **PLANNED**.
+- **6F** MQTT (one broker / Paho C candidate): **PLANNED**.
+- **6G** EtherNet/IP (explicit CIP first; library ADR before code): **PLANNED**.
+- **6H** PROFINET: **PLANNED** / investigation; p-net is IO-Device not controller; no fake TCP stack.
+
+ADRs: 013 amended; 022/025/026/028/036 refreshed; **037–041** added.
+
+Phase 6 Modbus TCP adapter (2026-08-24): `ModbusIndustrialAdapter` maps configured coils/registers into `GenericEquipment` via libmodbus 3.1.10. One adapter instance = one TCP endpoint. In-process libmodbus slave fixture; unit test passed. Isolation checked at 2 and 4 localhost endpoints (correctness only, not production capacity). **Phase 6 remains IN PROGRESS.** Architecture + mock + OPC UA + Modbus TCP **COMPLETE**. REST **NOT IMPLEMENTED**. Phase 7 has **not** started. SoT PDF not modified (realizes existing SoT Modbus path; ADR-036).
+
+Project implementation governance (2026-08-24): standing Cursor rules added under `.cursor/rules/` (SoT/phase discipline, architecture invariants, plan-then-approve workflow). **No application code. No phase started.**
+
+MES + SCADA + Virtual Factory architecture **extension** (2026-08-24): **documentation / SoT only.** Future MES now includes configurable plant hierarchy, dynamic PLC/equipment onboarding, work centers, resource readiness with specific reasons, materials/scrap, OEE vs broader efficiency, downtime, quality, genealogy, analytics periods, scheduling/bottlenecks, personnel/tools/maintenance availability, and Siemens Opcenter as a **capability benchmark only**. SoT PDF regenerated from `docs/source/MES_SCADA_Virtual_Factory_Source_of_Truth.md`. Previous PDF archived. **No application code added. Phase 7 remains NOT IMPLEMENTED.** Phase 6 remaining work (Modbus/REST) unchanged. ADRs 027–035.
+
+OPC UA multi-PLC scalability **validation** (2026-08-24): dedicated in-process test of many independent `OpcUaIndustrialAdapter` instances (one client / one endpoint each). Not a production feature and not a production-architecture change. Validated at 100 and 200 simulated servers under the conditions in `docs/opcua-scalability-test.md`. **Not** “production proven for hundreds of PLCs.” **Phase 6 remains IN PROGRESS.** Modbus / REST **NOT IMPLEMENTED**. Phase 7 has **not** started.
+
 Phase 6C follow-on (2026-08-23): **one OPC UA adapter instance per OPC UA server** (ADR-026). Multi-PLC is composition of adapters, not multiple `UA_Client`s inside one `connectionState()`. Tests cover two in-process servers, independent fault, and independent reconnect. **Phase 6 remains IN PROGRESS.** Modbus / REST **NOT IMPLEMENTED**. Phase 7 has **not** started.
 
 Phase 6C — production OPC UA adapter (2026-08-23): `OpcUaIndustrialAdapter` maps configured nodes into `GenericEquipment` via open62541. In-process test server; unit test passed. **Phase 6 remains IN PROGRESS.** Architecture + mock + OPC UA **COMPLETE**. Modbus / REST **NOT IMPLEMENTED**. Phase 7 has **not** started. SoT PDF not modified (realizes existing SoT OPC UA path; ADR-025).
 
 ### Added
 
+- `ModbusIndustrialAdapter` and C++ register-mapping structs (`ModbusAdapterConfig`).
+- Private libmodbus TCP session wrapper (`industrial/src/modbus_tcp_session.*`). Public headers do not include `<modbus.h>`.
+- In-process Modbus TCP test slave exposing multiple generic test machines (mixer, pump, unknown) — localhost, no TLS, **DEVELOPMENT ONLY**.
+- Unit test `tests/modbus_adapter_test.cc`.
+- ADR-036: Modbus TCP adapter maps configured registers into GenericEquipment; libmodbus; one session per endpoint; comms vs machine fault; no addresses on Equipment.
 - `OpcUaIndustrialAdapter` and C++ node-mapping structs (`OpcUaAdapterConfig`).
 - In-process OPC UA test server exposing multiple generic test machines (mixer, pump, unknown) — localhost, SecurityPolicy#None, anonymous, **DEVELOPMENT ONLY**.
 - Unit test `tests/opcua_adapter_test.cc`.
+- Test-only multi-server fixture `tests/opcua_scale_plc_server.*` and `tests/opcua_multi_server_scalability_test.cc` (validation; not a production component).
 - ADR-025: OPC UA adapter maps configured nodes into GenericEquipment; open62541; comms vs machine fault; no NodeIds on Equipment.
-- ADR-026: one `OpcUaIndustrialAdapter` instance per OPC UA server; multi-PLC = multiple adapter instances.
+- ADR-027–035: plant hierarchy, dynamic onboarding, readiness reasons, MES vs equipment state, materials/scrap, OEE vs efficiency, events/analytics, genealogy, Opcenter benchmark.
+- ADR-037–041: REST gateway client; MQTT one-broker; EtherNet/IP explicit CIP + library-before-code; PROFINET investigation-first; Phase 6 slices 6A–6H inside official Phases 1–11.
 
 ### Changed
 
-- `virtual_factory_industrial` links open62541. Gazebo plugin still does not.
+- `virtual_factory_industrial` links open62541 and libmodbus. Gazebo plugin still does not.
 - `GenericEquipment::setOperationalState` for adapter mapping of Running without executing a command.
 - Root CMake adds `opcua_adapter_test`.
+- Root CMake adds `opcua_multi_server_scalability_test` (long TIMEOUT).
+- Root CMake adds `modbus_adapter_test`.
 
 ### Documentation
 
-- Phase 6 marked **IN PROGRESS** with explicit slice status: architecture/mock/OPC UA complete; Modbus/REST not implemented.
-- Security: unsecured localhost test is not production industrial security.
+- Phase 6 marked **IN PROGRESS** with slices **6A–6H** (ADR-041): 6A–6D done; 6E–6H not implemented. Official phases remain 1–11.
+- Security: unsecured localhost OPC UA and Modbus tests are not production industrial security.
+- SoT PDF regenerated (2026-08-24) from `docs/source/`. Previous PDF in `docs/archive/`.
+- `docs/opcua-scalability-test.md`: measured multi-PLC OPC UA validation (architectural capability vs measured scale).
+- ADR-036 and architecture §4.2 document the Modbus TCP adapter boundary.
 
 Architectural refinement (2026-08-23): **Resource Management** added to the *future* MES (Phase 7) architecture. Work Centers, capability vs availability, materials/personnel/tools/maintenance constraints, and production-order resource readiness are documented. **Phase 7 remains NOT IMPLEMENTED.** **No application behaviour changed.** SoT PDF not modified (compatible refinement of SoT Phase 7; ADR-024).
 

@@ -19,14 +19,14 @@ Retired numbering (do not revive): Stage 0–25, old Phase 0–10, sensor-first 
 | 3 | Conveyor Control | **DONE** |
 | 4 | Product Motion | **DONE** |
 | 5 | Industrial Equipment Abstraction | **DONE** |
-| 6 | Industrial Adapter Layer | **IN PROGRESS** (architecture + mock + OPC UA **DONE**. Modbus/REST **NOT IMPLEMENTED**) |
-| 7 | MES Core | **NOT STARTED** |
+| 6 | Industrial Adapter Layer | **IN PROGRESS** (slices **6A–6D** done. **6E–6H NOT IMPLEMENTED**) |
+| 7 | MES Core + Resource Management | **NOT STARTED** |
 | 8 | SCADA / Operational HMI | **PLANNED** |
 | 9 | Security & Authorization | **PLANNED** |
 | 10 | Real Factory Integration | **PLANNED** |
-| 11 | Commercial Hardening | **PLANNED** |
+| 11 | Commercial Hardening & Enterprise Integration | **PLANNED** |
 
-Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed.
+Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed. Do not start slice 6E until separately approved.
 
 ---
 
@@ -68,35 +68,53 @@ Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed.
 ## Phase 6 — Industrial Adapter Layer
 
 - **Objective:** Protocol connectors that populate/control the normalized `Equipment` model without exposing vendor APIs to MES/SCADA.
-- **Major components:** `IndustrialAdapter`; `MockIndustrialAdapter`; `OpcUaIndustrialAdapter` (open62541); future Modbus / REST.
+- **Major components:** `IndustrialAdapter`; `MockIndustrialAdapter`; `OpcUaIndustrialAdapter` (open62541); `ModbusIndustrialAdapter` (libmodbus); planned REST/MQTT/EtherNet/IP; PROFINET only if a valid production path is approved.
 - **Dependencies:** Phase 5.
-- **Status:** **IN PROGRESS**. Architecture + mock + OPC UA **DONE** (including multi-server via multiple adapter instances, ADR-026). **NOT IMPLEMENTED:** Modbus, REST.
+- **Official numbering:** Phase 6 of Phases **1–11**. Implementation uses slices **6A–6H** (ADR-041), not extra official phases.
+- **Slice status:**
+  - **6A** architecture + mock — **DONE**
+  - **6B** OPC UA / open62541 — **DONE**
+  - **6C** OPC UA multi-server validation (10–200 simulated in-process servers) — **VALIDATED** (not production capacity)
+  - **6D** Modbus TCP / libmodbus — **DONE**
+  - **6E** REST industrial gateway (HTTP client, libcurl candidate) — **NOT IMPLEMENTED**
+  - **6F** MQTT (one broker connection; Paho C candidate) — **NOT IMPLEMENTED**
+  - **6G** EtherNet/IP (CIP scanner; library ADR before code) — **NOT IMPLEMENTED**
+  - **6H** PROFINET investigation; no fake stack — **NOT IMPLEMENTED**
+- **Order:** 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
+- **Status:** **IN PROGRESS**. Do not start Phase 7 until this Phase 6 scope is complete or 6H is explicitly marked by an approved ADR.
 
-## Phase 7 — MES Core
+## Phase 7 — MES Core + Resource Management
 
-- **Objective:** Production execution and manufacturing information, including **Resource Management** so an order is scheduled only when required resources are capable *and* available (ADR-024).
+- **Objective:** Production execution and manufacturing information: plant configuration, onboarding, resource readiness, orders, materials, quality, genealogy, OEE, downtime, scheduling, and operational analytics. Siemens Opcenter is a **capability benchmark only** (ADR-035).
 - **Major components (none in repo — all PLANNED):**
-  1. Production order management  
-  2. Product / process definitions  
-  3. Routing and operations  
-  4. Resource Management — equipment, work centers, machines, lines, personnel, tools, material readiness; capability vs availability; allocation; reservation  
-  5. Scheduling  
-  6. Dispatching  
-  7. Production execution tracking  
-  8. Material management  
-  9. Quality management  
-  10. Sampling and test results  
-  11. Traceability / genealogy  
-  12. Downtime  
-  13. OEE  
-  14. Maintenance integration (constraints, not a full CMMS)  
-  15. Production reporting  
+  1. Configurable plant hierarchy (enterprise/site/building/floor/area/line/cell/work center — data, not C++ inheritance; ADR-027)
+  2. Dynamic PLC/equipment onboarding via configuration (another protocol adapter instance + mappings; no new C++ class per PLC; ADR-028)
+  3. Production order / work order / operation management
+  4. Product / process definitions, routing, BOM, bill of process
+  5. Resource Management — capability vs availability; allocation; reservation; capacity (ADR-024, ADR-030)
+  6. Work centers as capability cells (not 1:1 with machines)
+  7. Organizational responsibility (supervisors/managers as data; RBAC is Phase 9)
+  8. Resource readiness with **specific hold reasons** (ADR-029)
+  9. Planning, scheduling, dispatching, rescheduling (explain why an order cannot be scheduled)
+  10. Production execution tracking
+  11. Material management (raw, component, WIP, finished, consumable, packaging; lots/serials; ADR-031)
+  12. Scrap / waste / rework
+  13. Quality execution, NCR, sampling; SPC later
+  14. Forward/backward genealogy (ADR-034)
+  15. Downtime and reason trees
+  16. OEE (distinct from broader efficiency; ADR-032)
+  17. Contextualized events and operational analytics (real-time through yearly; ADR-033)
+  18. Bottleneck identification
+  19. Personnel / qualifications / shifts (not RBAC)
+  20. Tools / fixtures
+  21. Maintenance availability (not a full CMMS)
+  22. Reporting / KPI dashboards (GUI later)
 - **Dependencies:** Phase 5 equipment contract; realistically Phase 6 for live equipment. Do not put this logic in `Equipment` or `IndustrialAdapter`.
 - **Status:** **NOT STARTED** / **NOT IMPLEMENTED**. Do not implement until explicitly instructed.
 
 ## Phase 8 — SCADA / Operational HMI
 
-- **Objective:** Live state, alarms, trends, commands, role-specific operational screens.
+- **Objective:** Live state, alarms, trends, commands, shop-floor execution views, role-specific operational screens.
 - **Major components:** SCADA services; later Blazor views.
 - **Dependencies:** Phases 5–6; GUI may land with this phase.
 - **Status:** **PLANNED**.
@@ -110,15 +128,15 @@ Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed.
 
 ## Phase 10 — Real Factory Integration
 
-- **Objective:** Real PLCs/sensors/machines through adapters without rewriting MES.
-- **Major components:** production adapter configs, device mapping.
+- **Objective:** Real PLCs/sensors/machines through production adapters without rewriting MES. Reuse Phase 7 onboarding against real endpoints.
+- **Major components:** production adapter configs, device mapping, production connection security.
 - **Dependencies:** Phase 6 production adapters, Phase 7.
 - **Status:** **PLANNED**.
 
-## Phase 11 — Commercial Hardening
+## Phase 11 — Commercial Hardening & Enterprise Integration
 
-- **Objective:** Configuration, deployment, observability, testing, hardening, backups, support.
-- **Major components:** CI, packaging, monitoring, operational docs.
+- **Objective:** Configuration, deployment, observability, testing, hardening, backups, support; ERP/PLM/QMS/CMMS integration; advanced what-if / optimization beyond core MES analytics.
+- **Major components:** CI, packaging, monitoring, operational docs, enterprise connectors, manufacturing intelligence.
 - **Dependencies:** working platform as applicable.
 - **Status:** **PLANNED**.
 
@@ -130,12 +148,14 @@ Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed.
 | --- | --- | --- |
 | Product sensor SEN-001 | Equipment after Phase 5 | **DEFERRED** |
 | OpenPLC / interlocks / auto-manual | Behind adapters / PLC | **DEFERRED** |
-| OPC UA nodes, Modbus maps, UAExpert | Phase 6 | OPC UA adapter **DONE** (ADR-025). Modbus **NOT IMPLEMENTED**. UAExpert diagnostic only. |
+| OPC UA nodes, Modbus maps, UAExpert | Phase 6 | OPC UA **DONE** (6B, ADR-025). 6C **VALIDATED** (simulated). Modbus TCP **DONE** (6D, ADR-036). REST/MQTT/EtherNet/IP/PROFINET **NOT IMPLEMENTED**. UAExpert diagnostic only. |
 | Multi-machine line via GenericEquipment | After contract | **DEFERRED** |
-| Resource Management (capability vs availability, work centers, allocation/reservation) | MES Phase 7 | **PLANNED** (ADR-024; not implemented) |
-| OEE, downtime, scheduling, event catalog | MES Phase 7+ | **PLANNED** |
+| Resource Management, plant hierarchy, dynamic PLC onboarding, readiness reasons | MES Phase 7 | **PLANNED** (ADR-024, 027–030; not implemented) |
+| Materials, scrap, quality, genealogy | MES Phase 7 | **PLANNED** (ADR-031, 034; not implemented) |
+| OEE, downtime, events/analytics, bottlenecks | MES Phase 7+ | **PLANNED** (ADR-032, 033; not implemented) |
+| Siemens Opcenter-class capabilities | MES Phase 7–11 | **PLANNED** benchmark only (ADR-035; not parity, not implemented) |
 | Automated MES tests | Phase 11 / test debt | **PLANNED** |
-| Containerized demo | Phase 11 | **PLANNED** |
+| ERP/PLM/QMS/CMMS, containerized demo | Phase 11 | **PLANNED** |
 
 ---
 
@@ -146,3 +166,5 @@ Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed.
 - Product GUI in C++
 - RBAC as scattered if-statements
 - Implementing Phase 7 without an explicit instruction
+- Starting 6E REST without a separate implementation approval
+- Calling a TCP mock “PROFINET support”

@@ -17,6 +17,10 @@ MES + SCADA + industrial adapter platform. Gazebo Sim is a **virtual plant** for
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Change history |
 | [docs/archive/](docs/archive/) | Historical documents only — not authoritative |
 
-**Current phase:** Phase 6 — Industrial Adapter Layer: **IN PROGRESS**. Architecture + mock + OPC UA **COMPLETE** (multi-server = multiple adapter instances, ADR-026). Production Modbus / REST **NOT IMPLEMENTED**.
+**Current phase:** Phase 6 — Industrial Adapter Layer: **IN PROGRESS**. Slices **6A–6D** done (mock, OPC UA, 10–200 simulated OPC UA validation, Modbus TCP). **6E–6H NOT IMPLEMENTED** (REST, MQTT, EtherNet/IP, PROFINET). Official roadmap remains Phases **1–11** (ADR-041). Production REST **NOT IMPLEMENTED**.
 
-**Next major phase:** Phase 7 — MES Core (**NOT STARTED** / **NOT IMPLEMENTED**). Includes planned Resource Management (ADR-024). Do not implement it until instructed.
+**Next implementation slice (not this increment):** 6E REST industrial gateway, only after explicit approval.
+
+**Next major phase:** Phase 7 — MES Core + Resource Management (**NOT STARTED** / **NOT IMPLEMENTED**). All MES features are **PLANNED** (ADR-024, 027–035). Do not implement them until instructed. Do not start Phase 7 after REST/MQTT/EtherNet/IP.
+
+**SoT maintenance:** edit `docs/source/MES_SCADA_Virtual_Factory_Source_of_Truth.md`, then run `docs/source/generate-sot-pdf.sh`. The PDF is the architectural authority; the Markdown is how that PDF is maintained.

@@ -14,13 +14,14 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 
 | Order | Document | Role |
 | --- | --- | --- |
-| 1 | [MES_SCADA_Virtual_Factory_Source_of_Truth.pdf](MES_SCADA_Virtual_Factory_Source_of_Truth.pdf) | **Architectural authority.** Only active Source of Truth. |
+| 1 | [MES_SCADA_Virtual_Factory_Source_of_Truth.pdf](MES_SCADA_Virtual_Factory_Source_of_Truth.pdf) | **Architectural authority.** Only active Source of Truth. Generated from [source/MES_SCADA_Virtual_Factory_Source_of_Truth.md](source/MES_SCADA_Virtual_Factory_Source_of_Truth.md) via [source/generate-sot-pdf.sh](source/generate-sot-pdf.sh). |
 | 2 | [implementation-status.md](implementation-status.md) | **What is actually implemented** in the repository. |
 | 3 | [architecture.md](architecture.md) | Current technical architecture (layers, paths, phase gates). |
 | 4 | [decisions.md](decisions.md) | Why decisions were made (ADRs). |
 | 5 | [roadmap.md](roadmap.md) | Future phases. Planned ≠ implemented. |
 | 6 | [CHANGELOG.md](CHANGELOG.md) | What changed over time. |
 | 7 | This file | Resume procedure, commands, index. |
+| — | [opcua-scalability-test.md](opcua-scalability-test.md) | OPC UA multi-PLC **validation record** (measured scale ≠ production proof). |
 | — | [archive/](archive/) | Historical/legacy documents only. Not authoritative. |
 | — | Git history | Historical implementation record. |
 
@@ -31,7 +32,7 @@ When they disagree:
 - **implementation-status.md** → verified implemented state  
 - **decisions.md** → documented rationale  
 
-Do not create a second source of truth. If architecture must change, update `decisions.md` and the SoT PDF **intentionally**.
+Do not create a second source of truth. If architecture must change, update `decisions.md`, edit the SoT Markdown source, and regenerate the PDF **intentionally**. The Markdown under `docs/source/` is the maintainable SoT source, not a competing live architecture.
 
 ---
 
@@ -48,7 +49,9 @@ Do not create a second source of truth. If architecture must change, update `dec
 9. Verify build and tests before modifying code (commands below).
 10. Never infer implementation from the roadmap alone.
 
-Continue from the **Next Step** in `implementation-status.md`. Do **not** start Phase 7 (MES) unless that work is explicitly instructed.
+Continue from the **Next Step** in `implementation-status.md`. Do **not** start Phase 7 (MES) unless that work is explicitly instructed. Do **not** start 6E REST until separately approved.
+
+Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discipline, architecture invariants, plan-then-approve workflow). Those rules do not replace the SoT.
 
 ---
 
@@ -57,9 +60,12 @@ Continue from the **Next Step** in `implementation-status.md`. Do **not** start 
 | Item | Status |
 | --- | --- |
 | Phases 1–5 | **COMPLETE** |
-| Phase 6 | **IN PROGRESS** (architecture + mock + OPC UA **COMPLETE**, including multi-server as multiple adapter instances; Modbus/REST **NOT IMPLEMENTED**) |
-| Phase 6 production Modbus / REST | **NOT IMPLEMENTED** |
-| Phase 7 MES Core | **NOT STARTED** / **NOT IMPLEMENTED** (Resource Management is **PLANNED** only; ADR-024) |
+| Phase 6 | **IN PROGRESS** (slices **6A–6D** done; **6E–6H NOT IMPLEMENTED**; ADR-041) |
+| Phase 6E REST industrial gateway | **NOT IMPLEMENTED** |
+| Phase 6F MQTT | **NOT IMPLEMENTED** |
+| Phase 6G EtherNet/IP | **NOT IMPLEMENTED** |
+| Phase 6H PROFINET | **NOT IMPLEMENTED** / investigation required |
+| Phase 7 MES Core + Resource Management | **NOT STARTED** / **NOT IMPLEMENTED** (all MES scope **PLANNED**; ADR-024, 027–035) |
 | SCADA, API, database, auth, Blazor, real PLC | **NOT IMPLEMENTED** |
 
 Equipment is open-ended (`Equipment` / `GenericEquipment`). `Conveyor` is a Gazebo simulation example, not a required machine catalog.
@@ -74,11 +80,11 @@ Equipment is open-ended (`Equipment` / `GenericEquipment`). `Conveyor` is a Gaze
 4. Product Motion  
 5. Industrial Equipment Abstraction  
 6. Industrial Adapter Layer  
-7. MES Core  
+7. MES Core + Resource Management  
 8. SCADA / Operational HMI  
 9. Security & Authorization  
 10. Real Factory Integration  
-11. Commercial Hardening  
+11. Commercial Hardening & Enterprise Integration  
 
 Do not use Stage 0–25, old Phase 0–10, sensor-first, or gateway-only numbering as the live plan.
 
@@ -94,6 +100,20 @@ cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+The OPC UA multi-PLC scalability test is included. It can take several minutes (TIMEOUT 600). To run only the short unit tests:
+
+```bash
+ctest --test-dir build --output-on-failure -E opcua_multi_server_scalability_test
+```
+
+To run only the scalability validation:
+
+```bash
+ctest --test-dir build --output-on-failure -R opcua_multi_server_scalability_test
+```
+
+Results and limitations: [`opcua-scalability-test.md`](opcua-scalability-test.md). In-process simulated servers **and** clients; not production PLC hardware proof.
 
 ### Conveyor plugin
 
@@ -123,6 +143,6 @@ Expect CV-001, PRODUCT-001, START ~update 1000, `dt=0.001 s`, product X from abo
 
 ---
 
-## Environment (last verified 2026-08-22 / 2026-08-23)
+## Environment (last verified 2026-08-24)
 
-Gazebo Sim 8.15.0, gz-sim8, CMake 3.28.3, g++ 13.3.0, C++17, open62541 1.4.0-rc2.
+Gazebo Sim 8.15.0, gz-sim8, CMake 3.28.3, g++ 13.3.0, C++17, open62541 1.4.0-rc2, libmodbus 3.1.10 (`libmodbus-dev` / `libmodbus5` 3.1.10-1ubuntu1).

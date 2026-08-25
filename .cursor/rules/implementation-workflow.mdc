@@ -1,0 +1,26 @@
+---
+description: Implementation plan gate, tests, docs, status labels, git approval
+alwaysApply: true
+---
+
+# Implementation workflow
+
+Do not start implementation because the task looks obvious. Provide a plan first (A–L): current phase, SoT/roadmap requirements, existing code, proposed changes, files to create/modify/avoid, tests, docs, risks, and explicit out-of-scope. **Stop and wait for approval.**
+
+No feature creep: no future-phase features, speculative frameworks, databases, GUIs, auth, or enterprise integrations unless the approved slice requires them. Prefer the smallest implementation that establishes the approved architecture.
+
+After approval, inspect existing headers, sources, CMake, tests, dependencies, and Git history before editing. Do not rewrite working architecture for convenience.
+
+Verification required before calling work done: build, relevant unit/integration tests, regressions, runtime checks where applicable, error paths, scalability where applicable. Compilation alone is not “implemented.”
+
+Use these labels honestly: **IMPLEMENTED**, **TESTED**, **VALIDATED**, **PARTIALLY IMPLEMENTED**, **PLANNED**, **NOT IMPLEMENTED**. In-process/simulation tests are not production proof.
+
+Update only affected docs (`implementation-status.md`, `architecture.md`, `decisions.md`, `roadmap.md`, `CHANGELOG.md`, `docs/README.md`). Never mark future work as implemented. If an ADR is needed, add it. If the SoT must change, **stop**, explain, get approval, edit the Markdown source, regenerate the PDF, and keep the previous PDF in `docs/archive/`.
+
+After implementation, report what was and was not done, files created/modified/deleted, types introduced, architecture/dependency changes, tests run and results, docs, limitations, remaining work, phase status, git status, and a **proposed** commit message. Do not commit.
+
+Never `git commit`, `push`, `reset`, `rebase`, or `merge` without explicit user approval. After approval: add/commit/push only as asked, then verify `git status`, `git log`, and remote tracking. Do not claim push succeeded unless Git confirms it.
+
+A phase is **COMPLETE** only when SoT scope, tests, docs, review, user approval, commit, and confirmed push are all done. Otherwise: **IN PROGRESS**, **PARTIALLY IMPLEMENTED**, **VALIDATED**, or **NOT IMPLEMENTED**.
+
+After a phase: **stop**. Do not start the next phase until the user says so. Verify baseline from Git, code, tests, and docs at the start of every phase — do not trust a previous chat session.

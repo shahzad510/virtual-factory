@@ -165,11 +165,15 @@ Architectural authority remains the [SoT PDF](MES_SCADA_Virtual_Factory_Source_o
 ## ADR-013 — REST is a fallback integration path
 
 - **Status:** Accepted
-- **Date:** 2026-08-22 (SoT §10)
+- **Date:** 2026-08-22 (SoT §7.3); amended 2026-08-24
 
 **Context:** Some devices will never speak OPC UA or Modbus cleanly.
 
 **Decision:** Unsupported device → vendor/gateway → REST → adapter boundary → normalized model. REST does not replace industrial protocols.
+
+**Amendment 2026-08-24:** Phase 6 slice **6E** is a REST **industrial gateway adapter**: an HTTP **client** to one origin (`RestIndustrialAdapter`). It is **not** the future MES REST API (that is a later application surface). Candidate library: libcurl. One instance = one HTTP origin. **NOT IMPLEMENTED.** See ADR-037.
+
+**Consequences:** REST remains a fallback. Do not build MES HTTP APIs inside this adapter.
 
 ---
 
@@ -247,7 +251,7 @@ Architectural authority remains the [SoT PDF](MES_SCADA_Virtual_Factory_Source_o
 
 Future OPC UA / Modbus / REST adapters (Phase 6) implement `Equipment`. They do not subclass `ConveyorSystem`.
 
-**Consequences:** Plugin build links `virtual_factory_equipment`. Higher layers must include `virtual_factory/equipment/…`, never gz-sim, for equipment state. Production protocol adapters remain Phase 6 follow-on (mock adapter exists; OPC UA/Modbus/REST are not implemented).
+**Consequences:** Plugin build links `virtual_factory_equipment`. Higher layers must include `virtual_factory/equipment/…`, never gz-sim, for equipment state. Production protocol adapters were later added in Phase 6 (OPC UA ADR-025, Modbus TCP ADR-036); REST/MQTT/EtherNet/IP/PROFINET remain unimplemented.
 
 **Note:** The first Phase 5 cut put `speed`/`setSpeed` on `Equipment`. That was too conveyor-specific. **ADR-020** corrects it.
 
@@ -308,14 +312,14 @@ Future OPC UA / Modbus / REST adapters (Phase 6) implement `Equipment`. They do 
 
 - Introduce `IndustrialAdapter` as the protocol boundary: identity, protocol metadata, connection lifecycle, communication fault, `poll()`, and bound `Equipment` objects.
 - MES/SCADA consume `Equipment` (and adapter connection state). They must not include protocol or Gazebo headers.
-- Adapters are **protocol/capability-oriented** (`opcua`, `modbus`, `rest`, `mock`), not `SiemensAdapter` / `RobotAdapter` catalogs.
+- Adapters are **protocol/capability-oriented** (`opcua`, `modbus`, `rest`, `mqtt`, `ethernet-ip`, `profinet`, `mock`), not `SiemensAdapter` / `RobotAdapter` catalogs.
 - Phase 6 ships the contract plus `MockIndustrialAdapter` (in-process external source) so the architecture is testable without hardware.
-- Production protocol adapters are added incrementally. OPC UA is ADR-025. Modbus and REST are **not** implemented in this increment. Empty protocol placeholders are not created.
+- Production protocol adapters are added incrementally as Phase 6 slices 6A–6H (ADR-041). OPC UA is ADR-025. Modbus TCP is ADR-036. REST, MQTT, EtherNet/IP, and PROFINET are **not** implemented in the original increment. Empty protocol placeholders are not created.
 - Layout: `industrial/` next to `equipment/`, library `virtual_factory_industrial` links `virtual_factory_equipment`. Gazebo `ConveyorSystem` does not depend on `industrial/`.
 - `ConnectionState::Faulted` is a **communication** fault, distinct from `Equipment::fault()` (machine fault).
 - Specialized C++ equipment classes remain allowed only when simulation or protocol mapping truly requires them (Conveyor today).
 
-**Consequences:** A pump, furnace, or unknown machine can appear through a mock or OPC UA adapter as `GenericEquipment` without a new machine class. Adding another protocol adapter later should not change the MES-facing `Equipment` API. Do not treat the mock as a production protocol. OPC UA is implemented (ADR-025); Modbus and REST are not.
+**Consequences:** A pump, furnace, or unknown machine can appear through a mock, OPC UA, or Modbus adapter as `GenericEquipment` without a new machine class. Adding another protocol adapter later should not change the MES-facing `Equipment` API. Do not treat the mock as a production protocol. OPC UA is implemented (ADR-025). Modbus TCP is implemented (ADR-036). REST/MQTT/EtherNet/IP/PROFINET are not.
 
 **Alternatives:** Skip the adapter interface and have MES call open62541 (rejected: protocol leak); one adapter class per PLC vendor (rejected: catalog); implement OPC UA in the same step as the interface (rejected: hardware/library scope beyond proving the architecture — later done in ADR-025); make `ConveyorSystem` an `IndustrialAdapter` (rejected: Gazebo is the plant, not the industrial adapter layer).
 
@@ -331,12 +335,13 @@ Future OPC UA / Modbus / REST adapters (Phase 6) implement `Equipment`. They do 
 **Decision:**
 
 - The only **active** architectural Source of Truth is `docs/MES_SCADA_Virtual_Factory_Source_of_Truth.pdf`.
+- That PDF is generated from `docs/source/MES_SCADA_Virtual_Factory_Source_of_Truth.md` using `docs/source/generate-sot-pdf.sh`. Edit the Markdown, then regenerate the PDF. Do not maintain a second live SoT.
 - Live supporting docs: `implementation-status.md` (what exists), `architecture.md` (how it is structured), `decisions.md` (why), `roadmap.md` (what is next), `CHANGELOG.md` (what changed), `docs/README.md` (how to resume).
 - Git history is the historical implementation record.
 - `docs/archive/` holds superseded documents only. **Do not trust archived documents for current architecture.**
 - Official phases are SoT 1–11 only. Stage 0–25 and other retired numbering are not the live plan.
 - Roadmap items are **PLANNED** until `implementation-status.md` and the code say otherwise.
-- The SoT PDF is not silently rewritten. If it contradicts agreed architecture, stop and revise it explicitly.
+- The SoT PDF is not silently rewritten. If architecture changes, update the Markdown source and regenerate the PDF **intentionally**.
 
 **Consequences:** New work starts from the SoT PDF + implementation-status, not from chat history or archived files. No second live SoT.
 
@@ -351,7 +356,9 @@ Future OPC UA / Modbus / REST adapters (Phase 6) implement `Equipment`. They do 
 
 **Context:** A production order cannot be scheduled from machine running-state alone. A machine may be *capable* of a product but *unavailable* (fault, maintenance, already allocated). Another machine may be free but *incapable*. Materials, qualified personnel, tools, fixtures, inspection resources, and work-center capacity also constrain dispatch. Putting scheduling, allocation, or reservation logic inside `Equipment` or `IndustrialAdapter` would mix the technical asset model with production planning.
 
-This refines SoT Phase 7 (MES Core: orders, work centers/equipment, material state, execution, quality, traceability). It does **not** change the SoT PDF. **NOT IMPLEMENTED.**
+This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/equipment, material state, execution, quality, traceability). **NOT IMPLEMENTED.**
+
+**Amendment 2026-08-24:** Plant hierarchy, dynamic onboarding, explicit readiness reasons, MES vs equipment state, materials/scrap analytics, OEE vs efficiency, events, genealogy, and Opcenter-as-benchmark are specified in ADR-027–035. This ADR remains the capability-vs-availability foundation. Still **NOT IMPLEMENTED**. The SoT PDF was regenerated from `docs/source/`.
 
 **Decision:**
 
@@ -389,9 +396,9 @@ This refines SoT Phase 7 (MES Core: orders, work centers/equipment, material sta
 - `TelemetryPoint` is unchanged (`name`, `value`, `unit`). OPC UA source timestamps and StatusCode quality are deferred.
 - Tests use an in-process open62541 server (`tests/opcua_test_server.*`) on localhost with multiple mapped test machines (mixer, pump, unknown). **DEVELOPMENT ONLY:** `SecurityPolicy#None`, anonymous access, no certificates. UAExpert is diagnostic only (ADR-006), not a test dependency.
 - Production SignAndEncrypt, certificates, subscriptions, history, alarms/conditions, and HA are **not** implemented.
-- Modbus and REST adapters are **not** implemented. Gazebo, MES, and SCADA are not dependencies of this adapter.
+- REST, MQTT, EtherNet/IP, and PROFINET adapters are **not** implemented. Gazebo, MES, and SCADA are not dependencies of this adapter.
 
-**Consequences:** Arbitrary machines (mixer, pump, unknown) appear as `GenericEquipment` through mapping. MES-shaped code uses `IndustrialAdapter` / `Equipment` only. Do not present the unsecured localhost test as production industrial security. Do not mark all of Phase 6 complete: Modbus and REST remain unimplemented.
+**Consequences:** Arbitrary machines (mixer, pump, unknown) appear as `GenericEquipment` through mapping. MES-shaped code uses `IndustrialAdapter` / `Equipment` only. Do not present the unsecured localhost test as production industrial security. Do not mark all of Phase 6 complete: slices 6E–6H remain unimplemented. Modbus TCP is ADR-036.
 
 **Alternatives:** Hard-code one PLC node tree (rejected: not open-ended); expose NodeIds on Equipment (rejected: protocol leak); wait for a certificate-management platform before any adapter (rejected: blocks Phase 6); implement subscriptions/history in this milestone (rejected: unnecessary for the first client).
 
@@ -407,12 +414,299 @@ This refines SoT Phase 7 (MES Core: orders, work centers/equipment, material sta
 **Decision:**
 
 - One `OpcUaIndustrialAdapter` instance = one OPC UA server / one `UA_Client` / one endpoint.
-- A factory with N OPC UA servers uses N adapter instances. MES/SCADA later hold a collection of `IndustrialAdapter*` (OPC UA, and later Modbus/REST), not one mega-adapter.
+- A factory with N OPC UA servers uses N adapter instances. MES/SCADA later hold a collection of `IndustrialAdapter*` (OPC UA, Modbus, later REST/MQTT/EtherNet/IP), not one mega-adapter.
 - Independent `connect()`, `poll()`, `disconnect()`, Faulted, and reconnect per server. Equipment on a healthy adapter stays usable when another adapter faults.
 - Do not put NodeIds, endpoints, or `UA_Client` on `Equipment`. Do not create `OpcUaPump` / `OpcUaRobot` classes.
 - Do not add an adapter-registry or connection-multiplexer class in this increment (MES is not started). Tests compose two adapters directly.
 - Nesting multiple connections inside one `OpcUaIndustrialAdapter` was rejected: it would overload `connectionState()` or require a new per-equipment comms API.
 
-**Consequences:** Multi-PLC is composition of protocol adapters, the same shape future Modbus/REST adapters will use. `connectionState()` stays a per-source comms signal, distinct from `Equipment::fault()`.
+**Consequences:** Multi-PLC is composition of protocol adapters, the same shape future REST/MQTT/EtherNet/IP adapters will use. `connectionState()` stays a per-source comms signal, distinct from `Equipment::fault()`.
 
 **Alternatives:** Many `UA_Client`s inside one adapter (rejected: breaks the existing connection-state contract); a factory-wide OPC UA gateway process (rejected: extra runtime, not required); encode comms health on `Equipment` (rejected: mixes process fault with link state).
+
+---
+
+## ADR-027 — Plant hierarchy is configurable data
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+
+**Context:** Real plants are organized as enterprise/site/building/floor/area/line/cell/work center, but not always in that order. Hard-coding “assembly line” or encoding hierarchy as C++ inheritance would freeze one plant layout into the software.
+
+**Decision:** MES models organizational/location relationships as configurable entities and assignments. A default tree is Enterprise → Site/Plant → Building → Floor → Area → Line/Cell → Work Center → resources. Other trees are valid. Work Center is a production capability that may group multiple equipment, people, and tools. Responsibility (supervisors/managers) is data on those entities. **PLANNED. NOT IMPLEMENTED.**
+
+**Consequences:** Adding a floor or line is configuration. Do not create `AssemblyLine` subclasses to represent layout.
+
+**Alternatives:** Fixed three-level plant (rejected: too rigid); C++ location class hierarchy (rejected: confuses layout with types).
+
+---
+
+## ADR-028 — PLC and equipment onboarding is configuration
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+
+**Context:** A plant may grow from 100 PLCs to 200 by adding a line. Requiring a new C++ class or a rebuild to add a PLC does not scale. Adapter architecture is already one instance per OPC UA server (ADR-026).
+
+**Decision:** Future MES configuration/UI/API creates protocol adapter instances (`OpcUaIndustrialAdapter`, `ModbusIndustrialAdapter`, later REST/MQTT/EtherNet/IP/PROFINET if approved) and mappings, then assigns resulting `Equipment` to plant locations and owners. No `PumpPLCAdapter` / `RobotPLCAdapter`. No new C++ adapter class per PLC. No Phase 6 adapter manager. Current C++ construction in tests is not the onboarding product. **PLANNED. NOT IMPLEMENTED.**
+
+**Consequences:** Onboarding uses Phase 6 protocol adapters. MES does not become a protocol stack.
+
+**Alternatives:** Compile-time PLC list (rejected); one mega-adapter with all endpoints (rejected: ADR-026).
+
+---
+
+## ADR-029 — Resource readiness reports specific constraint reasons
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+
+**Context:** A generic “resource unavailable” hold hides whether the problem is a fault, missing lot, expired qualification, or a reserved fixture.
+
+**Decision:** Before dispatch, MES evaluates required resources and returns READY or HOLD with explicit reasons (equipment unavailable/faulted, maintenance, operator, qualification, material shortage/quality hold, tool, capacity, reservation, incompatible setup, …). **PLANNED. NOT IMPLEMENTED.**
+
+**Consequences:** Scheduling and operators can act on the actual constraint.
+
+**Alternatives:** Boolean ready flag only (rejected: not actionable).
+
+---
+
+## ADR-030 — MES availability is not equipment technical state
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+
+**Context:** A machine can be Running and still reserved, under maintenance, or on quality hold. Mixing those axes on `Equipment::fault()` or `operationalState()` would break both control and scheduling.
+
+**Decision:** Keep equipment technical state (Stopped/Running/Faulted) and adapter comms state separate from MES availability (Available, Unavailable, Reserved, Allocated, Maintenance, Blocked, Quality Hold, Scheduled, Decommissioned). **PLANNED. NOT IMPLEMENTED.**
+
+**Consequences:** `Equipment` stays a technical contract. MES owns availability.
+
+**Alternatives:** Encode reservation on `Equipment` (rejected: ADR-024).
+
+---
+
+## ADR-031 — Materials and scrap are first-class production facts
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+
+**Context:** Runtime-only efficiency hides material shortage, yield loss, and scrap. Orders cannot be honestly dispatched without lots/quantities/quality status.
+
+**Decision:** MES tracks raw/component/WIP/finished/consumable/packaging identity, lot/serial, quantity, location, status, quality status, reservations, consumption, production, scrap, transfer. Scrap records reason, operation, resource, lot, person, time, order, product. Material availability participates in readiness. Scrap participates in quality and efficiency analytics. **PLANNED. NOT IMPLEMENTED.**
+
+**Consequences:** Efficiency is not “runtime / available time” alone.
+
+**Alternatives:** Inventory-only in ERP with MES ignoring lots (rejected: blocks execution quality).
+
+---
+
+## ADR-032 — OEE is distinct from broader plant efficiency
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+
+**Context:** Averaging OEE % across unlike machines misleads. Using OEE as a synonym for “how good the factory is” hides yield, labor, and on-time performance.
+
+**Decision:** OEE = Availability × Performance × Quality at a defined resource scope. Roll up with documented count- or time-weighting, not a naive mean of percentages. Keep separate KPIs for material yield, scrap/rework, labor/capacity utilization, throughput, on-time completion. **PLANNED. NOT IMPLEMENTED.**
+
+**Consequences:** Dashboards can show OEE and still tell the truth about scrap and materials.
+
+**Alternatives:** Single “efficiency %” from runtime (rejected).
+
+---
+
+## ADR-033 — Analytics consume contextualized events, not raw tags
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+
+**Context:** OPC UA values without order/operation/work-center context cannot explain scrap, downtime, or genealogy.
+
+**Decision:** Three layers: raw industrial data; MES-contextualized events (state, downtime, production, material, quality, allocation, order lifecycle); aggregated analytics (real-time through yearly, vs target/previous/plan/baseline). Dashboards must not be computed only from raw NodeIds. **PLANNED. NOT IMPLEMENTED.**
+
+**Consequences:** Adapters stay thin. MES owns meaning.
+
+**Alternatives:** SCADA historian as the MES (rejected: ADR-007).
+
+---
+
+## ADR-034 — Genealogy is forward and backward
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+
+**Context:** Recall and root-cause need both “what went into this product” and “where did this lot go.”
+
+**Decision:** MES records genealogy linking product/order/operation to consumed lots, equipment, work center, operators, and inspections, and the reverse from a lot to products. **PLANNED. NOT IMPLEMENTED.**
+
+**Consequences:** Quality investigation is a MES function, not a tag browser.
+
+**Alternatives:** Paper travelers only (rejected).
+
+---
+
+## ADR-035 — Siemens Opcenter is a capability benchmark only
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+
+**Context:** Opcenter is a useful industry checklist (execution, tracking, materials, quality, genealogy, SPC, OEE, scheduling, visibility, enterprise integration). Copying proprietary architecture or claiming parity would be false and legally/architecturally wrong.
+
+**Decision:** Use Opcenter (and similar MES suites) as an **external capability benchmark** for the roadmap. Label those items **PLANNED**. Do not claim feature parity. Do not copy proprietary design. **NOT IMPLEMENTED.**
+
+**Consequences:** Roadmap stays ambitious and honest.
+
+**Alternatives:** Ignore industry MES suites (rejected: gaps); clone Opcenter (rejected).
+
+---
+
+## ADR-036 — Modbus TCP adapter maps configured registers into GenericEquipment
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+
+**Context:** SoT Phase 6 lists Modbus as a production industrial path alongside OPC UA. MES/SCADA must not depend on unit ids, function codes, coil/register addresses, or libmodbus APIs. A C++ class per machine type (`PumpModbusAdapter`, `MixerModbusAdapter`) would not scale. Packing several TCP endpoints into one adapter would make `IndustrialAdapter::connectionState()` ambiguous (same problem as ADR-026). Hand-rolling the Modbus TCP ADU is unnecessary when libmodbus already implements FC 1–6.
+
+**Decision:**
+
+- Implement `ModbusIndustrialAdapter` as an `IndustrialAdapter` using **libmodbus** (Ubuntu package `libmodbus-dev` / `libmodbus5` **3.1.10-1ubuntu1**, pkg-config version **3.1.10**). Protocol metadata is `"modbus"`.
+- One adapter instance = one Modbus TCP endpoint/session (`host:port`). A factory with N Modbus TCP devices uses N adapter instances. Independent `connect()`, `poll()`, `disconnect()`, Faulted, and `connect()`-after-Faulted per endpoint.
+- Several logical machines on one endpoint are several `GenericEquipment` objects created from `ModbusEquipmentMapping`. Do not add machine-specific Equipment or adapter subclasses.
+- Mapping is a small C++ config (`ModbusAdapterConfig`): equipment id/type metadata, command name → coil or holding register, telemetry name/unit → table+address, optional running and fault coils. Not a YAML/JSON framework.
+- Commands: `execute("start"|"stop")` writes coil `true` (or holding 1); names starting with `set_` write the double as uint16. Discrete inputs and input registers are read-only.
+- Telemetry and optional operational/fault coils are populated on `poll()`. `ConnectionState::Faulted` is communication failure (including Modbus exception on an illegal address). `Equipment::fault()` is a machine process fault. A dropped TCP session does not set machine fault. Last-known equipment remains listed while Faulted.
+- `connect()` after `Faulted` recreates the libmodbus client (explicit reconnect). Background auto-reconnect is not implemented.
+- Public headers do not include `<modbus.h>`. Equipment remains protocol-independent. Gazebo is not a dependency of this adapter.
+- Tests use an in-process libmodbus TCP slave (`tests/modbus_test_server.*`) on localhost. Mixer/pump/unknown names are register-map **labels only**. **DEVELOPMENT ONLY:** no authentication, no TLS.
+- Client coverage in this slice: FC 1–6. Batch writes, RTU, TLS, and production capacity claims are **not** implemented.
+- Isolation was validated with two independent endpoints and a modest 4-endpoint localhost loop. That is **not** production proof for hundreds of Modbus PLCs.
+- REST, MQTT, EtherNet/IP, and PROFINET are **not** implemented. MES and SCADA are not started.
+
+**Consequences:** Arbitrary machines appear as `GenericEquipment` through mapping. MES-shaped code uses `IndustrialAdapter` / `Equipment` only. Do not present the unsecured localhost slave as a production PLC. Do not mark all of Phase 6 complete: slices 6E–6H remain unimplemented. Phase 7 remains **NOT STARTED**.
+
+**Alternatives:** Hand-rolled TCP framing (rejected: libmodbus provides FC 1–6); one adapter class per machine type (rejected: ADR-021/022); many TCP sessions inside one `connectionState()` (rejected: ADR-026 analogue); background reconnect thread (rejected: reconnect stays explicit `connect()` after Faulted); change `Equipment.hh` / `IndustrialAdapter.hh` for Modbus (rejected: no architectural gap).
+
+---
+
+## ADR-037 — REST industrial adapter is an HTTP client gateway (slice 6E)
+
+- **Status:** Accepted (architecture). **NOT IMPLEMENTED.**
+- **Date:** 2026-08-24
+
+**Context:** REST is an application HTTP API, not a native PLC fieldbus. Some gateways and vendor systems only expose HTTP. The future MES application API must not be confused with this adapter.
+
+**Decision:**
+
+- Slice **6E** adds `RestIndustrialAdapter` implementing `IndustrialAdapter`.
+- Role: HTTP **client** to one industrial gateway/vendor **origin**. Not an HTTP server. Not the MES REST API.
+- One instance = one origin (scheme + host + port + optional base path). N systems = N instances. Several logical machines on one API = several `GenericEquipment` mappings.
+- `poll()` performs mapped reads (typically GET). `execute()` performs mapped writes (POST/PUT/PATCH). Mapping stays in adapter config.
+- Credentials (Basic/Bearer) stay in adapter config, not on `Equipment`. Not Phase 9 RBAC.
+- Candidate library: **libcurl** (`libcurl4-openssl-dev`). Public headers must not include curl.
+- Tests: local in-process HTTP fixture. Local pass ≠ vendor API certification.
+- Explicit `connect()` after `Faulted`. Transport/HTTP failure → `ConnectionState::Faulted`; mapped machine fault → `Equipment::fault()`.
+
+**Consequences:** REST remains a fallback (ADR-013). Do not start 6E until explicitly approved. Do not mix MES API work into 6E.
+
+**Alternatives:** REST as MES API (rejected: wrong layer); HTTP server adapter (rejected: not how industrial gateways are consumed here); treat REST as equivalent to OPC UA/Modbus (rejected: different model).
+
+---
+
+## ADR-038 — MQTT adapter is one client per broker (slice 6F)
+
+- **Status:** Accepted (architecture). **NOT IMPLEMENTED.**
+- **Date:** 2026-08-24
+
+**Context:** MQTT is broker pub/sub, not PLC request/response. One client per machine would explode connections. Many brokers in one `connectionState()` would hide source faults.
+
+**Decision:**
+
+- Slice **6F** adds `MqttIndustrialAdapter` implementing `IndustrialAdapter`.
+- Role: MQTT **client**. Do not embed a broker in this application.
+- One instance = **one broker connection**. Multiple machines/devices = topic mappings on that adapter (same idea as many `GenericEquipment` on one Modbus endpoint). Different brokers = different instances.
+- Subscribe mapped telemetry/state/fault topics; publish mapped commands. Drain received messages on `poll()`. Do not add an MES event bus.
+- Broker, topic, QoS, retain stay in adapter config. Equipment must not expose MQTT types.
+- Preferred candidate: Eclipse **Paho MQTT C** (`libpaho-mqtt-dev`), unless a later ADR records a stronger reason (`libmosquitto` is the alternative).
+- Reconnect remains explicit `connect()` after `Faulted`. Do not hide Faulted behind silent auto-reconnect.
+- Tests: local broker or in-process double. Local pass ≠ cloud/production MQTT proof.
+
+**Consequences:** MQTT fits the existing contract without changing `IndustrialAdapter.hh` / `Equipment.hh`. Do not implement until 6E is approved complete.
+
+**Alternatives:** One adapter per topic/machine (rejected: connection explosion); many brokers in one adapter (rejected: ADR-026 analogue); treat MQTT as Modbus-style request/response (rejected: wrong protocol model).
+
+---
+
+## ADR-039 — EtherNet/IP adapter is a CIP scanner/client; library before code (slice 6G)
+
+- **Status:** Accepted (architecture). Library choice **pending**. **NOT IMPLEMENTED.**
+- **Date:** 2026-08-24
+
+**Context:** EtherNet/IP is CIP over Ethernet. It is not Modbus with another library. Implicit/cyclic I/O is a different subset from explicit messaging.
+
+**Decision:**
+
+- Slice **6G** adds `EtherNetIpIndustrialAdapter` implementing `IndustrialAdapter`, **after** this ADR records a library.
+- Role: **scanner/client** to one device. One instance = one device session (IP + path/slot as applicable).
+- First subset: **explicit messaging** (tag/attribute read/write → telemetry/commands). Do not claim implicit/cyclic I/O unless the selected library **and** tests actually support it.
+- Candidates to evaluate before coding: **libplctag** (explicit CIP tag R/W; MPL-2.0 or LGPL-2+) or **EIPScanner** (C++ scanner; MIT). Do not hand-roll CIP.
+- Public headers must not include the CIP library. Local mock ≠ Allen-Bradley/hardware certification.
+- Explicit reconnect; comms Faulted ≠ machine fault.
+
+**Consequences:** 6G cannot start until a follow-up amendment names the library. Do not implement in this documentation step.
+
+**Alternatives:** Pretend EIP is Modbus (rejected); implement implicit I/O first without library evidence (rejected); claim hardware support from a mock (rejected).
+
+---
+
+## ADR-040 — PROFINET is investigation-first; do not fake a stack (slice 6H)
+
+- **Status:** Accepted (architecture). **NOT IMPLEMENTED.** Production path **not** promised.
+- **Date:** 2026-08-24
+
+**Context:** PROFINET uses IO-Controller / IO-Device roles, cyclic real-time IO, device naming, GSDML, and diagnostics. It is not a TCP request/response protocol like OPC UA or Modbus.
+
+RT-Labs **p-net** is a PROFINET **IO-Device** stack (often GPLv3) requiring raw Ethernet. It is **not** an IO-Controller. Using it as a controller because it is open source would be incorrect. Commercial controller stacks (Siemens, Hilscher, Softing, etc.) are the usual production path.
+
+**Decision:**
+
+- Slice **6H** starts with a written investigation (stack, licence, controller vs device, cyclic IO, GSDML, testability). Implementation proceeds **only** if a production-capable path is explicitly approved.
+- A TCP/socket mock **must not** be called PROFINET support and **must not** be labelled **IMPLEMENTED**.
+- If no justified OSS IO-Controller path exists, 6H may remain **PLANNED** / investigation, or specify a **gateway** (PN device → OPC UA/Modbus/REST) or **commercial** stack. That is an honest architectural outcome, not failure to “finish Phase 6 by faking it.”
+- Do not link GPLv3 p-net into `virtual_factory_industrial` as a controller.
+- Do not start 6H until 6G is approved complete and this investigation is accepted.
+
+**Consequences:** Phase 6 may complete with PROFINET honestly **NOT IMPLEMENTED** if no valid path is approved. Phase 7 still must not start until that decision is recorded.
+
+**Alternatives:** Fake TCP PROFINET (rejected); assume p-net is a controller (rejected); defer all mention of PROFINET (rejected: factories in scope use it; the SoT must say so honestly).
+
+---
+
+## ADR-041 — Phase 6 uses slices 6A–6H inside official Phases 1–11
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+
+**Context:** The official roadmap is SoT Phases 1–11. Completing industrial connectivity before MES requires more protocol work than the original “OPC UA + Modbus + REST” remaining list. Creating Phase 12 or renumbering MES would break SoT numbering.
+
+**Decision:**
+
+- Official phase numbering remains **1–11**. Phase 6 remains **Industrial Adapter Layer**.
+- Implementation slices inside Phase 6:
+  - **6A** architecture + mock — **IMPLEMENTED**
+  - **6B** OPC UA / open62541 — **IMPLEMENTED**
+  - **6C** OPC UA multi-server validation (10–200 simulated in-process servers) — **VALIDATED** (not production capacity)
+  - **6D** Modbus TCP / libmodbus — **IMPLEMENTED** / **TESTED** (working tree)
+  - **6E** REST industrial gateway — **NOT IMPLEMENTED**
+  - **6F** MQTT — **NOT IMPLEMENTED**
+  - **6G** EtherNet/IP — **NOT IMPLEMENTED**
+  - **6H** PROFINET investigation / implement only if a valid production path is approved — **NOT IMPLEMENTED**
+- Order: 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
+- Do not start Phase 7 until Phase 6 scope is completed **or** remaining slices (especially 6H) are explicitly marked by an approved ADR.
+- Do not implement an adapter manager in Phase 6 (ADR-028).
+- 10–200 OPC UA simulated servers remain **validation only**.
+
+**Consequences:** Documentation and SoT now match the intended connectivity scope without inventing new official phases. 6E is the next implementation slice, only after separate approval.
+
+**Alternatives:** New official phases after Phase 6 (rejected: breaks 1–11); start MES after REST (rejected: user decision); claim PROFINET implemented via a stub (rejected: ADR-040).
+

@@ -1,0 +1,30 @@
+---
+description: SoT authority, Phase 1–11 discipline, and no silent architecture change
+alwaysApply: true
+---
+
+# Source of Truth and phase discipline
+
+Before any feature, refactor, or phase work, read in order:
+
+1. `docs/MES_SCADA_Virtual_Factory_Source_of_Truth.pdf` (architectural authority)
+2. `docs/source/MES_SCADA_Virtual_Factory_Source_of_Truth.md` (how the PDF is maintained)
+3. `docs/implementation-status.md`
+4. `docs/architecture.md`
+5. `docs/decisions.md`
+6. `docs/roadmap.md`
+7. `docs/CHANGELOG.md`
+8. `docs/README.md`
+9. Relevant source, tests, CMake, and Git history
+
+`docs/archive/` is historical only. Do not revive Stage 0–25 or other retired numbering.
+
+Official roadmap is SoT Phases **1–11**. Implement only the approved phase/slice. Do not silently start the next phase.
+
+Before coding, state: current phase, requested slice, SoT/roadmap scope, already implemented, what this slice will add, what will **not** be done, relevant SoT sections/ADRs, and dependencies. Then **stop and wait for approval**.
+
+If the request conflicts with the SoT or roadmap, stop and explain. Do not guess.
+
+Improvements are allowed, but material design changes require: problem, why current design is insufficient, proposal, SoT/roadmap/ADR impact, then **approval** before code. Do not silently change architecture.
+
+Siemens Opcenter is a capability benchmark only. Do not claim parity or copy proprietary design.
