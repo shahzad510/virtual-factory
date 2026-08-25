@@ -42,7 +42,7 @@ Gazebo is a **simulation environment**, not this production stack.
 
 MES/SCADA must never depend directly on Gazebo ECM, Gazebo System plugins, Siemens/Allen-Bradley APIs, Modbus register maps, OPC UA node IDs, or vendor SDKs.
 
-### Diagram A — Real factory path — PARTIALLY IMPLEMENTED (Equipment + mock + OPC UA + Modbus + REST)
+### Diagram A — Real factory path — PARTIALLY IMPLEMENTED (Equipment + mock + OPC UA + Modbus + REST + MQTT)
 
 ```text
 Actual machine / PLC
@@ -52,7 +52,7 @@ Industrial Adapter          PARTIALLY IMPLEMENTED
   OPC UA IMPLEMENTED
   Modbus IMPLEMENTED
   REST IMPLEMENTED
-  MQTT NOT IMPLEMENTED
+  MQTT IMPLEMENTED
   EtherNet/IP NOT IMPLEMENTED
   PROFINET NOT IMPLEMENTED
         │
@@ -85,7 +85,7 @@ Industrial Adapters                          ConveyorSystem
   OPC UA IMPLEMENTED
   Modbus IMPLEMENTED
   REST IMPLEMENTED
-  MQTT NOT IMPLEMENTED
+  MQTT IMPLEMENTED
   EtherNet/IP NOT IMPLEMENTED
   PROFINET NOT IMPLEMENTED
         │
@@ -102,12 +102,12 @@ Future .NET / Blazor GUI    PLANNED
 
 ---
 
-## 2. Physical factory path — PARTIALLY IMPLEMENTED (adapter contract + mock + OPC UA + Modbus + REST)
+## 2. Physical factory path — PARTIALLY IMPLEMENTED (adapter contract + mock + OPC UA + Modbus + REST + MQTT)
 
 ```text
 Physical equipment
         ▼
-   Industrial adapter          PARTIALLY IMPLEMENTED (contract + mock + OPC UA + Modbus + REST)
+   Industrial adapter          PARTIALLY IMPLEMENTED (contract + mock + OPC UA + Modbus + REST + MQTT)
         ▼
 Normalized Equipment        IMPLEMENTED (Phase 5)
         ▼
@@ -117,7 +117,7 @@ MES / SCADA                 PLANNED
 Production OPC UA adapter: **IMPLEMENTED** (open62541 client + node mapping; ADR-025, ADR-026).
 Production Modbus TCP adapter: **IMPLEMENTED** (libmodbus client + register mapping; ADR-036).
 Production REST industrial gateway adapter: **IMPLEMENTED** (libcurl client + JSON mapping; ADR-037). Local HTTP fixture tests are development/integration validation, **not** vendor API certification.
-MQTT adapter: **NOT IMPLEMENTED** (slice 6F; ADR-038).
+MQTT adapter: **IMPLEMENTED** / **TESTED** (Paho MQTT C client, one broker per instance; ADR-038). Local Mosquitto tests are development/integration validation, **not** cloud/vendor certification.
 EtherNet/IP adapter: **NOT IMPLEMENTED** (slice 6G; ADR-039).
 PROFINET: **NOT IMPLEMENTED** / investigation required (slice 6H; ADR-040). A TCP mock is not PROFINET.
 
@@ -153,7 +153,7 @@ IndustrialAdapter           IMPLEMENTED (contract)
   OpcUaIndustrialAdapter    IMPLEMENTED
   ModbusIndustrialAdapter   IMPLEMENTED
   RestIndustrialAdapter     IMPLEMENTED (6E)
-  MqttIndustrialAdapter     NOT IMPLEMENTED (6F)
+  MqttIndustrialAdapter     IMPLEMENTED (6F)
   EtherNetIpIndustrialAdapter NOT IMPLEMENTED (6G)
   ProfinetIndustrialAdapter NOT IMPLEMENTED (6H; investigation)
 ```
@@ -162,9 +162,9 @@ IndustrialAdapter           IMPLEMENTED (contract)
 
 `ConnectionState::Faulted` is a **communication** fault. `Equipment::fault()` is a **machine** fault.
 
-Library `virtual_factory_industrial` links `virtual_factory_equipment`, **open62541** (OPC UA client), **libmodbus** (Modbus TCP client), and **libcurl** (REST HTTP client). nlohmann/json is adapter-private. `IndustrialAdapter.hh` does not include open62541, libmodbus, curl, or nlohmann/json. The Gazebo plugin does not link industrial, open62541, libmodbus, or libcurl.
+Library `virtual_factory_industrial` links `virtual_factory_equipment`, **open62541** (OPC UA client), **libmodbus** (Modbus TCP client), **libcurl** (REST HTTP client), and **Paho MQTT C** (`libpaho-mqtt3as`, MQTT 3.1.1). nlohmann/json is adapter-private. `IndustrialAdapter.hh` does not include open62541, libmodbus, curl, nlohmann/json, or Paho types. The Gazebo plugin does not link industrial, open62541, libmodbus, libcurl, or Paho.
 
-**One adapter instance = one industrial source/session.** Several OPC UA servers ⇒ several `OpcUaIndustrialAdapter` instances (ADR-026). Several Modbus TCP endpoints ⇒ several `ModbusIndustrialAdapter` instances (ADR-036). Several REST origins ⇒ several `RestIndustrialAdapter` instances (ADR-037). Planned: one MQTT **broker**, one EtherNet/IP device per instance. `connectionState()` is per-source. A faulted source does not take down equipment on other adapters. An adapter manager is **Phase 7**, not Phase 6.
+**One adapter instance = one industrial source/session.** Several OPC UA servers ⇒ several `OpcUaIndustrialAdapter` instances (ADR-026). Several Modbus TCP endpoints ⇒ several `ModbusIndustrialAdapter` instances (ADR-036). Several REST origins ⇒ several `RestIndustrialAdapter` instances (ADR-037). Several MQTT brokers ⇒ several `MqttIndustrialAdapter` instances (ADR-038). Planned: one EtherNet/IP device per instance. `connectionState()` is per-source. A faulted source does not take down equipment on other adapters. An adapter manager is **Phase 7**, not Phase 6.
 
 Measured in-process validation (not production proof): [`opcua-scalability-test.md`](opcua-scalability-test.md). Validated at 100 and 200 simulated servers under those test conditions. Do not treat that as “unlimited PLCs” or production hardware certification.
 
@@ -293,9 +293,43 @@ Implemented methods: GET (reads), POST/PUT/PATCH (commands). DELETE is **NOT IMP
 
 Tests use an in-process HTTP/1.1 fixture (`tests/rest_test_server.*`) on localhost. **DEVELOPMENT/INTEGRATION VALIDATION ONLY:** no TLS on the fixture. Not vendor API certification and not a production gateway. Isolation was checked with two independent origins. That is correctness validation, **not** production scalability.
 
-### 4.4 MQTT (6F) — PLANNED / NOT IMPLEMENTED (ADR-038)
+### 4.4 MQTT (6F) — IMPLEMENTED (ADR-038)
 
-MQTT **client** to one broker. Many machines via topic mappings. Subscribe telemetry/state/fault; publish commands. Do not embed a broker. Preferred candidate: Paho MQTT C. Broker/topic/QoS stay off `Equipment`. Drain on `poll()`. Explicit reconnect.
+```text
+Broker A                         Broker B
+        │                                │
+MqttIndustrialAdapter            MqttIndustrialAdapter
+  (one broker/session)             (one broker/session)
+        │                                │
+   PLC-001  PLC-002                 PLC-101  PLC-102
+   (GenericEquipment mappings)      (GenericEquipment mappings)
+        │                                │
+        └──────────────┬─────────────────┘
+                       ▼
+                IndustrialAdapter*
+                       ▼
+                GenericEquipment
+                       ▼
+                MES / SCADA later
+```
+
+MQTT **client** to one broker (Eclipse Paho MQTT C, MQTTAsync, MQTT 3.1.1). Not a broker. Not an MES event bus. JSON payloads use nlohmann/json inside the industrial implementation. Public headers do not include `<MQTTAsync.h>`, `<MQTTClient.h>`, or `<nlohmann/json.hpp>`.
+
+**One adapter instance = one MQTT broker/session.** Several logical machines on one broker are several `GenericEquipment` mappings (e.g. `id() = "PLC-001"`, `type() = "plc"` as metadata — not a `PLC001.hh` class). A second broker uses a second adapter instance. Do not create `PumpMqttAdapter` / one adapter per PLC for MQTT.
+
+Mapping is C++ config (`MqttAdapterConfig` / `MqttEquipmentMapping`): exact telemetry/state/fault topics and payload encodings (JSON Pointer, numeric text, boolean text); command name → topic, body template with optional `{{value}}`, QoS (default 1), retain (default false). Wildcard `+` / `#` subscriptions are rejected in 6F. Broker host/port, client id, credentials, and TLS stay in adapter config. Equipment must not expose MQTT types or secrets.
+
+`poll()` waits up to `pollTimeoutMs` (default **50 ms**) on a bounded in-process queue filled by Paho's internal network thread. It must not block indefinitely. Keepalive is serviced by that Paho thread, not by an application reconnect thread. Automatic reconnect is **NOT IMPLEMENTED**; `connect()` after `Faulted` recreates the client and restores subscriptions.
+
+`ConnectionState::Faulted` is a **communication** failure (broker down, connect/subscribe/publish failure). `Equipment::fault()` is a **machine** process fault from mapped payload/topic only. A broker failure does not set machine fault. Last-known equipment remains listed while Faulted. Malformed telemetry is ignored; it does not Faulted the session.
+
+MQTT client IDs must be unique among simultaneously connected clients to the same broker in this process. An empty `clientId` generates `vf.<adapterId>.<serial>` (never from secrets). Duplicate configured IDs on the same broker are rejected.
+
+Authentication: username/password in adapter config. TLS certificate verification is **on by default**. Insecure TLS is an explicit development/testing opt-in. Passwords are not written to `lastError()`.
+
+6F maps latest-value telemetry/state/commands. Durable MES events (cycle complete, scrap, quality, OEE) are **Phase 7** and are not implemented here. Sparkplug B and MQTT 5-specific architecture are **NOT IMPLEMENTED**.
+
+Tests use a local **Mosquitto** process (`tests/mqtt_test_broker.*`) — **DEVELOPMENT/INTEGRATION VALIDATION ONLY**, not cloud/vendor MQTT certification. Isolation was checked with two adapters on one broker and two independent brokers. Multi-equipment scale was **VALIDATED** at 10/50/100/200 mappings on one broker and 2×50 across two brokers (`docs/mqtt-scalability-test.md`). That is correctness/scale validation under those conditions, **not** a claim of hundreds of production PLCs or brokers.
 
 ### 4.5 EtherNet/IP (6G) — PLANNED / NOT IMPLEMENTED (ADR-039)
 
@@ -459,7 +493,7 @@ No Work Center types exist in the repository.
 
 ### 10.6 Dynamic PLC / equipment onboarding — PLANNED (ADR-028)
 
-Adding PLCs later must **not** require a new C++ class or a rebuild of MES. Configuration/UI/API (UI later) creates another protocol adapter instance (`OpcUaIndustrialAdapter`, `ModbusIndustrialAdapter`, `RestIndustrialAdapter`, later MQTT/EtherNet/IP/PROFINET if approved) plus mappings, then assigns the resulting `Equipment` to plant/line/work center and a responsible supervisor.
+Adding PLCs later must **not** require a new C++ class or a rebuild of MES. Configuration/UI/API (UI later) creates another protocol adapter instance (`OpcUaIndustrialAdapter`, `ModbusIndustrialAdapter`, `RestIndustrialAdapter`, `MqttIndustrialAdapter`, later EtherNet/IP/PROFINET if approved) plus mappings, then assigns the resulting `Equipment` to plant/line/work center and a responsible supervisor.
 
 Today, adapter instances are constructed in C++/tests. That is **not** the future onboarding product.
 
@@ -605,14 +639,14 @@ Development Start/Stop at updates 1000/5000 is **not** SCADA (ADR-017).
 | 3 | Conveyor Control | **IMPLEMENTED** |
 | 4 | Product Motion | **IMPLEMENTED** |
 | 5 | Industrial Equipment Abstraction | **IMPLEMENTED** |
-| 6 | Industrial Adapter Layer | **PARTIALLY IMPLEMENTED** (slices 6A–6E done; 6F–6H not implemented) |
+| 6 | Industrial Adapter Layer | **PARTIALLY IMPLEMENTED** (slices 6A–6F done; 6G–6H not implemented) |
 | 7 | MES Core + Resource Management | **PLANNED / NOT IMPLEMENTED** |
 | 8 | SCADA / Operational HMI | **PLANNED / NOT IMPLEMENTED** |
 | 9 | Security & Authorization | **PLANNED / NOT IMPLEMENTED** |
 | 10 | Real Factory Integration | **PLANNED / NOT IMPLEMENTED** |
 | 11 | Commercial Hardening & Enterprise Integration | **PLANNED / NOT IMPLEMENTED** |
 
-Phase 6 is **IN PROGRESS**. Slices **6A–6E** are done. **6F MQTT → 6G EtherNet/IP → 6H PROFINET** remain. Official numbering stays Phases **1–11** (ADR-041). Do not mark the whole phase complete. Do not start Phase 7.
+Phase 6 is **IN PROGRESS**. Slices **6A–6F** are done. **6G EtherNet/IP → 6H PROFINET** remain. Official numbering stays Phases **1–11** (ADR-041). Do not mark the whole phase complete. Do not start Phase 7.
 
 Do not use Stage 0–25 or other retired numbering as the live plan.
 

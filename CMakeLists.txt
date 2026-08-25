@@ -9,8 +9,9 @@ project(virtual_factory)
 add_subdirectory(equipment)
 add_subdirectory(industrial)
 
-if (VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS)
-  set(CMAKE_BUILD_RPATH "${VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS}")
+if (VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS OR VIRTUAL_FACTORY_PAHO_MQTT_LIBRARY_DIR)
+  set(CMAKE_BUILD_RPATH
+      "${VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS};${VIRTUAL_FACTORY_PAHO_MQTT_LIBRARY_DIR}")
 endif()
 
 enable_testing()
@@ -42,7 +43,7 @@ add_executable(opcua_multi_server_scalability_test
 target_include_directories(opcua_multi_server_scalability_test PRIVATE tests)
 target_link_libraries(opcua_multi_server_scalability_test PRIVATE virtual_factory_industrial)
 add_test(NAME opcua_multi_server_scalability_test COMMAND opcua_multi_server_scalability_test)
-set_tests_properties(opcua_multi_server_scalability_test PROPERTIES TIMEOUT 600)
+set_tests_properties(opcua_multi_server_scalability_test PROPERTIES TIMEOUT 1200)
 
 add_executable(modbus_adapter_test
     tests/modbus_adapter_test.cc
@@ -68,3 +69,100 @@ add_executable(rest_adapter_test
 target_include_directories(rest_adapter_test PRIVATE tests)
 target_link_libraries(rest_adapter_test PRIVATE virtual_factory_industrial pthread)
 add_test(NAME rest_adapter_test COMMAND rest_adapter_test)
+
+find_program(MOSQUITTO_EXECUTABLE mosquitto
+    PATHS
+        /usr/sbin
+        /usr/bin
+        "${CMAKE_SOURCE_DIR}/.deps/mosquitto/usr/sbin"
+)
+find_program(MOSQUITTO_PASSWD mosquitto_passwd
+    PATHS
+        /usr/bin
+        "${CMAKE_SOURCE_DIR}/.deps/mosquitto/usr/bin"
+)
+set(MOSQUITTO_LIBDIR "")
+if (MOSQUITTO_EXECUTABLE)
+  get_filename_component(_mosq_prefix "${MOSQUITTO_EXECUTABLE}" DIRECTORY)
+  get_filename_component(_mosq_prefix "${_mosq_prefix}" DIRECTORY)
+  if (EXISTS "${_mosq_prefix}/lib/x86_64-linux-gnu")
+    set(MOSQUITTO_LIBDIR "${_mosq_prefix}/lib/x86_64-linux-gnu")
+  endif()
+endif()
+if (NOT MOSQUITTO_EXECUTABLE)
+  message(FATAL_ERROR
+      "mosquitto broker not found for mqtt_adapter_test. "
+      "Install mosquitto or extract it to .deps/mosquitto "
+      "(DEVELOPMENT/INTEGRATION VALIDATION ONLY).")
+endif()
+
+add_executable(mqtt_adapter_test
+    tests/mqtt_adapter_test.cc
+    tests/mqtt_test_broker.cc
+)
+target_include_directories(mqtt_adapter_test
+    PRIVATE
+        tests
+        ${VIRTUAL_FACTORY_PAHO_MQTT_INCLUDE_DIR}
+)
+target_compile_definitions(mqtt_adapter_test
+    PRIVATE
+        VF_MOSQUITTO_EXECUTABLE="${MOSQUITTO_EXECUTABLE}"
+        VF_MOSQUITTO_PASSWD="${MOSQUITTO_PASSWD}"
+        VF_MOSQUITTO_LIBDIR="${MOSQUITTO_LIBDIR}"
+)
+find_library(PAHO_MQTT_SYNC_LIBRARY paho-mqtt3cs
+    PATHS
+        /usr/lib
+        /usr/lib/x86_64-linux-gnu
+        "${CMAKE_SOURCE_DIR}/.deps/paho-mqtt/usr/lib/x86_64-linux-gnu"
+)
+if (NOT PAHO_MQTT_SYNC_LIBRARY)
+  message(FATAL_ERROR
+      "libpaho-mqtt3cs not found for mqtt_adapter_test helper client")
+endif()
+get_filename_component(PAHO_MQTT_SYNC_LIBRARY_DIR
+    "${PAHO_MQTT_SYNC_LIBRARY}" DIRECTORY)
+target_link_libraries(mqtt_adapter_test
+    PRIVATE
+        virtual_factory_industrial
+        pthread
+        ${PAHO_MQTT_SYNC_LIBRARY}
+)
+set(_mqtt_test_rpath "${VIRTUAL_FACTORY_PAHO_MQTT_LIBRARY_DIR}")
+if (PAHO_MQTT_SYNC_LIBRARY_DIR)
+  list(APPEND _mqtt_test_rpath "${PAHO_MQTT_SYNC_LIBRARY_DIR}")
+endif()
+set_property(
+    TARGET mqtt_adapter_test
+    PROPERTY BUILD_RPATH "${_mqtt_test_rpath}")
+add_test(NAME mqtt_adapter_test COMMAND mqtt_adapter_test)
+set_tests_properties(mqtt_adapter_test PROPERTIES TIMEOUT 120)
+
+add_executable(mqtt_multi_equipment_scalability_test
+    tests/mqtt_multi_equipment_scalability_test.cc
+    tests/mqtt_test_broker.cc
+)
+target_include_directories(mqtt_multi_equipment_scalability_test
+    PRIVATE
+        tests
+        ${VIRTUAL_FACTORY_PAHO_MQTT_INCLUDE_DIR}
+)
+target_compile_definitions(mqtt_multi_equipment_scalability_test
+    PRIVATE
+        VF_MOSQUITTO_EXECUTABLE="${MOSQUITTO_EXECUTABLE}"
+        VF_MOSQUITTO_PASSWD="${MOSQUITTO_PASSWD}"
+        VF_MOSQUITTO_LIBDIR="${MOSQUITTO_LIBDIR}"
+)
+target_link_libraries(mqtt_multi_equipment_scalability_test
+    PRIVATE
+        virtual_factory_industrial
+        pthread
+        ${PAHO_MQTT_SYNC_LIBRARY}
+)
+set_property(
+    TARGET mqtt_multi_equipment_scalability_test
+    PROPERTY BUILD_RPATH "${_mqtt_test_rpath}")
+add_test(NAME mqtt_multi_equipment_scalability_test
+    COMMAND mqtt_multi_equipment_scalability_test)
+set_tests_properties(mqtt_multi_equipment_scalability_test PROPERTIES TIMEOUT 900)

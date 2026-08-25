@@ -22,6 +22,7 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 | 6 | [CHANGELOG.md](CHANGELOG.md) | What changed over time. |
 | 7 | This file | Resume procedure, commands, index. |
 | — | [opcua-scalability-test.md](opcua-scalability-test.md) | OPC UA multi-PLC **validation record** (measured scale ≠ production proof). |
+| — | [mqtt-scalability-test.md](mqtt-scalability-test.md) | MQTT multi-equipment **validation record** (measured scale ≠ production proof). |
 | — | [archive/](archive/) | Historical/legacy documents only. Not authoritative. |
 | — | Git history | Historical implementation record. |
 
@@ -49,7 +50,7 @@ Do not create a second source of truth. If architecture must change, update `dec
 9. Verify build and tests before modifying code (commands below).
 10. Never infer implementation from the roadmap alone.
 
-Continue from the **Next Step** in `implementation-status.md`. Do **not** start Phase 7 (MES) unless that work is explicitly instructed. Do **not** start 6F MQTT until separately approved.
+Continue from the **Next Step** in `implementation-status.md`. Do **not** start Phase 7 (MES) unless that work is explicitly instructed. Do **not** start 6G EtherNet/IP until separately approved.
 
 Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discipline, architecture invariants, plan-then-approve workflow). Those rules do not replace the SoT.
 
@@ -60,9 +61,9 @@ Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discip
 | Item | Status |
 | --- | --- |
 | Phases 1–5 | **COMPLETE** |
-| Phase 6 | **IN PROGRESS** (slices **6A–6E** done; **6F–6H NOT IMPLEMENTED**; ADR-041) |
+| Phase 6 | **IN PROGRESS** (slices **6A–6F** done; **6G–6H NOT IMPLEMENTED**; ADR-041) |
 | Phase 6E REST industrial gateway | **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; not vendor certification) |
-| Phase 6F MQTT | **NOT IMPLEMENTED** |
+| Phase 6F MQTT | **IMPLEMENTED** / **TESTED** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity) |
 | Phase 6G EtherNet/IP | **NOT IMPLEMENTED** |
 | Phase 6H PROFINET | **NOT IMPLEMENTED** / investigation required |
 | Phase 7 MES Core + Resource Management | **NOT STARTED** / **NOT IMPLEMENTED** (all MES scope **PLANNED**; ADR-024, 027–035) |
@@ -145,4 +146,4 @@ Expect CV-001, PRODUCT-001, START ~update 1000, `dt=0.001 s`, product X from abo
 
 ## Environment (last verified 2026-08-25)
 
-Gazebo Sim 8.15.0, gz-sim8, CMake 3.28.3, g++ 13.3.0, C++17, open62541 1.4.0-rc2, libmodbus 3.1.10 (`libmodbus-dev` / `libmodbus5` 3.1.10-1ubuntu1), libcurl 8.5.0 (`libcurl4-openssl-dev`), nlohmann/json 3.11.3 (`nlohmann-json3-dev`).
+Gazebo Sim 8.15.0, gz-sim8, CMake 3.28.3, g++ 13.3.0, C++17, open62541 1.4.0-rc2, libmodbus 3.1.10 (`libmodbus-dev` / `libmodbus5` 3.1.10-1ubuntu1), libcurl 8.5.0 (`libcurl4-openssl-dev`), nlohmann/json 3.11.3 (`nlohmann-json3-dev`), Eclipse Paho MQTT C 1.3.13 (`libpaho-mqtt-dev` / `libpaho-mqtt3as`), Mosquitto 2.0.18 (MQTT test broker only).

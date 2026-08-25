@@ -611,7 +611,7 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 - Tests: local in-process HTTP fixture (`tests/rest_test_server.*`). Local pass ≠ vendor API certification.
 - Explicit `connect()` after `Faulted`. Transport/HTTP failure → `ConnectionState::Faulted`; mapped machine fault → `Equipment::fault()`. No background reconnect thread.
 
-**Consequences:** REST remains a fallback (ADR-013). Do not mix MES API work into this adapter. Do not start 6F MQTT until separately approved. Do not claim production HTTPS vendor certification from the localhost fixture.
+**Consequences:** REST remains a fallback (ADR-013). Do not mix MES API work into this adapter. Slice 6F MQTT is implemented (ADR-038). Do not claim production HTTPS vendor certification from the localhost fixture.
 
 **Alternatives:** REST as MES API (rejected: wrong layer); HTTP server adapter (rejected: not how industrial gateways are consumed here); treat REST as equivalent to OPC UA/Modbus (rejected: different model); one adapter for many origins (rejected: ADR-026 analogue).
 
@@ -619,23 +619,26 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 
 ## ADR-038 — MQTT adapter is one client per broker (slice 6F)
 
-- **Status:** Accepted (architecture). **NOT IMPLEMENTED.**
-- **Date:** 2026-08-24
+- **Status:** Accepted. Slice 6F **IMPLEMENTED** / **TESTED** (2026-08-25). Local Mosquitto ≠ cloud/vendor certification.
+- **Date:** 2026-08-24; implemented 2026-08-25
 
 **Context:** MQTT is broker pub/sub, not PLC request/response. One client per machine would explode connections. Many brokers in one `connectionState()` would hide source faults.
 
 **Decision:**
 
-- Slice **6F** adds `MqttIndustrialAdapter` implementing `IndustrialAdapter`.
+- Slice **6F** adds `MqttIndustrialAdapter` implementing `IndustrialAdapter`. Protocol metadata is `"mqtt"`.
 - Role: MQTT **client**. Do not embed a broker in this application.
-- One instance = **one broker connection**. Multiple machines/devices = topic mappings on that adapter (same idea as many `GenericEquipment` on one Modbus endpoint). Different brokers = different instances.
-- Subscribe mapped telemetry/state/fault topics; publish mapped commands. Drain received messages on `poll()`. Do not add an MES event bus.
-- Broker, topic, QoS, retain stay in adapter config. Equipment must not expose MQTT types.
-- Preferred candidate: Eclipse **Paho MQTT C** (`libpaho-mqtt-dev`), unless a later ADR records a stronger reason (`libmosquitto` is the alternative).
-- Reconnect remains explicit `connect()` after `Faulted`. Do not hide Faulted behind silent auto-reconnect.
-- Tests: local broker or in-process double. Local pass ≠ cloud/production MQTT proof.
+- One instance = **one broker connection**. Multiple machines/devices = topic mappings on that adapter (`GenericEquipment`; instance ids such as PLC-001 are configuration identities, not C++ types). Different brokers = different instances.
+- Subscribe mapped telemetry/state/fault topics; publish mapped commands. `poll()` waits on a bounded in-process queue (default 50 ms). Do not add an MES event bus. Latest-value telemetry is in scope; durable production events are Phase 7.
+- Broker, topic, QoS, retain stay in adapter config. Equipment must not expose MQTT/Paho types.
+- Library: Eclipse **Paho MQTT C** (`libpaho-mqtt-dev` / `libpaho-mqtt3as` 1.3.13), MQTT **3.1.1**. JSON payloads reuse nlohmann/json (adapter-private). Public headers must not include Paho or nlohmann/json.
+- QoS 0/1/2 where practical; default QoS 1 for telemetry subscriptions and commands; command retain=false. No MQTT 5 architecture. No Sparkplug B. No wildcard `+`/`#` subscriptions in 6F.
+- MQTT client IDs unique per broker among simultaneous clients in this process. Empty config generates `vf.<adapterId>.<serial>` (never from secrets).
+- Username/password in adapter config. TLS verification on by default; insecure TLS is an explicit development/testing opt-in. Secrets must not appear in `lastError()`.
+- Reconnect remains explicit `connect()` after `Faulted`. Do not hide Faulted behind silent auto-reconnect. Paho's internal network thread is used for keepalive; there is no application reconnect thread.
+- Tests: local Mosquitto broker fixture (`tests/mqtt_test_broker.*`). Local pass ≠ cloud/production MQTT proof. Multi-equipment scale **VALIDATED** at 10/50/100/200 mappings and 2×50 brokers (`docs/mqtt-scalability-test.md`) — **not** production capacity.
 
-**Consequences:** MQTT fits the existing contract without changing `IndustrialAdapter.hh` / `Equipment.hh`. Do not implement until 6F is explicitly approved. Slice 6E REST is complete; this slice has not started.
+**Consequences:** MQTT fits the existing contract without changing `IndustrialAdapter.hh` / `Equipment.hh`. Do not start 6G EtherNet/IP until separately approved. Do not claim vendor/cloud MQTT certification from localhost Mosquitto.
 
 **Alternatives:** One adapter per topic/machine (rejected: connection explosion); many brokers in one adapter (rejected: ADR-026 analogue); treat MQTT as Modbus-style request/response (rejected: wrong protocol model).
 
@@ -702,7 +705,7 @@ RT-Labs **p-net** is a PROFINET **IO-Device** stack (often GPLv3) requiring raw 
   - **6C** OPC UA multi-server validation (10–200 simulated in-process servers) — **VALIDATED** (not production capacity)
   - **6D** Modbus TCP / libmodbus — **IMPLEMENTED** / **TESTED**
   - **6E** REST industrial gateway — **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; not vendor certification)
-  - **6F** MQTT — **NOT IMPLEMENTED**
+  - **6F** MQTT / Paho C — **IMPLEMENTED** / **TESTED** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity)
   - **6G** EtherNet/IP — **NOT IMPLEMENTED**
   - **6H** PROFINET investigation / implement only if a valid production path is approved — **NOT IMPLEMENTED**
 - Order: 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
@@ -710,7 +713,7 @@ RT-Labs **p-net** is a PROFINET **IO-Device** stack (often GPLv3) requiring raw 
 - Do not implement an adapter manager in Phase 6 (ADR-028).
 - 10–200 OPC UA simulated servers remain **validation only**.
 
-**Consequences:** Documentation and SoT now match the intended connectivity scope without inventing new official phases. 6F MQTT is the next implementation slice, only after separate approval.
+**Consequences:** Documentation and SoT now match the intended connectivity scope without inventing new official phases. 6G EtherNet/IP is the next implementation slice, only after separate approval.
 
 **Alternatives:** New official phases after Phase 6 (rejected: breaks 1–11); start MES after REST (rejected: user decision); claim PROFINET implemented via a stub (rejected: ADR-040).
 

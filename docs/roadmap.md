@@ -19,14 +19,14 @@ Retired numbering (do not revive): Stage 0–25, old Phase 0–10, sensor-first 
 | 3 | Conveyor Control | **DONE** |
 | 4 | Product Motion | **DONE** |
 | 5 | Industrial Equipment Abstraction | **DONE** |
-| 6 | Industrial Adapter Layer | **IN PROGRESS** (slices **6A–6E** done. **6F–6H NOT IMPLEMENTED**) |
+| 6 | Industrial Adapter Layer | **IN PROGRESS** (slices **6A–6F** done. **6G–6H NOT IMPLEMENTED**) |
 | 7 | MES Core + Resource Management | **NOT STARTED** |
 | 8 | SCADA / Operational HMI | **PLANNED** |
 | 9 | Security & Authorization | **PLANNED** |
 | 10 | Real Factory Integration | **PLANNED** |
 | 11 | Commercial Hardening & Enterprise Integration | **PLANNED** |
 
-Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed. Do not start slice 6F until separately approved.
+Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed. Do not start slice 6G until separately approved.
 
 ---
 
@@ -68,7 +68,7 @@ Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed. Do not s
 ## Phase 6 — Industrial Adapter Layer
 
 - **Objective:** Protocol connectors that populate/control the normalized `Equipment` model without exposing vendor APIs to MES/SCADA.
-- **Major components:** `IndustrialAdapter`; `MockIndustrialAdapter`; `OpcUaIndustrialAdapter` (open62541); `ModbusIndustrialAdapter` (libmodbus); `RestIndustrialAdapter` (libcurl); planned MQTT/EtherNet/IP; PROFINET only if a valid production path is approved.
+- **Major components:** `IndustrialAdapter`; `MockIndustrialAdapter`; `OpcUaIndustrialAdapter` (open62541); `ModbusIndustrialAdapter` (libmodbus); `RestIndustrialAdapter` (libcurl); `MqttIndustrialAdapter` (Paho MQTT C); planned EtherNet/IP; PROFINET only if a valid production path is approved.
 - **Dependencies:** Phase 5.
 - **Official numbering:** Phase 6 of Phases **1–11**. Implementation uses slices **6A–6H** (ADR-041), not extra official phases.
 - **Slice status:**
@@ -77,7 +77,7 @@ Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed. Do not s
   - **6C** OPC UA multi-server validation (10–200 simulated in-process servers) — **VALIDATED** (not production capacity)
   - **6D** Modbus TCP / libmodbus — **DONE**
   - **6E** REST industrial gateway (HTTP client, libcurl) — **DONE** (localhost fixture; not vendor certification)
-  - **6F** MQTT (one broker connection; Paho C candidate) — **NOT IMPLEMENTED**
+  - **6F** MQTT (one broker connection; Paho MQTT C) — **DONE** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity)
   - **6G** EtherNet/IP (CIP scanner; library ADR before code) — **NOT IMPLEMENTED**
   - **6H** PROFINET investigation; no fake stack — **NOT IMPLEMENTED**
 - **Order:** 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
@@ -148,7 +148,7 @@ Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed. Do not s
 | --- | --- | --- |
 | Product sensor SEN-001 | Equipment after Phase 5 | **DEFERRED** |
 | OpenPLC / interlocks / auto-manual | Behind adapters / PLC | **DEFERRED** |
-| OPC UA nodes, Modbus maps, UAExpert | Phase 6 | OPC UA **DONE** (6B, ADR-025). 6C **VALIDATED** (simulated). Modbus TCP **DONE** (6D, ADR-036). REST **DONE** (6E, ADR-037; local fixture ≠ vendor certification). MQTT/EtherNet/IP/PROFINET **NOT IMPLEMENTED**. UAExpert diagnostic only. |
+| OPC UA nodes, Modbus maps, UAExpert | Phase 6 | OPC UA **DONE** (6B, ADR-025). 6C **VALIDATED** (simulated). Modbus TCP **DONE** (6D, ADR-036). REST **DONE** (6E, ADR-037; local fixture ≠ vendor certification). MQTT **DONE** (6F, ADR-038; local Mosquitto ≠ vendor certification). EtherNet/IP/PROFINET **NOT IMPLEMENTED**. UAExpert diagnostic only. |
 | Multi-machine line via GenericEquipment | After contract | **DEFERRED** |
 | Resource Management, plant hierarchy, dynamic PLC onboarding, readiness reasons | MES Phase 7 | **PLANNED** (ADR-024, 027–030; not implemented) |
 | Materials, scrap, quality, genealogy | MES Phase 7 | **PLANNED** (ADR-031, 034; not implemented) |
@@ -166,5 +166,5 @@ Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed. Do not s
 - Product GUI in C++
 - RBAC as scattered if-statements
 - Implementing Phase 7 without an explicit instruction
-- Starting 6F MQTT without a separate implementation approval
+- Starting 6G EtherNet/IP without a separate implementation approval
 - Calling a TCP mock “PROFINET support”

@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Phase 6F MQTT industrial adapter (2026-08-25): `MqttIndustrialAdapter` maps configured MQTT topics into `GenericEquipment` via Eclipse Paho MQTT C 1.3.13 (`libpaho-mqtt3as` MQTTAsync, MQTT 3.1.1) and nlohmann/json 3.11.3. One adapter instance = one broker/session. Multiple machines on one broker are mappings. Mosquitto is a development test broker only; unit test passed. Multi-equipment scale **VALIDATED** at 10/50/100/200 mappings and 2×50 brokers (`docs/mqtt-scalability-test.md`) — correctness only, not production capacity, not vendor certification. Isolation checked with two adapters on one broker and two independent brokers. TLS verification on by default; username/password supported; passwords not logged. Bounded `poll()` (default 50 ms; bounded queue with latest-value drop-oldest). **Phase 6 remains IN PROGRESS.** Architecture + mock + OPC UA + Modbus TCP + REST + MQTT **COMPLETE**. EtherNet/IP **NOT IMPLEMENTED**. Phase 7 has **not** started. SoT PDF regenerated to record 6F implemented.
+
+- **6A** mock/architecture, **6B** OPC UA, **6D** Modbus TCP, **6E** REST, **6F** MQTT: **IMPLEMENTED** / **TESTED**.
+- **6C** 10–200 simulated OPC UA servers: **VALIDATED** only; not production capacity.
+- MQTT multi-equipment scale (10/50/100/200 + 2×50): **VALIDATED** only; not production capacity.
+- **6G** EtherNet/IP (explicit CIP first; library ADR before code): **PLANNED**.
+- **6H** PROFINET: **PLANNED** / investigation; p-net is IO-Device not controller; no fake TCP stack.
+
+### Added
+
+- `MqttIndustrialAdapter` and C++ topic mapping structs (`MqttAdapterConfig`).
+- Private Paho MQTTAsync session wrapper (`industrial/src/mqtt_session.*`). Public headers do not include Paho or nlohmann/json types.
+- Mosquitto test broker helper (`tests/mqtt_test_broker.*`) — localhost, **DEVELOPMENT/INTEGRATION VALIDATION ONLY**.
+- Unit test `tests/mqtt_adapter_test.cc`.
+- Scalability validation `tests/mqtt_multi_equipment_scalability_test.cc` and `docs/mqtt-scalability-test.md`.
+
+### Changed
+
+- ADR-038: MQTT broker client marked **IMPLEMENTED** / **TESTED** (scale VALIDATED separately).
+- ADR-037, 041: 6F recorded as done; next slice is 6G.
+- Root CMake adds `mqtt_adapter_test` and `mqtt_multi_equipment_scalability_test`.
+- `virtual_factory_industrial` links `libpaho-mqtt3as`. Gazebo plugin still does not link industrial or Paho.
+
+---
+
+## Historical (2026-08-25 REST checkpoint)
+
 Phase 6E REST industrial gateway (2026-08-25): `RestIndustrialAdapter` maps configured HTTP paths and JSON Pointers into `GenericEquipment` via libcurl 8.5.0 and nlohmann/json 3.11.3. One adapter instance = one HTTP origin. In-process HTTP/1.1 fixture; unit test passed. Isolation checked at two localhost origins (correctness only, not production capacity, not vendor certification). TLS verification on by default; Basic/Bearer supported; passwords/tokens not logged. **Phase 6 remains IN PROGRESS.** Architecture + mock + OPC UA + Modbus TCP + REST **COMPLETE**. MQTT **NOT IMPLEMENTED**. Phase 7 has **not** started. SoT PDF regenerated to record 6E implemented.
 
 - **6A** mock/architecture, **6B** OPC UA, **6D** Modbus TCP, **6E** REST: **IMPLEMENTED** / **TESTED**.
