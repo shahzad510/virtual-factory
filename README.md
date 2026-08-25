@@ -17,10 +17,10 @@ MES + SCADA + industrial adapter platform. Gazebo Sim is a **virtual plant** for
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Change history |
 | [docs/archive/](docs/archive/) | Historical documents only — not authoritative |
 
-**Current phase:** Phase 6 — Industrial Adapter Layer: **IN PROGRESS**. Slices **6A–6D** done (mock, OPC UA, 10–200 simulated OPC UA validation, Modbus TCP). **6E–6H NOT IMPLEMENTED** (REST, MQTT, EtherNet/IP, PROFINET). Official roadmap remains Phases **1–11** (ADR-041). Production REST **NOT IMPLEMENTED**.
+**Current phase:** Phase 6 — Industrial Adapter Layer: **IN PROGRESS**. Slices **6A–6E** done (mock, OPC UA, 10–200 simulated OPC UA validation, Modbus TCP, REST gateway). **6F–6H NOT IMPLEMENTED** (MQTT, EtherNet/IP, PROFINET). Official roadmap remains Phases **1–11** (ADR-041). Local REST tests are **not** vendor certification.
 
-**Next implementation slice (not this increment):** 6E REST industrial gateway, only after explicit approval.
+**Next implementation slice (not this increment):** 6F MQTT industrial adapter, only after explicit approval.
 
-**Next major phase:** Phase 7 — MES Core + Resource Management (**NOT STARTED** / **NOT IMPLEMENTED**). All MES features are **PLANNED** (ADR-024, 027–035). Do not implement them until instructed. Do not start Phase 7 after REST/MQTT/EtherNet/IP.
+**Next major phase:** Phase 7 — MES Core + Resource Management (**NOT STARTED** / **NOT IMPLEMENTED**). All MES features are **PLANNED** (ADR-024, 027–035). Do not implement them until instructed. Do not start Phase 7 after MQTT/EtherNet/IP.
 
 **SoT maintenance:** edit `docs/source/MES_SCADA_Virtual_Factory_Source_of_Truth.md`, then run `docs/source/generate-sot-pdf.sh`. The PDF is the architectural authority; the Markdown is how that PDF is maintained.

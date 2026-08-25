@@ -171,7 +171,9 @@ Architectural authority remains the [SoT PDF](MES_SCADA_Virtual_Factory_Source_o
 
 **Decision:** Unsupported device → vendor/gateway → REST → adapter boundary → normalized model. REST does not replace industrial protocols.
 
-**Amendment 2026-08-24:** Phase 6 slice **6E** is a REST **industrial gateway adapter**: an HTTP **client** to one origin (`RestIndustrialAdapter`). It is **not** the future MES REST API (that is a later application surface). Candidate library: libcurl. One instance = one HTTP origin. **NOT IMPLEMENTED.** See ADR-037.
+**Amendment 2026-08-24:** Phase 6 slice **6E** is a REST **industrial gateway adapter**: an HTTP **client** to one origin (`RestIndustrialAdapter`). It is **not** the future MES REST API (that is a later application surface). Library: libcurl. JSON: nlohmann/json, adapter-private. One instance = one HTTP origin. See ADR-037.
+
+**Amendment 2026-08-25:** Slice 6E is **IMPLEMENTED** / **TESTED** (localhost HTTP fixture). Not vendor certification.
 
 **Consequences:** REST remains a fallback. Do not build MES HTTP APIs inside this adapter.
 
@@ -251,7 +253,7 @@ Architectural authority remains the [SoT PDF](MES_SCADA_Virtual_Factory_Source_o
 
 Future OPC UA / Modbus / REST adapters (Phase 6) implement `Equipment`. They do not subclass `ConveyorSystem`.
 
-**Consequences:** Plugin build links `virtual_factory_equipment`. Higher layers must include `virtual_factory/equipment/…`, never gz-sim, for equipment state. Production protocol adapters were later added in Phase 6 (OPC UA ADR-025, Modbus TCP ADR-036); REST/MQTT/EtherNet/IP/PROFINET remain unimplemented.
+**Consequences:** Plugin build links `virtual_factory_equipment`. Higher layers must include `virtual_factory/equipment/…`, never gz-sim, for equipment state. Production protocol adapters were later added in Phase 6 (OPC UA ADR-025, Modbus TCP ADR-036, REST ADR-037); MQTT/EtherNet/IP/PROFINET remain unimplemented.
 
 **Note:** The first Phase 5 cut put `speed`/`setSpeed` on `Equipment`. That was too conveyor-specific. **ADR-020** corrects it.
 
@@ -314,12 +316,12 @@ Future OPC UA / Modbus / REST adapters (Phase 6) implement `Equipment`. They do 
 - MES/SCADA consume `Equipment` (and adapter connection state). They must not include protocol or Gazebo headers.
 - Adapters are **protocol/capability-oriented** (`opcua`, `modbus`, `rest`, `mqtt`, `ethernet-ip`, `profinet`, `mock`), not `SiemensAdapter` / `RobotAdapter` catalogs.
 - Phase 6 ships the contract plus `MockIndustrialAdapter` (in-process external source) so the architecture is testable without hardware.
-- Production protocol adapters are added incrementally as Phase 6 slices 6A–6H (ADR-041). OPC UA is ADR-025. Modbus TCP is ADR-036. REST, MQTT, EtherNet/IP, and PROFINET are **not** implemented in the original increment. Empty protocol placeholders are not created.
+- Production protocol adapters are added incrementally as Phase 6 slices 6A–6H (ADR-041). OPC UA is ADR-025. Modbus TCP is ADR-036. REST is ADR-037. MQTT, EtherNet/IP, and PROFINET were **not** implemented in the original increment. Empty protocol placeholders are not created.
 - Layout: `industrial/` next to `equipment/`, library `virtual_factory_industrial` links `virtual_factory_equipment`. Gazebo `ConveyorSystem` does not depend on `industrial/`.
 - `ConnectionState::Faulted` is a **communication** fault, distinct from `Equipment::fault()` (machine fault).
 - Specialized C++ equipment classes remain allowed only when simulation or protocol mapping truly requires them (Conveyor today).
 
-**Consequences:** A pump, furnace, or unknown machine can appear through a mock, OPC UA, or Modbus adapter as `GenericEquipment` without a new machine class. Adding another protocol adapter later should not change the MES-facing `Equipment` API. Do not treat the mock as a production protocol. OPC UA is implemented (ADR-025). Modbus TCP is implemented (ADR-036). REST/MQTT/EtherNet/IP/PROFINET are not.
+**Consequences:** A pump, furnace, or unknown machine can appear through a mock, OPC UA, Modbus, or REST adapter as `GenericEquipment` without a new machine class. Adding another protocol adapter later should not change the MES-facing `Equipment` API. Do not treat the mock as a production protocol. OPC UA is implemented (ADR-025). Modbus TCP is implemented (ADR-036). REST is implemented (ADR-037). MQTT/EtherNet/IP/PROFINET are not.
 
 **Alternatives:** Skip the adapter interface and have MES call open62541 (rejected: protocol leak); one adapter class per PLC vendor (rejected: catalog); implement OPC UA in the same step as the interface (rejected: hardware/library scope beyond proving the architecture — later done in ADR-025); make `ConveyorSystem` an `IndustrialAdapter` (rejected: Gazebo is the plant, not the industrial adapter layer).
 
@@ -396,9 +398,9 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 - `TelemetryPoint` is unchanged (`name`, `value`, `unit`). OPC UA source timestamps and StatusCode quality are deferred.
 - Tests use an in-process open62541 server (`tests/opcua_test_server.*`) on localhost with multiple mapped test machines (mixer, pump, unknown). **DEVELOPMENT ONLY:** `SecurityPolicy#None`, anonymous access, no certificates. UAExpert is diagnostic only (ADR-006), not a test dependency.
 - Production SignAndEncrypt, certificates, subscriptions, history, alarms/conditions, and HA are **not** implemented.
-- REST, MQTT, EtherNet/IP, and PROFINET adapters are **not** implemented. Gazebo, MES, and SCADA are not dependencies of this adapter.
+- REST, MQTT, EtherNet/IP, and PROFINET adapters are **not** implemented in this increment. Gazebo, MES, and SCADA are not dependencies of this adapter.
 
-**Consequences:** Arbitrary machines (mixer, pump, unknown) appear as `GenericEquipment` through mapping. MES-shaped code uses `IndustrialAdapter` / `Equipment` only. Do not present the unsecured localhost test as production industrial security. Do not mark all of Phase 6 complete: slices 6E–6H remain unimplemented. Modbus TCP is ADR-036.
+**Consequences:** Arbitrary machines (mixer, pump, unknown) appear as `GenericEquipment` through mapping. MES-shaped code uses `IndustrialAdapter` / `Equipment` only. Do not present the unsecured localhost test as production industrial security. Do not mark all of Phase 6 complete: slices 6F–6H remain unimplemented. Modbus TCP is ADR-036. REST is ADR-037.
 
 **Alternatives:** Hard-code one PLC node tree (rejected: not open-ended); expose NodeIds on Equipment (rejected: protocol leak); wait for a certificate-management platform before any adapter (rejected: blocks Phase 6); implement subscriptions/history in this milestone (rejected: unnecessary for the first client).
 
@@ -448,7 +450,7 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 
 **Context:** A plant may grow from 100 PLCs to 200 by adding a line. Requiring a new C++ class or a rebuild to add a PLC does not scale. Adapter architecture is already one instance per OPC UA server (ADR-026).
 
-**Decision:** Future MES configuration/UI/API creates protocol adapter instances (`OpcUaIndustrialAdapter`, `ModbusIndustrialAdapter`, later REST/MQTT/EtherNet/IP/PROFINET if approved) and mappings, then assigns resulting `Equipment` to plant locations and owners. No `PumpPLCAdapter` / `RobotPLCAdapter`. No new C++ adapter class per PLC. No Phase 6 adapter manager. Current C++ construction in tests is not the onboarding product. **PLANNED. NOT IMPLEMENTED.**
+**Decision:** Future MES configuration/UI/API creates protocol adapter instances (`OpcUaIndustrialAdapter`, `ModbusIndustrialAdapter`, `RestIndustrialAdapter`, later MQTT/EtherNet/IP/PROFINET if approved) and mappings, then assigns resulting `Equipment` to plant locations and owners. No `PumpPLCAdapter` / `RobotPLCAdapter`. No new C++ adapter class per PLC. No Phase 6 adapter manager. Current C++ construction in tests is not the onboarding product. **PLANNED. NOT IMPLEMENTED.**
 
 **Consequences:** Onboarding uses Phase 6 protocol adapters. MES does not become a protocol stack.
 
@@ -581,9 +583,9 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 - Tests use an in-process libmodbus TCP slave (`tests/modbus_test_server.*`) on localhost. Mixer/pump/unknown names are register-map **labels only**. **DEVELOPMENT ONLY:** no authentication, no TLS.
 - Client coverage in this slice: FC 1–6. Batch writes, RTU, TLS, and production capacity claims are **not** implemented.
 - Isolation was validated with two independent endpoints and a modest 4-endpoint localhost loop. That is **not** production proof for hundreds of Modbus PLCs.
-- REST, MQTT, EtherNet/IP, and PROFINET are **not** implemented. MES and SCADA are not started.
+- REST, MQTT, EtherNet/IP, and PROFINET were **not** implemented in this increment. MES and SCADA are not started.
 
-**Consequences:** Arbitrary machines appear as `GenericEquipment` through mapping. MES-shaped code uses `IndustrialAdapter` / `Equipment` only. Do not present the unsecured localhost slave as a production PLC. Do not mark all of Phase 6 complete: slices 6E–6H remain unimplemented. Phase 7 remains **NOT STARTED**.
+**Consequences:** Arbitrary machines appear as `GenericEquipment` through mapping. MES-shaped code uses `IndustrialAdapter` / `Equipment` only. Do not present the unsecured localhost slave as a production PLC. Do not mark all of Phase 6 complete: slices 6F–6H remain unimplemented. REST is ADR-037. Phase 7 remains **NOT STARTED**.
 
 **Alternatives:** Hand-rolled TCP framing (rejected: libmodbus provides FC 1–6); one adapter class per machine type (rejected: ADR-021/022); many TCP sessions inside one `connectionState()` (rejected: ADR-026 analogue); background reconnect thread (rejected: reconnect stays explicit `connect()` after Faulted); change `Equipment.hh` / `IndustrialAdapter.hh` for Modbus (rejected: no architectural gap).
 
@@ -591,25 +593,27 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 
 ## ADR-037 — REST industrial adapter is an HTTP client gateway (slice 6E)
 
-- **Status:** Accepted (architecture). **NOT IMPLEMENTED.**
-- **Date:** 2026-08-24
+- **Status:** Accepted. **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; not vendor certification).
+- **Date:** 2026-08-24; implemented 2026-08-25
 
 **Context:** REST is an application HTTP API, not a native PLC fieldbus. Some gateways and vendor systems only expose HTTP. The future MES application API must not be confused with this adapter.
 
 **Decision:**
 
-- Slice **6E** adds `RestIndustrialAdapter` implementing `IndustrialAdapter`.
+- Slice **6E** adds `RestIndustrialAdapter` implementing `IndustrialAdapter`. Protocol metadata is `"rest"`.
 - Role: HTTP **client** to one industrial gateway/vendor **origin**. Not an HTTP server. Not the MES REST API.
 - One instance = one origin (scheme + host + port + optional base path). N systems = N instances. Several logical machines on one API = several `GenericEquipment` mappings.
-- `poll()` performs mapped reads (typically GET). `execute()` performs mapped writes (POST/PUT/PATCH). Mapping stays in adapter config.
-- Credentials (Basic/Bearer) stay in adapter config, not on `Equipment`. Not Phase 9 RBAC.
-- Candidate library: **libcurl** (`libcurl4-openssl-dev`). Public headers must not include curl.
-- Tests: local in-process HTTP fixture. Local pass ≠ vendor API certification.
-- Explicit `connect()` after `Faulted`. Transport/HTTP failure → `ConnectionState::Faulted`; mapped machine fault → `Equipment::fault()`.
+- `poll()` performs mapped reads (GET of a JSON resource, JSON Pointer extraction of multiple telemetry values). `execute()` performs mapped writes (POST/PUT/PATCH). Mapping stays in adapter config (`RestAdapterConfig`). DELETE is not required.
+- Credentials (Basic/Bearer) stay in adapter config, not on `Equipment`. Not Phase 9 RBAC. Passwords and bearer tokens must not be logged or placed in `lastError()`.
+- Library: **libcurl** (`libcurl4-openssl-dev`, 8.5.0). JSON: **nlohmann/json** 3.11.3, adapter-private. Public headers must not include curl or nlohmann/json.
+- TLS certificate verification is enabled by default. Insecure TLS is an explicit development/testing opt-in.
+- Optional health GET on `connect()`. If omitted, origin TCP connectivity is sufficient; mapped requests may then establish useful data.
+- Tests: local in-process HTTP fixture (`tests/rest_test_server.*`). Local pass ≠ vendor API certification.
+- Explicit `connect()` after `Faulted`. Transport/HTTP failure → `ConnectionState::Faulted`; mapped machine fault → `Equipment::fault()`. No background reconnect thread.
 
-**Consequences:** REST remains a fallback (ADR-013). Do not start 6E until explicitly approved. Do not mix MES API work into 6E.
+**Consequences:** REST remains a fallback (ADR-013). Do not mix MES API work into this adapter. Do not start 6F MQTT until separately approved. Do not claim production HTTPS vendor certification from the localhost fixture.
 
-**Alternatives:** REST as MES API (rejected: wrong layer); HTTP server adapter (rejected: not how industrial gateways are consumed here); treat REST as equivalent to OPC UA/Modbus (rejected: different model).
+**Alternatives:** REST as MES API (rejected: wrong layer); HTTP server adapter (rejected: not how industrial gateways are consumed here); treat REST as equivalent to OPC UA/Modbus (rejected: different model); one adapter for many origins (rejected: ADR-026 analogue).
 
 ---
 
@@ -631,7 +635,7 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 - Reconnect remains explicit `connect()` after `Faulted`. Do not hide Faulted behind silent auto-reconnect.
 - Tests: local broker or in-process double. Local pass ≠ cloud/production MQTT proof.
 
-**Consequences:** MQTT fits the existing contract without changing `IndustrialAdapter.hh` / `Equipment.hh`. Do not implement until 6E is approved complete.
+**Consequences:** MQTT fits the existing contract without changing `IndustrialAdapter.hh` / `Equipment.hh`. Do not implement until 6F is explicitly approved. Slice 6E REST is complete; this slice has not started.
 
 **Alternatives:** One adapter per topic/machine (rejected: connection explosion); many brokers in one adapter (rejected: ADR-026 analogue); treat MQTT as Modbus-style request/response (rejected: wrong protocol model).
 
@@ -696,8 +700,8 @@ RT-Labs **p-net** is a PROFINET **IO-Device** stack (often GPLv3) requiring raw 
   - **6A** architecture + mock — **IMPLEMENTED**
   - **6B** OPC UA / open62541 — **IMPLEMENTED**
   - **6C** OPC UA multi-server validation (10–200 simulated in-process servers) — **VALIDATED** (not production capacity)
-  - **6D** Modbus TCP / libmodbus — **IMPLEMENTED** / **TESTED** (working tree)
-  - **6E** REST industrial gateway — **NOT IMPLEMENTED**
+  - **6D** Modbus TCP / libmodbus — **IMPLEMENTED** / **TESTED**
+  - **6E** REST industrial gateway — **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; not vendor certification)
   - **6F** MQTT — **NOT IMPLEMENTED**
   - **6G** EtherNet/IP — **NOT IMPLEMENTED**
   - **6H** PROFINET investigation / implement only if a valid production path is approved — **NOT IMPLEMENTED**
@@ -706,7 +710,7 @@ RT-Labs **p-net** is a PROFINET **IO-Device** stack (often GPLv3) requiring raw 
 - Do not implement an adapter manager in Phase 6 (ADR-028).
 - 10–200 OPC UA simulated servers remain **validation only**.
 
-**Consequences:** Documentation and SoT now match the intended connectivity scope without inventing new official phases. 6E is the next implementation slice, only after separate approval.
+**Consequences:** Documentation and SoT now match the intended connectivity scope without inventing new official phases. 6F MQTT is the next implementation slice, only after separate approval.
 
 **Alternatives:** New official phases after Phase 6 (rejected: breaks 1–11); start MES after REST (rejected: user decision); claim PROFINET implemented via a stub (rejected: ADR-040).
 

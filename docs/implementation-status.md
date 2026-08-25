@@ -21,10 +21,10 @@ Gazebo is not MES. `ConveyorSystem` is not SCADA. The mock adapter is not a prod
 | Item | Value |
 | --- | --- |
 | Branch | `master` (tracks `origin/master`) |
-| HEAD commit | Use `git log -1` for the hash. This checkpoint includes Phase 5 equipment, Phase 6A–6D (mock, OPC UA, OPC UA scale validation, Modbus TCP), and Phase 6 slice documentation 6A–6H. |
-| Working tree | Use `git status`. After this checkpoint, REST/MQTT/EtherNet/IP/PROFINET remain unimplemented. |
+| HEAD commit | Use `git log -1` for the hash. This working tree adds Phase 6E REST (`RestIndustrialAdapter`). |
+| Working tree | Use `git status`. After 6E, MQTT/EtherNet/IP/PROFINET remain unimplemented. |
 | Remote | `origin/master` |
-| Audit date | 2026-08-24 |
+| Audit date | 2026-08-25 |
 
 Use `git status` and `git log -1` when resuming; this file is not a substitute for Git.
 
@@ -40,7 +40,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6B** Production OPC UA adapter (`OpcUaIndustrialAdapter`) | **COMPLETE** / **TESTED** |
 | **6C** OPC UA multi-server scalability validation (10–200 simulated in-process servers) | **VALIDATED** (those conditions). **Not** production capacity certification |
 | **6D** Production Modbus TCP adapter (`ModbusIndustrialAdapter`) | **COMPLETE** / **TESTED** |
-| **6E** REST industrial gateway adapter | **NOT IMPLEMENTED** |
+| **6E** REST industrial gateway adapter (`RestIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** MQTT industrial adapter | **NOT IMPLEMENTED** |
 | **6G** EtherNet/IP industrial adapter | **NOT IMPLEMENTED** |
 | **6H** PROFINET | **NOT IMPLEMENTED** / investigation required (ADR-040). Do not fake a stack |
@@ -56,7 +56,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | 3 | Conveyor Control | **COMPLETE** |
 | 4 | Product Motion | **COMPLETE** (runtime verified) |
 | 5 | Industrial Equipment Abstraction | **COMPLETE** (open-ended / capability-driven) |
-| 6 | Industrial Adapter Layer | **IN PROGRESS** (slices 6A–6D done; 6E–6H not implemented) |
+| 6 | Industrial Adapter Layer | **IN PROGRESS** (slices 6A–6E done; 6F–6H not implemented) |
 
 ---
 
@@ -64,7 +64,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 
 Implemented:
 
-- Adapter identity and protocol metadata (`protocol()` → `"mock"`, `"opcua"`, or `"modbus"`)
+- Adapter identity and protocol metadata (`protocol()` → `"mock"`, `"opcua"`, `"modbus"`, or `"rest"`)
 - Connection state: Disconnected / Connected / Faulted
 - Connect / disconnect
 - Equipment exposure and lookup (`equipment()`, `equipmentById()`)
@@ -81,8 +81,11 @@ Implemented:
 - `ModbusIndustrialAdapter` (libmodbus 3.1.10 TCP client, C++ register mapping, ADR-036)
 - Multiple Modbus TCP endpoints via **multiple adapter instances** (one TCP session per instance)
 - In-process libmodbus TCP slave fixture and unit test `modbus_adapter_test` (connect/poll/commands, multi-equipment, isolation, Faulted vs `Equipment::fault()`, explicit reconnect, two endpoints, modest 4-endpoint isolation)
+- `RestIndustrialAdapter` (libcurl HTTP client + nlohmann/json mapping, ADR-037)
+- Multiple REST origins via **multiple adapter instances** (one HTTP origin per instance)
+- In-process HTTP/1.1 fixture and unit test `rest_adapter_test` (connect/poll/commands, multi-telemetry JSON, GenericEquipment, isolation, HTTP error, timeout, Faulted vs `Equipment::fault()`, explicit reconnect, two origins, Basic/Bearer). **DEVELOPMENT/INTEGRATION VALIDATION ONLY** — not vendor certification
 
-Not implemented: REST (6E), MQTT (6F), EtherNet/IP (6G), PROFINET (6H); Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
+Not implemented: MQTT (6F), EtherNet/IP (6G), PROFINET (6H); REST DELETE; Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
 
 ---
 
@@ -103,10 +106,13 @@ industrial/
     MockIndustrialAdapter.hh
     OpcUaIndustrialAdapter.hh           mapping config + OPC UA adapter
     ModbusIndustrialAdapter.hh          mapping config + Modbus TCP adapter
+    RestIndustrialAdapter.hh            mapping config + REST gateway adapter
   src/MockIndustrialAdapter.cc
   src/OpcUaIndustrialAdapter.cc
   src/ModbusIndustrialAdapter.cc
   src/modbus_tcp_session.cc             private libmodbus client wrapper
+  src/RestIndustrialAdapter.cc
+  src/http_session.cc                   private libcurl client wrapper
 gazebo/
   worlds/phase1/factory.sdf
   models/conveyor/                      CV-001 (static)
@@ -122,6 +128,8 @@ tests/opcua_scale_plc_server.hh/.cc     TEST ONLY: one simulated PLC per server
 tests/opcua_multi_server_scalability_test.cc  validation only; not a production component
 tests/modbus_adapter_test.cc
 tests/modbus_test_server.hh/.cc         TEST ONLY: libmodbus TCP slave, localhost
+tests/rest_adapter_test.cc
+tests/rest_test_server.hh/.cc           TEST ONLY: HTTP/1.1 fixture, localhost
 ```
 
 ### Simulation (Gazebo)
@@ -145,14 +153,15 @@ tests/modbus_test_server.hh/.cc         TEST ONLY: libmodbus TCP slave, localhos
 - `virtual_factory::MockIndustrialAdapter`
 - `virtual_factory::OpcUaIndustrialAdapter` (open62541 1.4.0-rc2)
 - `virtual_factory::ModbusIndustrialAdapter` (libmodbus 3.1.10)
+- `virtual_factory::RestIndustrialAdapter` (libcurl 8.5.0 + nlohmann/json 3.11.3)
 
-Gazebo plugin does **not** link `virtual_factory_industrial`, open62541, or libmodbus. `IndustrialAdapter.hh` does **not** include open62541 or libmodbus. Equipment headers do not include protocol SDKs.
+Gazebo plugin does **not** link `virtual_factory_industrial`, open62541, libmodbus, or libcurl. `IndustrialAdapter.hh` does **not** include open62541, libmodbus, curl, or nlohmann/json. Equipment headers do not include protocol SDKs.
 
 ---
 
 ## 7. Build status
 
-Last verified 2026-08-24.
+Last verified 2026-08-25.
 
 ```bash
 cmake -S . -B build
@@ -166,7 +175,7 @@ cmake -S gazebo/plugins/conveyor -B gazebo/plugins/conveyor/build
 cmake --build gazebo/plugins/conveyor/build
 ```
 
-Result: `ConveyorSystem` builds. Gazebo was not modified for Modbus.
+Result: `ConveyorSystem` builds. Gazebo was not modified for REST.
 
 ---
 
@@ -178,19 +187,20 @@ ctest --test-dir build --output-on-failure
 
 | Test | Result |
 | --- | --- |
-| `equipment_test` | **PASSED** (2026-08-24) |
-| `industrial_adapter_test` | **PASSED** (2026-08-24) |
-| `opcua_adapter_test` | **PASSED** (2026-08-24) |
-| `opcua_multi_server_scalability_test` | **VALIDATED** (2026-08-24, 259 s). See `docs/opcua-scalability-test.md`. In-process simulated servers; **not** production hardware proof. |
-| `modbus_adapter_test` | **PASSED** (2026-08-24) |
+| `equipment_test` | **PASSED** (2026-08-25) |
+| `industrial_adapter_test` | **PASSED** (2026-08-25) |
+| `opcua_adapter_test` | **PASSED** (2026-08-25) |
+| `opcua_multi_server_scalability_test` | **VALIDATED** (2026-08-25, 204 s). See `docs/opcua-scalability-test.md`. In-process simulated servers; **not** production hardware proof. |
+| `modbus_adapter_test` | **PASSED** (2026-08-25) |
+| `rest_adapter_test` | **PASSED** (2026-08-25). Local HTTP fixture; **not** vendor certification |
 
-Short unit tests including Modbus: 4/4 passed. The OPC UA scalability test is a separate long-running validation, not a claim of unlimited PLC scale. The Modbus 4-endpoint loop is modest localhost isolation, **not** a production capacity claim.
+Short unit tests including REST: 5/5 passed (excluding the long OPC UA scale test). The OPC UA scalability test is a separate long-running validation, not a claim of unlimited PLC scale. The REST two-origin check is localhost isolation, **not** a production capacity claim.
 
 ---
 
 ## 9. Gazebo runtime verification
 
-Headless 6000 iterations (2026-08-24, after Modbus adapter work; Gazebo sources unchanged):
+Headless 6000 iterations (2026-08-25, after REST adapter work; Gazebo sources unchanged):
 
 | Claim | Status |
 | --- | --- |
@@ -215,10 +225,11 @@ Kinematic result: −1.5 m → 0.5 m at 0.5 m/s (same as Phase 4). Development S
 4. Mock adapter is exercised in unit tests only; no MES consumer.
 5. OPC UA test/server path is unsecured localhost (SecurityPolicy#None, anonymous) — **DEVELOPMENT ONLY**.
 6. Modbus test slave is unsecured localhost TCP (no TLS, no authentication) — **DEVELOPMENT ONLY**.
-7. Command `parameter` is a single `double`. Holding-register writes clip to uint16.
-8. Plugin/model paths require `GZ_SIM_*` environment variables.
-9. Intended Modbus dependency is Ubuntu `libmodbus-dev` / `libmodbus5` 3.1.10-1ubuntu1. This environment could not `sudo apt install` (password required); the same debs were extracted to gitignored `.deps/libmodbus` for the build. Developers should install the packages with apt.
-10. SoT PDF is generated from `docs/source/MES_SCADA_Virtual_Factory_Source_of_Truth.md` (`docs/source/generate-sot-pdf.sh`). Previous PDFs are in `docs/archive/` (including `…legacy_2026-08-22.pdf` and `…legacy_2026-08-24.pdf`) and are not authoritative. The Markdown source is how the PDF is maintained, not a second live SoT.
+7. REST test fixture is unsecured localhost HTTP (no TLS on the fixture) — **DEVELOPMENT/INTEGRATION VALIDATION ONLY**, not vendor API certification.
+8. Command `parameter` is a single `double`. Holding-register writes clip to uint16. REST command bodies substitute `{{value}}`.
+9. Plugin/model paths require `GZ_SIM_*` environment variables.
+10. Intended Modbus dependency is Ubuntu `libmodbus-dev` / `libmodbus5` 3.1.10-1ubuntu1. nlohmann-json intended package is `nlohmann-json3-dev` 3.11.3. This environment could not `sudo apt install` (password required); debs were extracted to gitignored `.deps/` for the build. Developers should install the packages with apt. libcurl is the system `libcurl4-openssl-dev` 8.5.0.
+11. SoT PDF is generated from `docs/source/MES_SCADA_Virtual_Factory_Source_of_Truth.md` (`docs/source/generate-sot-pdf.sh`). Previous PDFs are in `docs/archive/` and are not authoritative. The Markdown source is how the PDF is maintained, not a second live SoT.
 
 ---
 
@@ -226,8 +237,9 @@ Kinematic result: −1.5 m → 0.5 m at 0.5 m/s (same as Phase 4). Development S
 
 Label: **NOT IMPLEMENTED** / **PLANNED**.
 
-- Production REST (6E), MQTT (6F), EtherNet/IP (6G) adapters
+- MQTT (6F), EtherNet/IP (6G) adapters
 - Production PROFINET (6H) — investigation required; a TCP mock is not PROFINET
+- REST DELETE, background reconnect, production vendor HTTPS certification
 - Modbus RTU, TLS, FC 15/16 batch writes, background reconnect
 - OPC UA SignAndEncrypt, certificates, subscriptions, history, alarms/conditions
 - MES (orders, Resource Management, plant hierarchy, dynamic PLC onboarding, scheduler, OEE engine, materials, scrap, quality, genealogy, analytics)
@@ -253,7 +265,7 @@ Intended scope (all **PLANNED**, none in code): configurable plant hierarchy; dy
 
 Do not implement Phase 7 until explicitly instructed. Do not put scheduling logic in `Equipment` or `IndustrialAdapter`.
 
-Remaining Phase 6 slices (not started): **6E REST** (next, after separate approval), then 6F MQTT, 6G EtherNet/IP, 6H PROFINET investigation. OPC UA is done (ADR-025). Modbus TCP is done (ADR-036). Slices: ADR-041. **Phase 6 remains IN PROGRESS.** Phase 7 remains **NOT STARTED**. Do **not** start 6E in this documentation-only increment.
+Remaining Phase 6 slices (not started): **6F MQTT** (next, after separate approval), then 6G EtherNet/IP, 6H PROFINET investigation. OPC UA is done (ADR-025). Modbus TCP is done (ADR-036). REST is done (ADR-037). Slices: ADR-041. **Phase 6 remains IN PROGRESS.** Phase 7 remains **NOT STARTED**. Do **not** start 6F in this increment.
 
 ---
 
@@ -264,4 +276,4 @@ Remaining Phase 6 slices (not started): **6E REST** (next, after separate approv
 3. Inspect `equipment/`, `industrial/`, `gazebo/plugins/conveyor/`, `tests/`.
 4. `cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure`
 5. `cmake --build gazebo/plugins/conveyor/build`
-6. Do **not** start MES (including Resource Management), SCADA, GUI, auth, or database. Do **not** start 6E REST until explicitly instructed. Do **not** infer those from the roadmap.
+6. Do **not** start MES (including Resource Management), SCADA, GUI, auth, or database. Do **not** start 6F MQTT until explicitly instructed. Do **not** infer those from the roadmap.

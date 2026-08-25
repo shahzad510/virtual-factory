@@ -16,6 +16,7 @@ Git history is the record of previous repository versions. ADRs and changelog en
 | --- | --- |
 | `MES_SCADA_Virtual_Factory_Source_of_Truth_legacy_2026-08-22.pdf` | Previous active SoT PDF, superseded 2026-08-24 (MES architecture extension). |
 | `MES_SCADA_Virtual_Factory_Source_of_Truth_legacy_2026-08-24.pdf` | Previous active SoT PDF, superseded 2026-08-24 when Phase 6 slices 6A–6H were added to the SoT. |
+| `MES_SCADA_Virtual_Factory_Source_of_Truth_legacy_2026-08-25.pdf` | Previous active SoT PDF, superseded 2026-08-25 when slice 6E REST was marked implemented. |
 
 Do **not** use the archived PDF for current architecture.
 

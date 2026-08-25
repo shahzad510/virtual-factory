@@ -8,6 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Phase 6E REST industrial gateway (2026-08-25): `RestIndustrialAdapter` maps configured HTTP paths and JSON Pointers into `GenericEquipment` via libcurl 8.5.0 and nlohmann/json 3.11.3. One adapter instance = one HTTP origin. In-process HTTP/1.1 fixture; unit test passed. Isolation checked at two localhost origins (correctness only, not production capacity, not vendor certification). TLS verification on by default; Basic/Bearer supported; passwords/tokens not logged. **Phase 6 remains IN PROGRESS.** Architecture + mock + OPC UA + Modbus TCP + REST **COMPLETE**. MQTT **NOT IMPLEMENTED**. Phase 7 has **not** started. SoT PDF regenerated to record 6E implemented.
+
+- **6A** mock/architecture, **6B** OPC UA, **6D** Modbus TCP, **6E** REST: **IMPLEMENTED** / **TESTED**.
+- **6C** 10–200 simulated OPC UA servers: **VALIDATED** only; not production capacity.
+- **6F** MQTT (one broker / Paho C candidate): **PLANNED**.
+- **6G** EtherNet/IP (explicit CIP first; library ADR before code): **PLANNED**.
+- **6H** PROFINET: **PLANNED** / investigation; p-net is IO-Device not controller; no fake TCP stack.
+
+### Added
+
+- `RestIndustrialAdapter` and C++ HTTP/JSON mapping structs (`RestAdapterConfig`).
+- Private libcurl HTTP session wrapper (`industrial/src/http_session.*`). Public headers do not include `<curl/curl.h>` or `<nlohmann/json.hpp>`.
+- In-process HTTP/1.1 test fixture exposing multiple generic test machines (mixer, pump, unknown) — localhost, **DEVELOPMENT/INTEGRATION VALIDATION ONLY**.
+- Unit test `tests/rest_adapter_test.cc`.
+
+### Changed
+
+- ADR-037: REST gateway client marked **IMPLEMENTED** / **TESTED**.
+- ADR-013, 019, 022, 028, 036, 038, 041: 6E recorded as done; next slice is 6F.
+- Root CMake adds `rest_adapter_test`.
+- `virtual_factory_industrial` links libcurl. nlohmann/json is private include-only. Gazebo plugin still does not link industrial.
+
+---
+
+## Historical (2026-08-24 documentation checkpoint)
+
 Phase 6 **authority / documentation** update (2026-08-24): official Phases remain **1–11**. Phase 6 now has implementation slices **6A–6H** (ADR-041). SoT PDF regenerated. Previous PDF archived as `docs/archive/MES_SCADA_Virtual_Factory_Source_of_Truth_legacy_2026-08-24.pdf`. **No adapter implementation code in this increment.** REST/MQTT/EtherNet/IP/PROFINET remain **NOT IMPLEMENTED**. Phase 7 remains **NOT STARTED**. Do not start 6E until separately approved.
 
 - **6A** mock/architecture, **6B** OPC UA, **6D** Modbus TCP: **IMPLEMENTED** / **TESTED**.

@@ -1,4 +1,5 @@
-# Local extract of Ubuntu libmodbus (when apt install is unavailable)
+# Local extracts of Ubuntu packages (when apt install is unavailable)
+# e.g. libmodbus, nlohmann-json3-dev
 .deps/
 
 # Downloaded Debian packages

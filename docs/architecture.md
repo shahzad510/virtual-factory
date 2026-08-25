@@ -42,7 +42,7 @@ Gazebo is a **simulation environment**, not this production stack.
 
 MES/SCADA must never depend directly on Gazebo ECM, Gazebo System plugins, Siemens/Allen-Bradley APIs, Modbus register maps, OPC UA node IDs, or vendor SDKs.
 
-### Diagram A — Real factory path — PARTIALLY IMPLEMENTED (Equipment + mock + OPC UA + Modbus)
+### Diagram A — Real factory path — PARTIALLY IMPLEMENTED (Equipment + mock + OPC UA + Modbus + REST)
 
 ```text
 Actual machine / PLC
@@ -51,7 +51,7 @@ Industrial Adapter          PARTIALLY IMPLEMENTED
   mock IMPLEMENTED
   OPC UA IMPLEMENTED
   Modbus IMPLEMENTED
-  REST NOT IMPLEMENTED
+  REST IMPLEMENTED
   MQTT NOT IMPLEMENTED
   EtherNet/IP NOT IMPLEMENTED
   PROFINET NOT IMPLEMENTED
@@ -84,7 +84,7 @@ Industrial Adapters                          ConveyorSystem
   mock IMPLEMENTED                           IMPLEMENTED
   OPC UA IMPLEMENTED
   Modbus IMPLEMENTED
-  REST NOT IMPLEMENTED
+  REST IMPLEMENTED
   MQTT NOT IMPLEMENTED
   EtherNet/IP NOT IMPLEMENTED
   PROFINET NOT IMPLEMENTED
@@ -102,12 +102,12 @@ Future .NET / Blazor GUI    PLANNED
 
 ---
 
-## 2. Physical factory path — PARTIALLY IMPLEMENTED (adapter contract + mock + OPC UA + Modbus)
+## 2. Physical factory path — PARTIALLY IMPLEMENTED (adapter contract + mock + OPC UA + Modbus + REST)
 
 ```text
 Physical equipment
         ▼
-Industrial adapter          PARTIALLY IMPLEMENTED (contract + mock + OPC UA + Modbus)
+   Industrial adapter          PARTIALLY IMPLEMENTED (contract + mock + OPC UA + Modbus + REST)
         ▼
 Normalized Equipment        IMPLEMENTED (Phase 5)
         ▼
@@ -116,7 +116,7 @@ MES / SCADA                 PLANNED
 
 Production OPC UA adapter: **IMPLEMENTED** (open62541 client + node mapping; ADR-025, ADR-026).
 Production Modbus TCP adapter: **IMPLEMENTED** (libmodbus client + register mapping; ADR-036).
-Production REST adapter: **NOT IMPLEMENTED** (slice 6E; ADR-037).
+Production REST industrial gateway adapter: **IMPLEMENTED** (libcurl client + JSON mapping; ADR-037). Local HTTP fixture tests are development/integration validation, **not** vendor API certification.
 MQTT adapter: **NOT IMPLEMENTED** (slice 6F; ADR-038).
 EtherNet/IP adapter: **NOT IMPLEMENTED** (slice 6G; ADR-039).
 PROFINET: **NOT IMPLEMENTED** / investigation required (slice 6H; ADR-040). A TCP mock is not PROFINET.
@@ -152,7 +152,7 @@ IndustrialAdapter           IMPLEMENTED (contract)
   MockIndustrialAdapter     IMPLEMENTED
   OpcUaIndustrialAdapter    IMPLEMENTED
   ModbusIndustrialAdapter   IMPLEMENTED
-  RestIndustrialAdapter     NOT IMPLEMENTED (6E)
+  RestIndustrialAdapter     IMPLEMENTED (6E)
   MqttIndustrialAdapter     NOT IMPLEMENTED (6F)
   EtherNetIpIndustrialAdapter NOT IMPLEMENTED (6G)
   ProfinetIndustrialAdapter NOT IMPLEMENTED (6H; investigation)
@@ -162,9 +162,9 @@ IndustrialAdapter           IMPLEMENTED (contract)
 
 `ConnectionState::Faulted` is a **communication** fault. `Equipment::fault()` is a **machine** fault.
 
-Library `virtual_factory_industrial` links `virtual_factory_equipment`, **open62541** (OPC UA client), and **libmodbus** (Modbus TCP client). `IndustrialAdapter.hh` does not include open62541 or libmodbus. The Gazebo plugin does not link industrial, open62541, or libmodbus.
+Library `virtual_factory_industrial` links `virtual_factory_equipment`, **open62541** (OPC UA client), **libmodbus** (Modbus TCP client), and **libcurl** (REST HTTP client). nlohmann/json is adapter-private. `IndustrialAdapter.hh` does not include open62541, libmodbus, curl, or nlohmann/json. The Gazebo plugin does not link industrial, open62541, libmodbus, or libcurl.
 
-**One adapter instance = one industrial source/session.** Several OPC UA servers ⇒ several `OpcUaIndustrialAdapter` instances (ADR-026). Several Modbus TCP endpoints ⇒ several `ModbusIndustrialAdapter` instances (ADR-036). Planned: one REST origin, one MQTT **broker**, one EtherNet/IP device per instance. `connectionState()` is per-source. A faulted source does not take down equipment on other adapters. An adapter manager is **Phase 7**, not Phase 6.
+**One adapter instance = one industrial source/session.** Several OPC UA servers ⇒ several `OpcUaIndustrialAdapter` instances (ADR-026). Several Modbus TCP endpoints ⇒ several `ModbusIndustrialAdapter` instances (ADR-036). Several REST origins ⇒ several `RestIndustrialAdapter` instances (ADR-037). Planned: one MQTT **broker**, one EtherNet/IP device per instance. `connectionState()` is per-source. A faulted source does not take down equipment on other adapters. An adapter manager is **Phase 7**, not Phase 6.
 
 Measured in-process validation (not production proof): [`opcua-scalability-test.md`](opcua-scalability-test.md). Validated at 100 and 200 simulated servers under those test conditions. Do not treat that as “unlimited PLCs” or production hardware certification.
 
@@ -256,11 +256,42 @@ Tests use an in-process **libmodbus TCP slave** (`tests/modbus_test_server.*`) o
 
 Isolation was checked with two independent endpoints and a modest 4-endpoint loop on localhost. That is correctness validation in this environment, **not** a production capacity claim and **not** “supports hundreds of Modbus PLCs.”
 
-REST remains **NOT IMPLEMENTED**. REST does not replace OPC UA or Modbus (ADR-013).
+REST does not replace OPC UA or Modbus (ADR-013).
 
-### 4.3 REST industrial gateway (6E) — PLANNED / NOT IMPLEMENTED (ADR-037)
+### 4.3 REST industrial gateway (6E) — IMPLEMENTED (ADR-037)
 
-HTTP **client** to one industrial gateway/vendor origin. Not a fieldbus. Not the future MES REST API. Candidate: libcurl. One instance = one origin. Tests: local HTTP fixture. Credentials stay in adapter config.
+```text
+Gateway-A HTTP origin          Gateway-B HTTP origin
+        │                            │
+RestIndustrialAdapter          RestIndustrialAdapter
+  (one HTTP origin)              (one HTTP origin)
+        │                            │
+        └────────────┬───────────────┘
+                     ▼
+              IndustrialAdapter*
+                     ▼
+              GenericEquipment
+                     ▼
+              MES / SCADA later
+```
+
+HTTP **client** to one industrial gateway/vendor origin (libcurl). Not a fieldbus. Not the future MES REST API. JSON parsing (nlohmann/json) stays inside the industrial implementation. Public headers do not include `<curl/curl.h>` or `<nlohmann/json.hpp>`.
+
+**One adapter instance = one HTTP origin** (scheme + host + port + optional base path). N independent REST systems ⇒ N adapter instances. Several logical machines on one API are several `GenericEquipment` objects via mapping. Do not create `PumpRestAdapter` / `MixerRestAdapter` / a multi-origin REST adapter.
+
+Mapping is C++ config (`RestAdapterConfig` / `RestEquipmentMapping`): equipment id/type metadata, command name → POST/PUT/PATCH path and optional `{{value}}` JSON body, telemetry name/unit → JSON Pointer into one GET resource, optional state/fault pointers into that same JSON. MES/SCADA never see URLs, HTTP methods, JSON Pointers, or credentials.
+
+`poll()` GETs each mapped telemetry resource once and extracts multiple values. `execute()` performs the mapped write. Commands are generic names from mapping; the adapter does not assume every machine has start/stop/set_speed.
+
+`ConnectionState::Faulted` is a **communication** failure (curl/DNS/refused/timeout/applicable HTTP 4xx/5xx). `Equipment::fault()` is a **machine** process fault from mapped JSON. An HTTP failure does not set machine fault. Last-known equipment remains listed while Faulted.
+
+`connect()` after `Faulted` recreates the curl session (explicit reconnect). Automatic background reconnect is **NOT IMPLEMENTED**. Optional configured health GET on `connect()`; if omitted, TCP connectivity to the origin is enough and mapped requests may proceed.
+
+Authentication: Basic and Bearer in adapter config only. Passwords and tokens are not written to `lastError()`. TLS certificate verification is **on by default** for HTTPS. Disabling verification is an explicit development/testing opt-in.
+
+Implemented methods: GET (reads), POST/PUT/PATCH (commands). DELETE is **NOT IMPLEMENTED**.
+
+Tests use an in-process HTTP/1.1 fixture (`tests/rest_test_server.*`) on localhost. **DEVELOPMENT/INTEGRATION VALIDATION ONLY:** no TLS on the fixture. Not vendor API certification and not a production gateway. Isolation was checked with two independent origins. That is correctness validation, **not** production scalability.
 
 ### 4.4 MQTT (6F) — PLANNED / NOT IMPLEMENTED (ADR-038)
 
@@ -428,7 +459,7 @@ No Work Center types exist in the repository.
 
 ### 10.6 Dynamic PLC / equipment onboarding — PLANNED (ADR-028)
 
-Adding PLCs later must **not** require a new C++ class or a rebuild of MES. Configuration/UI/API (UI later) creates another protocol adapter instance (`OpcUaIndustrialAdapter`, `ModbusIndustrialAdapter`, later REST) plus mappings, then assigns the resulting `Equipment` to plant/line/work center and a responsible supervisor.
+Adding PLCs later must **not** require a new C++ class or a rebuild of MES. Configuration/UI/API (UI later) creates another protocol adapter instance (`OpcUaIndustrialAdapter`, `ModbusIndustrialAdapter`, `RestIndustrialAdapter`, later MQTT/EtherNet/IP/PROFINET if approved) plus mappings, then assigns the resulting `Equipment` to plant/line/work center and a responsible supervisor.
 
 Today, adapter instances are constructed in C++/tests. That is **not** the future onboarding product.
 
@@ -574,14 +605,14 @@ Development Start/Stop at updates 1000/5000 is **not** SCADA (ADR-017).
 | 3 | Conveyor Control | **IMPLEMENTED** |
 | 4 | Product Motion | **IMPLEMENTED** |
 | 5 | Industrial Equipment Abstraction | **IMPLEMENTED** |
-| 6 | Industrial Adapter Layer | **PARTIALLY IMPLEMENTED** (slices 6A–6D done; 6E–6H not implemented) |
+| 6 | Industrial Adapter Layer | **PARTIALLY IMPLEMENTED** (slices 6A–6E done; 6F–6H not implemented) |
 | 7 | MES Core + Resource Management | **PLANNED / NOT IMPLEMENTED** |
 | 8 | SCADA / Operational HMI | **PLANNED / NOT IMPLEMENTED** |
 | 9 | Security & Authorization | **PLANNED / NOT IMPLEMENTED** |
 | 10 | Real Factory Integration | **PLANNED / NOT IMPLEMENTED** |
 | 11 | Commercial Hardening & Enterprise Integration | **PLANNED / NOT IMPLEMENTED** |
 
-Phase 6 is **IN PROGRESS**. Slices **6A–6D** are done. **6E REST → 6F MQTT → 6G EtherNet/IP → 6H PROFINET** remain. Official numbering stays Phases **1–11** (ADR-041). Do not mark the whole phase complete. Do not start Phase 7.
+Phase 6 is **IN PROGRESS**. Slices **6A–6E** are done. **6F MQTT → 6G EtherNet/IP → 6H PROFINET** remain. Official numbering stays Phases **1–11** (ADR-041). Do not mark the whole phase complete. Do not start Phase 7.
 
 Do not use Stage 0–25 or other retired numbering as the live plan.
 
