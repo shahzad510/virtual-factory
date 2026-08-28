@@ -364,28 +364,28 @@ Private `eip_session` wraps libplctag; public headers do not include `libplctag.
 
 Tests use libplctag **`ab_server`** ControlLogix emulator (`tests/eip_test_server.*`) — **DEVELOPMENT/INTEGRATION VALIDATION ONLY**, not Allen-Bradley/Rockwell hardware certification. Two-device isolation was **VALIDATED** under those test conditions (`eip_adapter_test`). That is correctness/isolation validation, **not** a claim of hundreds of production PLCs.
 
-### 4.6 PROFINET (6H) — investigation COMPLETE; NOT IMPLEMENTED (ADR-040)
+### 4.6 PROFINET (6H) — **GATEWAY-ONLY**; native NOT IMPLEMENTED (ADR-040)
 
-PROFINET IO is **not** OPC UA / Modbus / REST / MQTT / EtherNet/IP. It uses **IO-Controller / IO-Device** roles, Ethernet **Layer 2** cyclic process data (RT Class 1+), DCP, GSDML, slot/submodule addressing, diagnostics, and alarms. A TCP/UDP socket mock is **not** PROFINET.
+PROFINET IO is **not** OPC UA / Modbus / REST / MQTT / EtherNet/IP. Native integration requires an **IO-Controller** (Layer 2 cyclic IO, DCP, GSDML). **No OSS C/C++ IO-Controller** suitable for this repo was found (p-net is IO-Device/GPLv3 only).
 
-**Investigation outcome (2026-08-28):** The Virtual Factory industrial adapter layer must act as an **IO-Controller** (read/write cyclic IO on IO-Devices), matching other adapters’ client/controller role. **No credible open-source C/C++ IO-Controller stack** is available for embedding in `virtual_factory_industrial` without GPL-only options, PI membership gates, or commercial licenses.
+**Final decision (ADR-040):** Phase 6 **6H is GATEWAY-ONLY.** PROFINET field equipment integrates via an **external industrial gateway** exposing **OPC UA, Modbus TCP, or REST** to existing adapters (6B–6E). MES/SCADA still consume `GenericEquipment`; they never see PROFINET slots.
 
-| Stack | Role | Verdict |
-| --- | --- | --- |
-| RT-Labs **p-net** | IO-Device only | GPLv3; **not** a controller — do not misuse |
-| **PROFINET Community Stack** (PI) | Device + controller APIs via integration | PI membership; not public OSS drop-in |
-| **profinet-py** | IO-Controller (Python) | GPL-3.0; Python; immature — not C++ adapter |
-| Commercial (Siemens driver, Hilscher, Softing, RAPIDSEA, RTA) | IO-Controller | **Future path** — separate ADR approval |
+```text
+PROFINET IO-Device(s)
+        │
+Industrial gateway (out of repo)
+        │ OPC UA | Modbus | REST
+        ▼
+Existing IndustrialAdapter (6B–6E)
+        ▼
+GenericEquipment
+```
 
-**`ProfinetIndustrialAdapter` is NOT IMPLEMENTED.** Phase 6 remains **IN PROGRESS**.
+**`ProfinetIndustrialAdapter` is NOT IMPLEMENTED** and is **deferred** unless a future ADR approves a commercial (Option A) or PI Community Stack (Option B) path.
 
-**Future topology (when a controller stack is approved):** one adapter instance ≈ one IO-Controller on one Ethernet interface; one controller may manage **multiple IO-Devices**; `PLC-001` / `PLC-002` are `GenericEquipment` mappings to device/slot/subslot process data — not C++ classes. Cyclic IO in private stack buffers; `poll()` copies latest values; background cyclic thread stays inside adapter (like MQTT Paho). `IndustrialAdapter` contract is **sufficient** — no header changes required.
+**Trade-offs vs native:** higher latency; gateway-dependent diagnostics; cyclic IO becomes polled gateway data, not direct RT Class 1. **Acceptable for Phase 6** equipment abstraction goal.
 
-**Linux requirements (future):** raw Ethernet (`AF_PACKET`), often root/CAP_NET_RAW; dedicated NIC; loopback insufficient; PREEMPT_RT for IRT; veth/namespaces for isolated dev only.
-
-**Future 1,200-device benchmark:** PROFINET would participate as ~200 logical IO-Device mappings across controller adapter instances; **not measured** in 6H; report **VALIDATED UNDER THESE TEST CONDITIONS** only after real benchmarks.
-
-**Approved alternatives without native 6H:** PROFINET field devices via **gateway** (OPC UA / Modbus / REST adapters already implemented).
+**Future 1,200-device benchmark:** PROFINET “200 devices” = **200 gateway-backed logical mappings** via existing adapters — **not** 200 native PN IO-Devices. **VALIDATED UNDER THESE TEST CONDITIONS** only after measurement; 16 GB laptop capacity unclaimed.
 
 ---
 

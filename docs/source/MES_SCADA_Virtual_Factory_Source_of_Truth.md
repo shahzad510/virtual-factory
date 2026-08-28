@@ -167,7 +167,7 @@ Official Phase **6** remains “Industrial Adapter Layer.” Implementation work
 | **6E** | REST industrial **gateway** adapter (HTTP client) | **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** | MQTT industrial adapter (broker client) | **IMPLEMENTED** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** at 10/50/100/200 mappings + 2×50 brokers (see `docs/mqtt-scalability-test.md`; **not** production capacity) |
 | **6G** | EtherNet/IP industrial adapter (libplctag explicit CIP tag messaging) | **IMPLEMENTED** / **TESTED** (local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| **6H** | PROFINET — investigation **COMPLETE**; native adapter **NOT IMPLEMENTED** (ADR-040) | **NOT IMPLEMENTED** |
+| **6H** | PROFINET — **GATEWAY-ONLY** (ADR-040); native adapter **NOT IMPLEMENTED** | **GATEWAY-ONLY** |
 
 Intended order: 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
 
@@ -205,24 +205,13 @@ MQTT is **broker pub/sub**. The adapter is an MQTT **client** (Eclipse Paho MQTT
 
 CIP over Ethernet via **libplctag v2.7.1** (commit `bdb10aeaf4f374cec7ae4e66887446dedf952dc1`, MPL-2.0). The adapter is a **scanner/client**, not “Modbus with another library.” **Explicit messaging / symbolic tag read/write only.** Class 1 implicit/cyclic I/O (UDP 2222) is **NOT IMPLEMENTED**. Do not claim implicit/cyclic I/O unless genuinely implemented and tested. One instance = one device/session (host + port + CIP path + plc type). Several logical machines on one device are `GenericEquipment` mappings (`PLC-001` is configuration identity, not a C++ class). Private `eip_session` wrapper; public headers do not include `libplctag.h`. `connect()` after `Faulted` is explicit. Communication Faulted ≠ `Equipment::fault()`. Tests: libplctag **`ab_server`** ControlLogix emulator — **DEVELOPMENT/INTEGRATION VALIDATION ONLY**, not Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under those test conditions — **not** production capacity.
 
-### 7.6 PROFINET (6H) — investigation COMPLETE; NOT IMPLEMENTED (ADR-040)
+### 7.6 PROFINET (6H) — **GATEWAY-ONLY**; native NOT IMPLEMENTED (ADR-040)
 
-PROFINET IO uses **IO-Controller / IO-Device** roles, Ethernet Layer 2 **cyclic process data**, DCP, GSDML, slot/submodule addressing, diagnostics, and alarms. It is **not** TCP/UDP request/response like OPC UA, Modbus, REST, MQTT, or EtherNet/IP.
+PROFINET IO uses IO-Controller / IO-Device roles and Layer 2 cyclic process data. **Native `ProfinetIndustrialAdapter` is NOT IMPLEMENTED** — no suitable OSS C/C++ IO-Controller for this repo (p-net is IO-Device only; PI CS requires membership; commercial stacks require license).
 
-**Investigation completed 2026-08-28.** The industrial adapter must act as an **IO-Controller** (client to IO-Devices). **No credible open-source C/C++ IO-Controller stack** is available for embedding in `virtual_factory_industrial` without GPL-only bindings, PI membership gates, or commercial licenses.
+**Final architectural decision (ADR-040):** **6H GATEWAY-ONLY.** PROFINET equipment reaches the platform through an **external industrial gateway** (OPC UA / Modbus TCP / REST) and existing adapters **6B–6E**. `GenericEquipment` and MES boundaries unchanged. Do not fake PROFINET with TCP/UDP.
 
-| Candidate | Role | Outcome |
-| --- | --- | --- |
-| RT-Labs **p-net** | IO-Device | GPLv3; **not** IO-Controller — rejected for adapter |
-| **PROFINET Community Stack** (PI) | Integration toolkit | PI membership; not public OSS drop-in |
-| **profinet-py** | IO-Controller (Python) | GPL-3.0; not C++ industrial library |
-| Commercial stacks | IO-Controller | Future path — separate ADR |
-
-**`ProfinetIndustrialAdapter` is NOT IMPLEMENTED.** Do not fake PROFINET with raw TCP/UDP. **Phase 6 remains IN PROGRESS** (6A–6G done).
-
-**Future topology (if approved):** one adapter ≈ one IO-Controller on one Ethernet interface; multiple IO-Devices per controller; `PLC-001`/`PLC-002` as `GenericEquipment` mappings to process data — not C++ classes. `IndustrialAdapter` contract sufficient; private cyclic thread inside adapter. Linux: raw Ethernet, often root/CAP_NET_RAW; dedicated NIC.
-
-**Alternatives without native 6H:** gateway (PROFINET device → OPC UA / Modbus / REST adapters already in 6B–6E).
+Native PROFINET (commercial or PI stack) remains a **deferred future option** requiring a new ADR. Phase 6 may proceed to **final audit** without native 6H code.
 
 Phase 7 onboarding (ADR-028) instantiates these protocol adapters from configuration. No new C++ adapter class per PLC. No Phase 6 adapter manager.
 
@@ -497,7 +486,7 @@ Gazebo plugin is **not** an `IndustrialAdapter`.
 
 ## 32. Next direction
 
-**Now:** Phase 6 slice **6H investigation is complete**; native PROFINET adapter **NOT IMPLEMENTED**. Future native PROFINET requires a **new approved ADR** (commercial IO-Controller stack, PI Community Stack integration, or explicit gateway-only decision). **Do not start MES code.**
+**Now:** **6H GATEWAY-ONLY** decision recorded (ADR-040). Phase 6 **final audit** then Phase 7 when explicitly instructed. **Do not start MES code.**
 
 **Then:** Phase 6 final audit. **Only after that, when explicitly instructed:** Phase 7 MES Core + Resource Management, still consuming the existing Equipment and adapter contracts.
 

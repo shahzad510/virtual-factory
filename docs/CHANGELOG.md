@@ -8,16 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Phase 6H PROFINET investigation (2026-08-28): Completed stack and architecture investigation per ADR-040. **Native `ProfinetIndustrialAdapter` is NOT IMPLEMENTED.** PROFINET IO requires an **IO-Controller** role (cyclic Layer 2 process data, DCP, GSDML, slot/submodule mapping). No credible **open-source C/C++ IO-Controller** stack is available for embedding in `virtual_factory_industrial` (p-net is IO-Device/GPLv3; PI Community Stack requires membership; profinet-py is Python/GPL). **IndustrialAdapter contract is sufficient** for a future implementation; no header changes required. Approved future paths: commercial IO-Controller stack, PI CS integration, or gateway via existing OPC UA/Modbus/REST adapters. **Phase 6 remains IN PROGRESS** (6A–6G done). **Phase 7 NOT STARTED.** SoT PDF regenerated.
+Phase 6H final architectural decision (2026-08-28): ADR-040 amended — **Option C GATEWAY-ONLY** approved for Phase 6. PROFINET equipment integrates via external gateway → OPC UA / Modbus / REST → existing adapters (6B–6E). Native `ProfinetIndustrialAdapter` **NOT IMPLEMENTED** (deferred; commercial/PI paths require future ADR). Phase 6 final audit pending. Phase 7 **NOT STARTED**.
 
-- **6A–6G**: **IMPLEMENTED** / **TESTED** (6C/MQTT/EIP scale = **VALIDATED** only).
-- **6H**: investigation **COMPLETE**; **NOT IMPLEMENTED**.
-- No fake TCP/UDP PROFINET; no `profinet_adapter_test` (no implementation to test).
+- **6H:** **GATEWAY-ONLY** (not IMPLEMENTED native).
+- Options A (commercial) and B (PI CS) **deferred**.
 
 ### Changed
 
-- ADR-040: investigation complete; stack comparison; topology; Linux requirements; future test strategy.
-- ADR-041: 6H recorded as investigation complete, not implemented.
+- ADR-040: final decision, option evaluation, 1,200-device gateway labeling, Phase 6 closure criteria.
 
 ---
 

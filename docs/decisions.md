@@ -669,10 +669,10 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 
 ---
 
-## ADR-040 — PROFINET investigation complete; no OSS IO-Controller path for 6H (slice 6H)
+## ADR-040 — PROFINET investigation complete; **GATEWAY-ONLY** decision for Phase 6 (slice 6H)
 
-- **Status:** Accepted. Investigation **COMPLETE** (2026-08-28). **NOT IMPLEMENTED.** No production adapter code in this increment.
-- **Date:** 2026-08-24 (investigation completed 2026-08-28)
+- **Status:** Accepted. Investigation **COMPLETE** (2026-08-28). Final architectural decision **COMPLETE** (2026-08-28). **6H GATEWAY-ONLY** — native `ProfinetIndustrialAdapter` **NOT IMPLEMENTED**.
+- **Date:** 2026-08-24 (investigation 2026-08-28; final decision 2026-08-28)
 
 **Context:** PROFINET IO uses Ethernet Layer 2, cyclic real-time process data, DCP, GSDML engineering, slot/submodule addressing, and IO-Controller / IO-Device roles. It is not TCP/UDP request/response like OPC UA, Modbus, REST, or MQTT. Slice **6H** required investigation before any code.
 
@@ -745,19 +745,76 @@ A **private background cyclic thread** inside the adapter (like Paho MQTT) is ac
 - No fake TCP/UDP PROFINET mocks.
 - Separate: unit (mapping), stack integration, multi-device isolation, optional hardware bench.
 
-### Decision (2026-08-28)
+### Decision (2026-08-28) — investigation
 
-- **6H `ProfinetIndustrialAdapter` is NOT IMPLEMENTED** in this repository increment.
-- **Investigation is COMPLETE.** ADR-040 amended with evidence above.
-- **Approved future paths** (require separate ADR approval before code):
-  1. **Commercial IO-Controller stack** (Siemens PROFINET Driver, Hilscher, Softing, RAPIDSEA, RTA toolkit on PI CS).
-  2. **PI PROFINET Community Stack** after membership + integration project (not drop-in).
-  3. **Gateway architecture** — PROFINET devices reached via existing OPC UA / Modbus / REST adapters (no native PROFINET adapter).
+- **6H `ProfinetIndustrialAdapter` is NOT IMPLEMENTED** in this repository.
+- **Investigation is COMPLETE.**
 - **Rejected:** fake TCP/UDP; p-net as controller; GPLv3 profinet-py subprocess wrapper as “production adapter”; claiming IMPLEMENTED without real cyclic IO stack.
 
-**Consequences:** Phase 6 remains **IN PROGRESS** (6A–6G done; 6H honestly **NOT IMPLEMENTED**). Phase 7 must not start until explicitly instructed. Factories using PROFINET are acknowledged in SoT; connectivity may use gateways or a future approved native stack.
+### Final architectural decision (2026-08-28) — **Option C: GATEWAY-ONLY**
 
-**Alternatives:** Fake TCP PROFINET (rejected); p-net as controller (rejected); GPL Python controller wrapper (rejected for C++ production library); silent omission of PROFINET (rejected).
+After evaluating all paths, **Phase 6 slice 6H is closed architecturally as GATEWAY-ONLY.** Native PROFINET IO-Controller code in `virtual_factory_industrial` is **deferred** unless a future ADR explicitly approves Option A or B.
+
+**Recommendation:** **Option C — Gateway-only** (not Option A, B, or D alone).
+
+| Option | Summary | Evaluation | Verdict |
+| --- | --- | --- | --- |
+| **A — Commercial IO-Controller** | Siemens PROFINET Driver, Hilscher netPROFI, Softing, RAPIDSEA, RTA toolkit | Technically viable IO-Controller; C/C++ APIs exist; RT Class 1 cyclic IO; requires **commercial license**, vendor SDK integration, raw-Ethernet NIC, dev hardware (PN IO-Devices or certified simulators), and ongoing vendor dependency. Appropriate for a **productized industrial gateway or OEM** stage, not the current OSS C++17 adapter library without budget, license, and hardware procurement. | **Deferred** — valid **future** path; requires separate ADR + license approval before any code |
+| **B — PI Community Stack** | PI membership + GitLab access + HAL integration | Controller APIs exist in CS but CS is a **toolkit**, not a drop-in library. Requires PI membership, license agreement, contribution obligations, GSDML engineering pipeline, cyclic IO integration, diagnostics mapping, and months of porting. RTA commercial toolkit is the first known productized controller path on CS. Not reproducible in this public repo without PI access. | **Deferred** — realistic only with PI membership and dedicated integration project |
+| **C — Gateway-only** | PN IO-Device → industrial gateway → OPC UA / Modbus / REST → existing adapter → `GenericEquipment` | **Architecturally clean** at the MES boundary: MES/SCADA still consume `Equipment`, not PROFINET slots. **Industry-practical** — gateways (Hilscher, Siemens IE/PB links, Phoenix, etc.) are common. **Latency** higher than native cyclic IO; **diagnostics** and **true cyclic RT** are gateway-dependent (often polled Modbus/OPC UA, not sub-ms PN IO). **Sufficient for Phase 6** goal: protocol-independent equipment model + multi-protocol factory connectivity. No new C++ adapter class; no fake PROFINET; reuses tested 6B–6E adapters. | **APPROVED for Phase 6** |
+| **D — Defer entirely** | No PROFINET path documented | Would leave a protocol gap with no honest integration story for PN-heavy factories. | **Rejected alone** — gateway path (C) is the approved deferral of *native* code, not omission of PROFINET equipment |
+
+### Does Phase 6 require native PROFINET?
+
+**No.** Phase 6 goal is an **IndustrialAdapter layer** mapping industrial sources into **GenericEquipment**. That goal is met for PROFINET **equipment** when a field device is reached through a **standards-based gateway** already supported by implemented adapters (OPC UA, Modbus TCP, REST).
+
+| Integration model | What it means | Phase 6 status |
+| --- | --- | --- |
+| **1. Native IO-Controller** | `ProfinetIndustrialAdapter` speaks PN cyclic IO directly | **NOT IMPLEMENTED** — deferred |
+| **2. Gateway access** | PN device → gateway → existing adapter | **APPROVED (6H GATEWAY-ONLY)** |
+| **3. MES/SCADA interoperability** | Normalized `Equipment` regardless of fieldbus | **Achieved via (2)** — MES never sees PROFINET |
+
+Native PROFINET remains valuable for **low-latency cyclic IO**, **full PN diagnostics/alarms**, and **direct IO-Controller deployments** — but it is **not a prerequisite** to proceed to Phase 7 or to represent PROFINET-origin equipment in the architecture.
+
+### Gateway architecture (approved)
+
+```text
+PROFINET IO-Device(s) on plant Ethernet
+        │
+Industrial gateway / PN proxy  (vendor hardware or appliance; out of repo scope)
+        │  OPC UA server | Modbus TCP | REST API
+        ▼
+OpcUaIndustrialAdapter | ModbusIndustrialAdapter | RestIndustrialAdapter  (6B–6E)
+        ▼
+GenericEquipment  (PLC-001, PLC-002, … configuration identities)
+        ▼
+MES / SCADA (Phase 7+)
+```
+
+Gateway configuration, GSDML, and PN engineering stay **outside** this application (gateway vendor tools or Phase 7 onboarding). This repo maps **gateway-exposed** nodes/registers/endpoints only.
+
+### Future ~1,200-device validation (gateway path)
+
+Target composition (~200 per protocol) remains a **future system benchmark**, not a production claim. Under **gateway-only 6H**:
+
+- **PROFINET “200 devices”** in that test means **200 logical `GenericEquipment` mappings** reached via **gateway-backed OPC UA / Modbus / REST origins** — **not** 200 native PN IO-Devices on one IO-Controller.
+- Honest labeling: **VALIDATED UNDER THESE TEST CONDITIONS** with metrics (CPU, RSS, FDs, sockets, threads, poll latency, connect time, message rates, failures).
+- **16 GB RAM laptop capacity for 1,200 devices is unmeasured** — do not claim until benchmarked.
+- Native PN participation would require Option A/B implementation first; gateway path reuses existing scalability experiments (6C MQTT/OPC UA patterns).
+
+### Phase 6 / Phase 7 status after this decision
+
+- **6H:** **GATEWAY-ONLY** — native adapter **NOT IMPLEMENTED**.
+- **Phase 6:** **IN PROGRESS** until **Phase 6 final audit** (6A–6G implemented/tested; 6H architecturally resolved). Do not mark Phase 6 **COMPLETE** until that audit is explicitly approved.
+- **Phase 7:** **NOT STARTED.** No adapter manager, onboarding UI, or MES code in this decision.
+
+### If native PROFINET is approved later
+
+Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/privilege requirements, test fixture plan, and explicit rejection of fake TCP/UDP. `IndustrialAdapter` contract remains sufficient (no header change).
+
+**Consequences:** Phase 6 may proceed to final audit without native 6H. PROFINET-heavy factories integrate via documented gateway pattern. No `ProfinetIndustrialAdapter` code until explicit future approval.
+
+**Alternatives:** Fake TCP PROFINET (rejected); p-net as controller (rejected); GPL Python wrapper (rejected); silent PROFINET omission (rejected); mandatory native commercial stack for Phase 6 closure (rejected — gateway suffices).
 
 ---
 
@@ -779,7 +836,7 @@ A **private background cyclic thread** inside the adapter (like Paho MQTT) is ac
   - **6E** REST industrial gateway — **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; not vendor certification)
   - **6F** MQTT / Paho C — **IMPLEMENTED** / **TESTED** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity)
   - **6G** EtherNet/IP / libplctag — **IMPLEMENTED** / **TESTED** (explicit messaging only; local `ab_server` fixture ≠ hardware certification)
-  - **6H** PROFINET — investigation **COMPLETE**; **NOT IMPLEMENTED** (no OSS IO-Controller path; ADR-040)
+  - **6H** PROFINET — investigation **COMPLETE**; **GATEWAY-ONLY** (ADR-040); native adapter **NOT IMPLEMENTED**
 - Order: 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
 - Do not start Phase 7 until Phase 6 scope is completed **or** remaining slices (especially 6H) are explicitly marked by an approved ADR.
 - Do not implement an adapter manager in Phase 6 (ADR-028).

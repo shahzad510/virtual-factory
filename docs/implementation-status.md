@@ -43,7 +43,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6E** REST industrial gateway adapter (`RestIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** MQTT industrial adapter (`MqttIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; see `docs/mqtt-scalability-test.md`) |
 | **6G** EtherNet/IP industrial adapter (`EtherNetIpIndustrialAdapter`) | **COMPLETE** / **TESTED** (libplctag explicit messaging; local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| **6H** PROFINET | **NOT IMPLEMENTED** — investigation **COMPLETE** (2026-08-28; ADR-040). No OSS IO-Controller path for C++ adapter |
+| **6H** PROFINET | **GATEWAY-ONLY** (ADR-040 final decision 2026-08-28). Native `ProfinetIndustrialAdapter` **NOT IMPLEMENTED** |
 
 ---
 
@@ -292,7 +292,7 @@ Intended scope (all **PLANNED**, none in code): configurable plant hierarchy; dy
 
 Do not implement Phase 7 until explicitly instructed. Do not put scheduling logic in `Equipment` or `IndustrialAdapter`.
 
-Remaining Phase 6: **6H PROFINET** investigation **COMPLETE** — native adapter **NOT IMPLEMENTED** (ADR-040). Approved future paths: commercial IO-Controller stack, PI Community Stack integration, or gateway via existing adapters. **Phase 6 remains IN PROGRESS.** Phase 7 remains **NOT STARTED**.
+Remaining Phase 6: **6H GATEWAY-ONLY** decision recorded (ADR-040). Native PROFINET adapter **NOT IMPLEMENTED**. **Phase 6 final audit** remains before marking Phase 6 **COMPLETE**. **Phase 7 NOT STARTED.**
 
 ---
 
@@ -303,4 +303,4 @@ Remaining Phase 6: **6H PROFINET** investigation **COMPLETE** — native adapter
 3. Inspect `equipment/`, `industrial/`, `gazebo/plugins/conveyor/`, `tests/`.
 4. `cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure`
 5. `cmake --build gazebo/plugins/conveyor/build`
-6. Do **not** start MES (including Resource Management), SCADA, GUI, auth, or database. Do **not** start Phase 7 until explicitly instructed. Native PROFINET adapter requires a **new approved ADR** (commercial stack, PI CS, or other controller path).
+6. Do **not** start MES (including Resource Management), SCADA, GUI, auth, or database. Do **not** start Phase 7 until explicitly instructed. Native PROFINET requires a **future ADR** (commercial or PI stack); Phase 6 PROFINET equipment uses **gateway → OPC UA/Modbus/REST** (ADR-040).

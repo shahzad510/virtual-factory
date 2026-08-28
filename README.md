@@ -17,9 +17,9 @@ MES + SCADA + industrial adapter platform. Gazebo Sim is a **virtual plant** for
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Change history |
 | [docs/archive/](docs/archive/) | Historical documents only — not authoritative |
 
-**Current phase:** Phase 6 — Industrial Adapter Layer: **IN PROGRESS**. Slices **6A–6G** done (mock, OPC UA, 10–200 simulated OPC UA validation, Modbus TCP, REST gateway, MQTT + MQTT multi-equipment validation, EtherNet/IP explicit messaging). **6H NOT IMPLEMENTED** (PROFINET). Official roadmap remains Phases **1–11** (ADR-041). Local REST/MQTT/EtherNet/IP tests are **not** vendor certification. OPC UA/MQTT scale VALIDATED ≠ production capacity. EtherNet/IP two-device isolation **VALIDATED** under test conditions only.
+**Current phase:** Phase 6 — Industrial Adapter Layer: **IN PROGRESS**. Slices **6A–6G** done. **6H GATEWAY-ONLY** (PROFINET via external gateway → OPC UA/Modbus/REST; native adapter **NOT IMPLEMENTED**, ADR-040). Phase 6 final audit pending. Phase 7 **NOT STARTED**.
 
-**Next implementation slice (not this increment):** Native PROFINET requires separate ADR approval (commercial IO-Controller stack, PI Community Stack integration, or gateway-only path).
+**Next step:** Phase 6 final audit, then Phase 7 only when explicitly instructed. Native PROFINET deferred unless a future ADR approves commercial or PI stack.
 
 **Next major phase:** Phase 7 — MES Core + Resource Management (**NOT STARTED** / **NOT IMPLEMENTED**). All MES features are **PLANNED** (ADR-024, 027–035). Do not implement them until instructed. Do not start Phase 7 after PROFINET investigation.
 
