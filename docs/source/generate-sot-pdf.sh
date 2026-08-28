@@ -33,6 +33,7 @@ fi
   --disable-gpu \
   --no-pdf-header-footer \
   --no-sandbox \
+  --user-data-dir="${TMPDIR:-/tmp}/chrome-sot-pdf-$$" \
   --print-to-pdf="$PDF" \
   "file://$HTML"
 

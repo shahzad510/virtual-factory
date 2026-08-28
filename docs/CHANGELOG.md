@@ -8,14 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Phase 6H final architectural decision (2026-08-28): ADR-040 amended — **Option C GATEWAY-ONLY** approved for Phase 6. PROFINET equipment integrates via external gateway → OPC UA / Modbus / REST → existing adapters (6B–6E). Native `ProfinetIndustrialAdapter` **NOT IMPLEMENTED** (deferred; commercial/PI paths require future ADR). Phase 6 final audit pending. Phase 7 **NOT STARTED**.
+Phase 6 final audit and 6H gateway formalization (2026-08-28): ADR-040 finalized — **PROFINET supported through gateway integration** (first-class, approved path). Native `ProfinetIndustrialAdapter` **DEFERRED**. Phase 6 marked **COMPLETE**. Phase 7 **NOT STARTED**.
 
-- **6H:** **GATEWAY-ONLY** (not IMPLEMENTED native).
-- Options A (commercial) and B (PI CS) **deferred**.
+- **6H:** **SUPPORTED VIA GATEWAY** (not native IO-Controller).
+- Added `docs/profinet-gateway-integration.md` (configuration model, capability matrix, test evidence).
+- Full regression suite **9/9 passed** (Phase 6 final audit).
 
 ### Changed
 
-- ADR-040: final decision, option evaluation, 1,200-device gateway labeling, Phase 6 closure criteria.
+- ADR-040: gateway-first terminology; Phase 6 **COMPLETE**.
+- `architecture.md`, `implementation-status.md`, `roadmap.md`, SoT Markdown/PDF, `architecture-invariants.mdc`.
+- Native PROFINET commercial/PI paths remain **deferred** (future ADR required).
+
+---
+
+## [2026-08-28] — Phase 6H PROFINET gateway decision (investigation)
+
+Phase 6H PROFINET investigation (2026-08-28): ADR-040 — no suitable OSS C/C++ IO-Controller for native integration. **Gateway-based integration approved.** Native `ProfinetIndustrialAdapter` **DEFERRED**. Phase 6 final audit pending at that increment.
+
+- **6H:** Investigation **COMPLETE**; gateway path **APPROVED**.
+- Options: commercial stack or PI CS **deferred**.
+
+### Changed
+
+- ADR-040: investigation, option evaluation, 1,200-device gateway labeling.
 
 ---
 

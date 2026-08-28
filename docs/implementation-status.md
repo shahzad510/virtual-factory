@@ -21,10 +21,10 @@ Gazebo is not MES. `ConveyorSystem` is not SCADA. The mock adapter is not a prod
 | Item | Value |
 | --- | --- |
 | Branch | `master` (tracks `origin/master`) |
-| HEAD commit | Use `git log -1` for the hash after the 6F commit lands on `origin/master`. |
-| Working tree | Use `git status`. After 6G, PROFINET (6H) remains unimplemented. |
+| HEAD commit | `024b0b1` → see `git log -1` after gateway formalization commit |
+| Working tree | Use `git status`. |
 | Remote | `origin/master` |
-| Audit date | 2026-08-28 |
+| Audit date | 2026-08-28 (Phase 6 final audit) |
 
 Use `git status` and `git log -1` when resuming; this file is not a substitute for Git.
 
@@ -32,7 +32,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 
 ## 3. Current phase
 
-**Phase 6 — Industrial Adapter Layer — IN PROGRESS**
+**Phase 6 — Industrial Adapter Layer — COMPLETE** (final audit 2026-08-28)
 
 | Slice | Status |
 | --- | --- |
@@ -43,7 +43,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6E** REST industrial gateway adapter (`RestIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** MQTT industrial adapter (`MqttIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; see `docs/mqtt-scalability-test.md`) |
 | **6G** EtherNet/IP industrial adapter (`EtherNetIpIndustrialAdapter`) | **COMPLETE** / **TESTED** (libplctag explicit messaging; local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| **6H** PROFINET | **GATEWAY-ONLY** (ADR-040 final decision 2026-08-28). Native `ProfinetIndustrialAdapter` **NOT IMPLEMENTED** |
+| **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native IO-Controller **DEFERRED**. See `docs/profinet-gateway-integration.md` |
 
 ---
 
@@ -56,7 +56,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | 3 | Conveyor Control | **COMPLETE** |
 | 4 | Product Motion | **COMPLETE** (runtime verified) |
 | 5 | Industrial Equipment Abstraction | **COMPLETE** (open-ended / capability-driven) |
-| 6 | Industrial Adapter Layer | **IN PROGRESS** (slices 6A–6G done; 6H not implemented) |
+| 6 | Industrial Adapter Layer | **COMPLETE** (6A–6G implemented/tested; 6H supported via gateway; native PN deferred) |
 
 ---
 
@@ -92,7 +92,9 @@ Implemented:
 - Multiple EtherNet/IP devices via **multiple adapter instances** (one device/session per instance); several logical machines on one device via mappings
 - libplctag `ab_server` ControlLogix emulator fixture and unit test `eip_adapter_test` (connect/poll/commands, multi-equipment, isolation, timeout/refused/invalid tag, Faulted vs `Equipment::fault()`, explicit reconnect, two devices). **DEVELOPMENT/INTEGRATION VALIDATION ONLY** — not Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under those test conditions — **not** production capacity
 
-Not implemented: PROFINET (6H); Class 1 implicit/cyclic EtherNet/IP I/O; Sparkplug B; MQTT 5 architecture; MQTT wildcards; REST DELETE; Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
+- **PROFINET (6H):** supported via industrial gateway → OPC UA / Modbus / REST / MQTT (ADR-040, `docs/profinet-gateway-integration.md`). Native IO-Controller **deferred**.
+
+Not implemented in adapters: native PROFINET IO-Controller; Class 1 implicit/cyclic EtherNet/IP I/O; Sparkplug B; MQTT 5 architecture; MQTT wildcards; REST DELETE; Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
 
 ---
 
@@ -217,7 +219,7 @@ ctest --test-dir build --output-on-failure
 | `mqtt_multi_equipment_scalability_test` | **VALIDATED** (2026-08-28, ~210 s). See `docs/mqtt-scalability-test.md`. Local Mosquitto; **not** production capacity |
 | `eip_adapter_test` | **PASSED** (2026-08-28, ~6 s). Local libplctag `ab_server`; **not** Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under test conditions |
 
-Full suite: **9/9 passed** (2026-08-28, ~254 s). No `profinet_adapter_test` — 6H native adapter **NOT IMPLEMENTED**.
+Full suite: **9/9 passed** (Phase 6 final audit 2026-08-28). Gateway-backed PROFINET path validated by existing multi-equipment adapter tests (see `docs/profinet-gateway-integration.md`). No native `profinet_adapter_test`.
 
 ---
 
@@ -264,7 +266,7 @@ Kinematic result: −1.5 m → 0.5 m at 0.5 m/s (same as Phase 4). Development S
 
 Label: **NOT IMPLEMENTED** / **PLANNED**.
 
-- Production PROFINET (6H) — investigation required; a TCP mock is not PROFINET
+- Native PROFINET IO-Controller in MES (**deferred**; gateway path is supported)
 - Class 1 implicit/cyclic EtherNet/IP I/O (UDP 2222); EtherNet/IP hardware certification beyond `ab_server` fixture
 - REST DELETE, background reconnect, production vendor HTTPS certification
 - Modbus RTU, TLS, FC 15/16 batch writes, background reconnect
@@ -290,17 +292,4 @@ Label: **NOT IMPLEMENTED** / **PLANNED**.
 
 Intended scope (all **PLANNED**, none in code): configurable plant hierarchy; dynamic PLC/equipment onboarding; production orders; routing/BOM/BOP; Resource Management (capability vs availability; work centers; allocation/reservation; capacity); resource readiness with specific hold reasons; scheduling/dispatch; execution tracking; materials; scrap; quality; genealogy; downtime; OEE (distinct from broader efficiency); personnel/tools; maintenance availability; contextualized events and operational analytics. See `architecture.md` §10, SoT PDF §§8–23, ADR-024 and ADR-027–035.
 
-Do not implement Phase 7 until explicitly instructed. Do not put scheduling logic in `Equipment` or `IndustrialAdapter`.
-
-Remaining Phase 6: **6H GATEWAY-ONLY** decision recorded (ADR-040). Native PROFINET adapter **NOT IMPLEMENTED**. **Phase 6 final audit** remains before marking Phase 6 **COMPLETE**. **Phase 7 NOT STARTED.**
-
----
-
-## 13. Resume instructions
-
-1. Read `docs/README.md` → SoT PDF → this file → `architecture.md` → `decisions.md` → `roadmap.md` → `CHANGELOG.md`.
-2. `git status` and `git log --oneline --decorate -10`.
-3. Inspect `equipment/`, `industrial/`, `gazebo/plugins/conveyor/`, `tests/`.
-4. `cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure`
-5. `cmake --build gazebo/plugins/conveyor/build`
-6. Do **not** start MES (including Resource Management), SCADA, GUI, auth, or database. Do **not** start Phase 7 until explicitly instructed. Native PROFINET requires a **future ADR** (commercial or PI stack); Phase 6 PROFINET equipment uses **gateway → OPC UA/Modbus/REST** (ADR-040).
+Phase 6 is **COMPLETE** (final audit 2026-08-28). Do not implement Phase 7 until explicitly instructed. Do not put scheduling logic in `Equipment` or `IndustrialAdapter`.

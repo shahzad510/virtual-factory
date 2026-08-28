@@ -23,6 +23,7 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 | 7 | This file | Resume procedure, commands, index. |
 | — | [opcua-scalability-test.md](opcua-scalability-test.md) | OPC UA multi-PLC **validation record** (measured scale ≠ production proof). |
 | — | [mqtt-scalability-test.md](mqtt-scalability-test.md) | MQTT multi-equipment **validation record** (measured scale ≠ production proof). |
+| — | [profinet-gateway-integration.md](profinet-gateway-integration.md) | Phase 6H PROFINET **supported via gateway** architecture (ADR-040). |
 | — | [archive/](archive/) | Historical/legacy documents only. Not authoritative. |
 | — | Git history | Historical implementation record. |
 
@@ -50,7 +51,7 @@ Do not create a second source of truth. If architecture must change, update `dec
 9. Verify build and tests before modifying code (commands below).
 10. Never infer implementation from the roadmap alone.
 
-Continue from the **Next Step** in `implementation-status.md`. Do **not** start Phase 7 (MES) unless that work is explicitly instructed. Native PROFINET adapter requires a **new approved ADR** (commercial stack, PI CS, or gateway path).
+Continue from the **Next Step** in `implementation-status.md`. Do **not** start Phase 7 (MES) unless that work is explicitly instructed. Native PROFINET IO-Controller requires a **future approved ADR** (commercial stack or PI CS). Gateway-based PROFINET integration is **supported** (ADR-040, `profinet-gateway-integration.md`).
 
 Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discipline, architecture invariants, plan-then-approve workflow). Those rules do not replace the SoT.
 
@@ -61,11 +62,11 @@ Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discip
 | Item | Status |
 | --- | --- |
 | Phases 1–5 | **COMPLETE** |
-| Phase 6 | **IN PROGRESS** (slices **6A–6G** done; **6H NOT IMPLEMENTED**; ADR-041) |
+| Phase 6 | **COMPLETE** (6A–6G implemented/tested; **6H SUPPORTED VIA GATEWAY**; ADR-040, ADR-041) |
 | Phase 6E REST industrial gateway | **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; not vendor certification) |
 | Phase 6F MQTT | **IMPLEMENTED** / **TESTED** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity) |
 | Phase 6G EtherNet/IP | **IMPLEMENTED** / **TESTED** (libplctag explicit messaging; local `ab_server`; not hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| Phase 6H PROFINET | **GATEWAY-ONLY** (ADR-040); native adapter **NOT IMPLEMENTED** |
+| Phase 6H PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040); native IO-Controller **DEFERRED** |
 | Phase 7 MES Core + Resource Management | **NOT STARTED** / **NOT IMPLEMENTED** (all MES scope **PLANNED**; ADR-024, 027–035) |
 | SCADA, API, database, auth, Blazor, real PLC | **NOT IMPLEMENTED** |
 
