@@ -782,9 +782,9 @@ Native PROFINET remains valuable for **low-latency cyclic IO**, **full PN diagno
 PROFINET IO-Device(s) on plant Ethernet
         │
 Industrial gateway / PN proxy  (vendor hardware or appliance; out of repo scope)
-        │  OPC UA server | Modbus TCP | REST API
+        │  OPC UA | Modbus TCP | REST | MQTT
         ▼
-OpcUaIndustrialAdapter | ModbusIndustrialAdapter | RestIndustrialAdapter  (6B–6E)
+OpcUaIndustrialAdapter | ModbusIndustrialAdapter | RestIndustrialAdapter | MqttIndustrialAdapter  (6B–6F)
         ▼
 GenericEquipment  (PLC-001, PLC-002, … configuration identities)
         ▼

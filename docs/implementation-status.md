@@ -219,7 +219,7 @@ ctest --test-dir build --output-on-failure
 | `mqtt_multi_equipment_scalability_test` | **VALIDATED** (2026-08-28, ~210 s). See `docs/mqtt-scalability-test.md`. Local Mosquitto; **not** production capacity |
 | `eip_adapter_test` | **PASSED** (2026-08-28, ~6 s). Local libplctag `ab_server`; **not** Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under test conditions |
 
-Full suite: **9/9 passed** (Phase 6 final audit 2026-08-28). Gateway-backed PROFINET path validated by existing multi-equipment adapter tests (see `docs/profinet-gateway-integration.md`). No native `profinet_adapter_test`.
+Full suite: **9/9 passed** (see `git log` / latest regression run). Gateway-backed PROFINET path validated by existing multi-equipment adapter tests (see `docs/profinet-gateway-integration.md` §7). No native `profinet_adapter_test`. **Native PROFINET gateway hardware not tested in CI.**
 
 ---
 

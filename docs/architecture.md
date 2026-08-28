@@ -389,7 +389,11 @@ See [`profinet-gateway-integration.md`](profinet-gateway-integration.md) for con
 
 **Trade-offs vs native:** higher latency; gateway-dependent diagnostics; cyclic IO becomes polled gateway data, not direct RT Class 1. **Acceptable for Phase 6** equipment abstraction goal.
 
-**Future 1,200-device benchmark:** PROFINET “200 devices” = **200 gateway-backed logical mappings** via existing adapters — **not** 200 native PN IO-Devices. **VALIDATED UNDER THESE TEST CONDITIONS** only after measurement; 16 GB laptop capacity unclaimed.
+**Failure isolation:** One gateway/adapter failure must not fault unrelated gateways. Existing tests prove per-endpoint isolation (`opcua_adapter_test`, `modbus_adapter_test`, `rest_adapter_test`, `mqtt_adapter_test`, `eip_adapter_test`). Communication `Faulted` ≠ `Equipment::fault()`. See [`profinet-gateway-integration.md`](profinet-gateway-integration.md) §5.
+
+**Capability honesty:** Gateway integration preserves MES-relevant mapped data only; native PN timing/diagnostics may not be preserved.
+
+**Future 1,200-device benchmark:** PROFINET “200 devices” = **200 gateway-backed logical mappings** via existing adapters — **not** 200 native PN IO-Devices. **VALIDATED UNDER THESE TEST CONDITIONS** only after measurement; 16 GB laptop capacity unclaimed. Logical device count ≠ network session count.
 
 ---
 

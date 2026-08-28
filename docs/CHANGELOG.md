@@ -8,21 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Phase 6 final audit and 6H gateway formalization (2026-08-28): ADR-040 finalized — **PROFINET supported through gateway integration** (first-class, approved path). Native `ProfinetIndustrialAdapter` **DEFERRED**. Phase 6 marked **COMPLETE**. Phase 7 **NOT STARTED**.
-
-- **6H:** **SUPPORTED VIA GATEWAY** (not native IO-Controller).
-- Added `docs/profinet-gateway-integration.md` (configuration model, capability matrix, test evidence).
-- Full regression suite **9/9 passed** (Phase 6 final audit).
+Phase 6H gateway documentation strengthened (2026-08-28): expanded `docs/profinet-gateway-integration.md` — responsibility split, identity model, multi-gateway topology, failure isolation, capability limits, test evidence, 1,200-device benchmark rules. Native PROFINET **DEFERRED**. Phase 7 **NOT STARTED**. No production code changes.
 
 ### Changed
 
-- ADR-040: gateway-first terminology; Phase 6 **COMPLETE**.
-- `architecture.md`, `implementation-status.md`, `roadmap.md`, SoT Markdown/PDF, `architecture-invariants.mdc`.
-- Native PROFINET commercial/PI paths remain **deferred** (future ADR required).
+- `profinet-gateway-integration.md`: first-class gateway path formalized (sections A–C, isolation, capabilities).
+- ADR-040 gateway diagram includes MQTT; `architecture.md` §4.6 cross-references isolation and capability honesty.
 
 ---
 
-## [2026-08-28] — Phase 6H PROFINET gateway decision (investigation)
+## [2026-08-28] — Phase 6 complete; 6H gateway formalization
 
 Phase 6H PROFINET investigation (2026-08-28): ADR-040 — no suitable OSS C/C++ IO-Controller for native integration. **Gateway-based integration approved.** Native `ProfinetIndustrialAdapter` **DEFERRED**. Phase 6 final audit pending at that increment.
 
