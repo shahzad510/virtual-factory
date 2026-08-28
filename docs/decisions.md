@@ -669,26 +669,95 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 
 ---
 
-## ADR-040 — PROFINET is investigation-first; do not fake a stack (slice 6H)
+## ADR-040 — PROFINET investigation complete; no OSS IO-Controller path for 6H (slice 6H)
 
-- **Status:** Accepted (architecture). **NOT IMPLEMENTED.** Production path **not** promised.
-- **Date:** 2026-08-24
+- **Status:** Accepted. Investigation **COMPLETE** (2026-08-28). **NOT IMPLEMENTED.** No production adapter code in this increment.
+- **Date:** 2026-08-24 (investigation completed 2026-08-28)
 
-**Context:** PROFINET uses IO-Controller / IO-Device roles, cyclic real-time IO, device naming, GSDML, and diagnostics. It is not a TCP request/response protocol like OPC UA or Modbus.
+**Context:** PROFINET IO uses Ethernet Layer 2, cyclic real-time process data, DCP, GSDML engineering, slot/submodule addressing, and IO-Controller / IO-Device roles. It is not TCP/UDP request/response like OPC UA, Modbus, REST, or MQTT. Slice **6H** required investigation before any code.
 
-RT-Labs **p-net** is a PROFINET **IO-Device** stack (often GPLv3) requiring raw Ethernet. It is **not** an IO-Controller. Using it as a controller because it is open source would be incorrect. Commercial controller stacks (Siemens, Hilscher, Softing, etc.) are the usual production path.
+### PROFINET roles (investigation)
 
-**Decision:**
+| Role | Description | Virtual Factory adapter need |
+| --- | --- | --- |
+| **IO-Controller** | PLC/master; establishes ARs, cyclic IO to devices | **Required** — adapters must read/write field devices like other protocol clients |
+| **IO-Device** | Field module/sensor/drive slave | Target equipment on the network, not our adapter role |
+| **IO-Supervisor** | Engineering/diagnostics PC | Out of scope for Phase 6 adapter |
+| **Engineering (GSDML)** | Device description, module layout | Phase 7 onboarding / external tools; not hand-coded per PLC |
 
-- Slice **6H** starts with a written investigation (stack, licence, controller vs device, cyclic IO, GSDML, testability). Implementation proceeds **only** if a production-capable path is explicitly approved.
-- A TCP/socket mock **must not** be called PROFINET support and **must not** be labelled **IMPLEMENTED**.
-- If no justified OSS IO-Controller path exists, 6H may remain **PLANNED** / investigation, or specify a **gateway** (PN device → OPC UA/Modbus/REST) or **commercial** stack. That is an honest architectural outcome, not failure to “finish Phase 6 by faking it.”
-- Do not link GPLv3 p-net into `virtual_factory_industrial` as a controller.
-- Do not start 6H until 6G is approved complete and this investigation is accepted.
+**Selected role for this project:** **IO-Controller** (one controller instance per adapter connects to one or more IO-Devices on a PROFINET segment). Using an IO-Device stack (p-net) as the controller would be architecturally incorrect (ADR-040 original decision retained).
 
-**Consequences:** Phase 6 may complete with PROFINET honestly **NOT IMPLEMENTED** if no valid path is approved. Phase 7 still must not start until that decision is recorded.
+### What PROFINET requires (subset relevant to IndustrialAdapter)
 
-**Alternatives:** Fake TCP PROFINET (rejected); assume p-net is a controller (rejected); defer all mention of PROFINET (rejected: factories in scope use it; the SoT must say so honestly).
+- **Cyclic process data** (RT Class 1 minimum): periodic input/output image exchange, cycle counters, watchdogs — not `poll()`-on-demand alone.
+- **Acyclic RPC** (read/write records, parameters, I&M) over DCE/RPC.
+- **DCP** (discovery, set station name/IP).
+- **Diagnostics / alarms** (channel diagnosis, qualified diagnosis).
+- **Raw Ethernet** (Layer 2), typically `AF_PACKET` / `PF_PACKET`, often **CAP_NET_RAW** or root.
+- **GSDML** for real device topology (modules/submodules/slots); engineering tool or pre-parsed config in Phase 7.
+- **IRT / RT Class 3 / MRP / ProfiSafe / ProfiDrive:** advanced subsets — **not** required for first legitimate slice but **not** available in most OSS options.
+
+### Stack investigation summary
+
+| Candidate | Role | Version / source | License | Controller? | Linux / Ubuntu | C/C++ embed in `virtual_factory_industrial` | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **RT-Labs p-net** | IO-Device | public eval branch on GitHub; full sources commercial | **GPL-3.0** + commercial | **No** (explicit in README) | Yes (raw Ethernet) | Device-only; GPLv3; public repo evaluation-only without ports | **Rejected** for controller adapter; do not link as controller |
+| **PROFINET Community Stack (PI)** | Device (+ controller APIs in CS, not turnkey) | PI GitLab after membership + license | PI community license (not public OSS) | Partial — toolkit, not drop-in | Linux HAL demo | Requires PI membership; integration project; RTA commercial toolkit for controller | **Not available** in this repo without PI membership / commercial path |
+| **profinet-py** | IO-Controller | v0.6.3 / `f0rw4rd/profinet-py` | **GPL-3.0** + commercial | Yes (RT Class 1 cyclic) | Yes (AF_PACKET, root) | **Python only**; immature (2026); GPL; not C++ industrial library | **Rejected** for embedded C++ adapter |
+| **Siemens PROFINET Driver** | Controller + Device | Commercial product | Commercial | Yes | Linux supported | Commercial license required | **Future commercial path** — not in OSS scope |
+| **RAPIDSEA / Hilscher / Softing** | Controller | Commercial | Commercial | Yes | Yes | Commercial | **Future commercial path** |
+| **Fake TCP/UDP socket** | — | — | — | — | — | — | **Rejected** (ADR-040) |
+
+**Conclusion:** No credible **open-source C/C++ IO-Controller** stack is available for linking into `virtual_factory_industrial` with a license and maturity comparable to open62541, libmodbus, libcurl, Paho, or libplctag. **6H cannot be legitimately implemented in this increment without faking PROFINET or violating ADR-040.**
+
+### Architecture answers (for a future approved controller stack)
+
+1. **One `ProfinetIndustrialAdapter`** = one **IO-Controller** context on one **Ethernet interface / PROFINET network segment** (not one device per adapter if the stack supports multiple devices per controller).
+2. **One controller** can manage **multiple IO-Devices** (multiple ARs) — topology differs from Modbus/EtherNet/IP “one session = one endpoint.”
+3. **Multiple adapters** = multiple independent controllers (e.g. separate NICs or isolated networks).
+4. **PROFINET device** = IO-Device station (station name, IP, vendor/device ID); **module/submodule** = GSDML slot/subslot IO mapping.
+5. **Cyclic process data** lives in controller IO image buffers updated by the stack (typically background cyclic thread); `poll()` copies latest image into `GenericEquipment` (same pattern as MQTT Paho thread + bounded `poll()`).
+6. **PLC-001 / PLC-002** = `GenericEquipment` mapping entries pointing to device + slot/subslot + byte/bit offsets in process data — configuration identities, not C++ classes.
+7. **Two PROFINET networks** = two adapter instances on two interfaces (or two controller instances if stack allows).
+
+### `IndustrialAdapter` contract (analysis)
+
+The existing contract is **sufficient** for a future PROFINET implementation:
+
+- `connect()` / `disconnect()` — controller start/stop, AR establishment.
+- `poll()` — copy latest cyclic IO image + diagnostics into `GenericEquipment` (bounded wait).
+- `execute()` — command writes to output process data or acyclic RPC.
+- `connectionState()` / `lastError()` — controller/link/AR failures vs `Equipment::fault()` from mapped diagnosis bits.
+
+A **private background cyclic thread** inside the adapter (like Paho MQTT) is acceptable; it must not leak thread/API types through public headers. **No change to `IndustrialAdapter.hh` or `Equipment.hh` required.**
+
+### Linux / laptop requirements (for any future implementation)
+
+- Dedicated or shared **Ethernet NIC**; loopback is **not** sufficient for real PROFINET IO.
+- **Raw Ethernet** (`AF_PACKET`), **CAP_NET_RAW** or root for many stacks.
+- **PREEMPT_RT** optional for IRT/low jitter; RT Class 1 may work on stock Ubuntu with measured jitter.
+- **veth / network namespaces** may help isolated dev tests; not a substitute for stack conformance testing.
+- **200 simulated devices** on a laptop: **not measured**; do not claim capacity without benchmark (future 1,200-device system test).
+
+### Test strategy (if controller stack approved later)
+
+- **DEVELOPMENT / INTEGRATION VALIDATION ONLY** — software IO-Device simulators (e.g. p-net device sample, PI virtual IO device when available) + real controller stack; **not** Siemens/vendor certification.
+- No fake TCP/UDP PROFINET mocks.
+- Separate: unit (mapping), stack integration, multi-device isolation, optional hardware bench.
+
+### Decision (2026-08-28)
+
+- **6H `ProfinetIndustrialAdapter` is NOT IMPLEMENTED** in this repository increment.
+- **Investigation is COMPLETE.** ADR-040 amended with evidence above.
+- **Approved future paths** (require separate ADR approval before code):
+  1. **Commercial IO-Controller stack** (Siemens PROFINET Driver, Hilscher, Softing, RAPIDSEA, RTA toolkit on PI CS).
+  2. **PI PROFINET Community Stack** after membership + integration project (not drop-in).
+  3. **Gateway architecture** — PROFINET devices reached via existing OPC UA / Modbus / REST adapters (no native PROFINET adapter).
+- **Rejected:** fake TCP/UDP; p-net as controller; GPLv3 profinet-py subprocess wrapper as “production adapter”; claiming IMPLEMENTED without real cyclic IO stack.
+
+**Consequences:** Phase 6 remains **IN PROGRESS** (6A–6G done; 6H honestly **NOT IMPLEMENTED**). Phase 7 must not start until explicitly instructed. Factories using PROFINET are acknowledged in SoT; connectivity may use gateways or a future approved native stack.
+
+**Alternatives:** Fake TCP PROFINET (rejected); p-net as controller (rejected); GPL Python controller wrapper (rejected for C++ production library); silent omission of PROFINET (rejected).
 
 ---
 
@@ -710,7 +779,7 @@ RT-Labs **p-net** is a PROFINET **IO-Device** stack (often GPLv3) requiring raw 
   - **6E** REST industrial gateway — **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; not vendor certification)
   - **6F** MQTT / Paho C — **IMPLEMENTED** / **TESTED** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity)
   - **6G** EtherNet/IP / libplctag — **IMPLEMENTED** / **TESTED** (explicit messaging only; local `ab_server` fixture ≠ hardware certification)
-  - **6H** PROFINET investigation / implement only if a valid production path is approved — **NOT IMPLEMENTED**
+  - **6H** PROFINET — investigation **COMPLETE**; **NOT IMPLEMENTED** (no OSS IO-Controller path; ADR-040)
 - Order: 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
 - Do not start Phase 7 until Phase 6 scope is completed **or** remaining slices (especially 6H) are explicitly marked by an approved ADR.
 - Do not implement an adapter manager in Phase 6 (ADR-028).

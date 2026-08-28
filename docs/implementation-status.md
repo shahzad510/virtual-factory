@@ -43,7 +43,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6E** REST industrial gateway adapter (`RestIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** MQTT industrial adapter (`MqttIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; see `docs/mqtt-scalability-test.md`) |
 | **6G** EtherNet/IP industrial adapter (`EtherNetIpIndustrialAdapter`) | **COMPLETE** / **TESTED** (libplctag explicit messaging; local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| **6H** PROFINET | **NOT IMPLEMENTED** / investigation required (ADR-040). Do not fake a stack |
+| **6H** PROFINET | **NOT IMPLEMENTED** — investigation **COMPLETE** (2026-08-28; ADR-040). No OSS IO-Controller path for C++ adapter |
 
 ---
 
@@ -217,7 +217,7 @@ ctest --test-dir build --output-on-failure
 | `mqtt_multi_equipment_scalability_test` | **VALIDATED** (2026-08-28, ~210 s). See `docs/mqtt-scalability-test.md`. Local Mosquitto; **not** production capacity |
 | `eip_adapter_test` | **PASSED** (2026-08-28, ~6 s). Local libplctag `ab_server`; **not** Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under test conditions |
 
-Full suite: **9/9 passed** (total ~254 s). Short unit tests including EtherNet/IP: 7/7 passed (excluding the long OPC UA / MQTT scale tests). The scalability tests are separate long-running validations, not claims of unlimited PLC scale. EtherNet/IP two-device check is localhost isolation via `ab_server`, **not** a production capacity claim.
+Full suite: **9/9 passed** (2026-08-28, ~254 s). No `profinet_adapter_test` — 6H native adapter **NOT IMPLEMENTED**.
 
 ---
 
@@ -292,7 +292,7 @@ Intended scope (all **PLANNED**, none in code): configurable plant hierarchy; dy
 
 Do not implement Phase 7 until explicitly instructed. Do not put scheduling logic in `Equipment` or `IndustrialAdapter`.
 
-Remaining Phase 6 slice (not started): **6H PROFINET investigation** (ADR-040). Slices 6A–6G are done (ADR-041). **Phase 6 remains IN PROGRESS.** Phase 7 remains **NOT STARTED**. Do **not** start 6H without separate approval.
+Remaining Phase 6: **6H PROFINET** investigation **COMPLETE** — native adapter **NOT IMPLEMENTED** (ADR-040). Approved future paths: commercial IO-Controller stack, PI Community Stack integration, or gateway via existing adapters. **Phase 6 remains IN PROGRESS.** Phase 7 remains **NOT STARTED**.
 
 ---
 
@@ -303,4 +303,4 @@ Remaining Phase 6 slice (not started): **6H PROFINET investigation** (ADR-040). 
 3. Inspect `equipment/`, `industrial/`, `gazebo/plugins/conveyor/`, `tests/`.
 4. `cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure`
 5. `cmake --build gazebo/plugins/conveyor/build`
-6. Do **not** start MES (including Resource Management), SCADA, GUI, auth, or database. Do **not** start 6H PROFINET until explicitly instructed. Do **not** infer those from the roadmap.
+6. Do **not** start MES (including Resource Management), SCADA, GUI, auth, or database. Do **not** start Phase 7 until explicitly instructed. Native PROFINET adapter requires a **new approved ADR** (commercial stack, PI CS, or other controller path).

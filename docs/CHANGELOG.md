@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Phase 6H PROFINET investigation (2026-08-28): Completed stack and architecture investigation per ADR-040. **Native `ProfinetIndustrialAdapter` is NOT IMPLEMENTED.** PROFINET IO requires an **IO-Controller** role (cyclic Layer 2 process data, DCP, GSDML, slot/submodule mapping). No credible **open-source C/C++ IO-Controller** stack is available for embedding in `virtual_factory_industrial` (p-net is IO-Device/GPLv3; PI Community Stack requires membership; profinet-py is Python/GPL). **IndustrialAdapter contract is sufficient** for a future implementation; no header changes required. Approved future paths: commercial IO-Controller stack, PI CS integration, or gateway via existing OPC UA/Modbus/REST adapters. **Phase 6 remains IN PROGRESS** (6A–6G done). **Phase 7 NOT STARTED.** SoT PDF regenerated.
+
+- **6A–6G**: **IMPLEMENTED** / **TESTED** (6C/MQTT/EIP scale = **VALIDATED** only).
+- **6H**: investigation **COMPLETE**; **NOT IMPLEMENTED**.
+- No fake TCP/UDP PROFINET; no `profinet_adapter_test` (no implementation to test).
+
+### Changed
+
+- ADR-040: investigation complete; stack comparison; topology; Linux requirements; future test strategy.
+- ADR-041: 6H recorded as investigation complete, not implemented.
+
+---
+
+## [2026-08-28] — Phase 6G EtherNet/IP
+
 Phase 6G EtherNet/IP industrial adapter (2026-08-28): `EtherNetIpIndustrialAdapter` maps configured CIP tags into `GenericEquipment` via **libplctag v2.7.1** (commit `bdb10aeaf4f374cec7ae4e66887446dedf952dc1`, MPL-2.0, shared `libplctag.so` linked privately). Private `eip_session` wrapper; public headers do not include `libplctag.h`. One adapter instance = one EtherNet/IP device/session. Explicit messaging / symbolic tag read/write only — Class 1 implicit/cyclic I/O **NOT IMPLEMENTED**. Tests use libplctag `ab_server` ControlLogix emulator — **DEVELOPMENT / INTEGRATION VALIDATION ONLY**, not Allen-Bradley/Rockwell hardware certification. `eip_adapter_test` passed (connect/poll/commands, multi-equipment on one device, two-device isolation, timeout/refused/invalid tag, comms Faulted vs `Equipment::fault()`, explicit reconnect). **Phase 6 remains IN PROGRESS.** Slices **6A–6G** **IMPLEMENTED** / **TESTED**. **6H PROFINET NOT IMPLEMENTED.** Phase 7 has **not** started. SoT PDF regenerated (ADR-039 amendment).
 
 - **6A** mock/architecture, **6B** OPC UA, **6D** Modbus TCP, **6E** REST, **6F** MQTT, **6G** EtherNet/IP: **IMPLEMENTED** / **TESTED**.

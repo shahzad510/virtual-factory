@@ -364,9 +364,28 @@ Private `eip_session` wraps libplctag; public headers do not include `libplctag.
 
 Tests use libplctag **`ab_server`** ControlLogix emulator (`tests/eip_test_server.*`) — **DEVELOPMENT/INTEGRATION VALIDATION ONLY**, not Allen-Bradley/Rockwell hardware certification. Two-device isolation was **VALIDATED** under those test conditions (`eip_adapter_test`). That is correctness/isolation validation, **not** a claim of hundreds of production PLCs.
 
-### 4.6 PROFINET (6H) — PLANNED / NOT IMPLEMENTED / investigation (ADR-040)
+### 4.6 PROFINET (6H) — investigation COMPLETE; NOT IMPLEMENTED (ADR-040)
 
-IO-Controller / IO-Device, cyclic RT IO, naming, GSDML, diagnostics. A TCP mock is **not** PROFINET. p-net is an **IO-Device** stack, not a controller. Implement only if a production-capable path is approved; otherwise remain PLANNED or specify gateway/commercial integration.
+PROFINET IO is **not** OPC UA / Modbus / REST / MQTT / EtherNet/IP. It uses **IO-Controller / IO-Device** roles, Ethernet **Layer 2** cyclic process data (RT Class 1+), DCP, GSDML, slot/submodule addressing, diagnostics, and alarms. A TCP/UDP socket mock is **not** PROFINET.
+
+**Investigation outcome (2026-08-28):** The Virtual Factory industrial adapter layer must act as an **IO-Controller** (read/write cyclic IO on IO-Devices), matching other adapters’ client/controller role. **No credible open-source C/C++ IO-Controller stack** is available for embedding in `virtual_factory_industrial` without GPL-only options, PI membership gates, or commercial licenses.
+
+| Stack | Role | Verdict |
+| --- | --- | --- |
+| RT-Labs **p-net** | IO-Device only | GPLv3; **not** a controller — do not misuse |
+| **PROFINET Community Stack** (PI) | Device + controller APIs via integration | PI membership; not public OSS drop-in |
+| **profinet-py** | IO-Controller (Python) | GPL-3.0; Python; immature — not C++ adapter |
+| Commercial (Siemens driver, Hilscher, Softing, RAPIDSEA, RTA) | IO-Controller | **Future path** — separate ADR approval |
+
+**`ProfinetIndustrialAdapter` is NOT IMPLEMENTED.** Phase 6 remains **IN PROGRESS**.
+
+**Future topology (when a controller stack is approved):** one adapter instance ≈ one IO-Controller on one Ethernet interface; one controller may manage **multiple IO-Devices**; `PLC-001` / `PLC-002` are `GenericEquipment` mappings to device/slot/subslot process data — not C++ classes. Cyclic IO in private stack buffers; `poll()` copies latest values; background cyclic thread stays inside adapter (like MQTT Paho). `IndustrialAdapter` contract is **sufficient** — no header changes required.
+
+**Linux requirements (future):** raw Ethernet (`AF_PACKET`), often root/CAP_NET_RAW; dedicated NIC; loopback insufficient; PREEMPT_RT for IRT; veth/namespaces for isolated dev only.
+
+**Future 1,200-device benchmark:** PROFINET would participate as ~200 logical IO-Device mappings across controller adapter instances; **not measured** in 6H; report **VALIDATED UNDER THESE TEST CONDITIONS** only after real benchmarks.
+
+**Approved alternatives without native 6H:** PROFINET field devices via **gateway** (OPC UA / Modbus / REST adapters already implemented).
 
 ---
 

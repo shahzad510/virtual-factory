@@ -79,7 +79,7 @@ Nothing else is IN PROGRESS. Do not implement Phase 7 until instructed. Do not s
   - **6E** REST industrial gateway (HTTP client, libcurl) — **DONE** (localhost fixture; not vendor certification)
   - **6F** MQTT (one broker connection; Paho MQTT C) — **DONE** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity)
   - **6G** EtherNet/IP (libplctag explicit CIP tag messaging) — **DONE** (local `ab_server`; not hardware certification)
-  - **6H** PROFINET investigation; no fake stack — **NOT IMPLEMENTED**
+  - **6H** PROFINET — investigation **COMPLETE**; **NOT IMPLEMENTED** (no OSS IO-Controller path; ADR-040)
 - **Order:** 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
 - **Status:** **IN PROGRESS**. Do not start Phase 7 until this Phase 6 scope is complete or 6H is explicitly marked by an approved ADR.
 

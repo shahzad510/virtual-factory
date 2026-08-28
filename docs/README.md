@@ -50,7 +50,7 @@ Do not create a second source of truth. If architecture must change, update `dec
 9. Verify build and tests before modifying code (commands below).
 10. Never infer implementation from the roadmap alone.
 
-Continue from the **Next Step** in `implementation-status.md`. Do **not** start Phase 7 (MES) unless that work is explicitly instructed. Do **not** start 6H PROFINET until separately approved.
+Continue from the **Next Step** in `implementation-status.md`. Do **not** start Phase 7 (MES) unless that work is explicitly instructed. Native PROFINET adapter requires a **new approved ADR** (commercial stack, PI CS, or gateway path).
 
 Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discipline, architecture invariants, plan-then-approve workflow). Those rules do not replace the SoT.
 
@@ -65,7 +65,7 @@ Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discip
 | Phase 6E REST industrial gateway | **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; not vendor certification) |
 | Phase 6F MQTT | **IMPLEMENTED** / **TESTED** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity) |
 | Phase 6G EtherNet/IP | **IMPLEMENTED** / **TESTED** (libplctag explicit messaging; local `ab_server`; not hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| Phase 6H PROFINET | **NOT IMPLEMENTED** / investigation required |
+| Phase 6H PROFINET | **NOT IMPLEMENTED** — investigation **COMPLETE** (ADR-040) |
 | Phase 7 MES Core + Resource Management | **NOT STARTED** / **NOT IMPLEMENTED** (all MES scope **PLANNED**; ADR-024, 027–035) |
 | SCADA, API, database, auth, Blazor, real PLC | **NOT IMPLEMENTED** |
 
