@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Phase 6G EtherNet/IP industrial adapter (2026-08-28): `EtherNetIpIndustrialAdapter` maps configured CIP tags into `GenericEquipment` via **libplctag v2.7.1** (commit `bdb10aeaf4f374cec7ae4e66887446dedf952dc1`, MPL-2.0, shared `libplctag.so` linked privately). Private `eip_session` wrapper; public headers do not include `libplctag.h`. One adapter instance = one EtherNet/IP device/session. Explicit messaging / symbolic tag read/write only — Class 1 implicit/cyclic I/O **NOT IMPLEMENTED**. Tests use libplctag `ab_server` ControlLogix emulator — **DEVELOPMENT / INTEGRATION VALIDATION ONLY**, not Allen-Bradley/Rockwell hardware certification. `eip_adapter_test` passed (connect/poll/commands, multi-equipment on one device, two-device isolation, timeout/refused/invalid tag, comms Faulted vs `Equipment::fault()`, explicit reconnect). **Phase 6 remains IN PROGRESS.** Slices **6A–6G** **IMPLEMENTED** / **TESTED**. **6H PROFINET NOT IMPLEMENTED.** Phase 7 has **not** started. SoT PDF regenerated (ADR-039 amendment).
+
+- **6A** mock/architecture, **6B** OPC UA, **6D** Modbus TCP, **6E** REST, **6F** MQTT, **6G** EtherNet/IP: **IMPLEMENTED** / **TESTED**.
+- **6C** 10–200 simulated OPC UA servers: **VALIDATED** only; not production capacity.
+- MQTT multi-equipment scale (10/50/100/200 + 2×50): **VALIDATED** only; not production capacity.
+- EtherNet/IP two-device isolation (`eip_adapter_test`): **VALIDATED** under test conditions only; not production capacity.
+- **6H** PROFINET: **PLANNED** / investigation; p-net is IO-Device not controller; no fake TCP stack.
+
+### Added
+
+- `EtherNetIpIndustrialAdapter` and C++ tag mapping structs (`EtherNetIpAdapterConfig`).
+- Private libplctag session wrapper (`industrial/src/eip_session.*`). Public headers do not include `libplctag.h`.
+- libplctag `ab_server` test fixture (`tests/eip_test_server.*`) — **DEVELOPMENT / INTEGRATION VALIDATION ONLY**.
+- Unit test `tests/eip_adapter_test.cc`.
+
+### Changed
+
+- ADR-039: libplctag v2.7.1, MPL-2.0, explicit messaging scope, `ab_server` fixture limits.
+- ADR-041: 6G recorded as done; next slice is 6H investigation.
+
+---
+
+## [2026-08-25] — Phase 6F MQTT
+
 Phase 6F MQTT industrial adapter (2026-08-25): `MqttIndustrialAdapter` maps configured MQTT topics into `GenericEquipment` via Eclipse Paho MQTT C 1.3.13 (`libpaho-mqtt3as` MQTTAsync, MQTT 3.1.1) and nlohmann/json 3.11.3. One adapter instance = one broker/session. Multiple machines on one broker are mappings. Mosquitto is a development test broker only; unit test passed. Multi-equipment scale **VALIDATED** at 10/50/100/200 mappings and 2×50 brokers (`docs/mqtt-scalability-test.md`) — correctness only, not production capacity, not vendor certification. Isolation checked with two adapters on one broker and two independent brokers. TLS verification on by default; username/password supported; passwords not logged. Bounded `poll()` (default 50 ms; bounded queue with latest-value drop-oldest). **Phase 6 remains IN PROGRESS.** Architecture + mock + OPC UA + Modbus TCP + REST + MQTT **COMPLETE**. EtherNet/IP **NOT IMPLEMENTED**. Phase 7 has **not** started. SoT PDF regenerated to record 6F implemented.
 
 - **6A** mock/architecture, **6B** OPC UA, **6D** Modbus TCP, **6E** REST, **6F** MQTT: **IMPLEMENTED** / **TESTED**.

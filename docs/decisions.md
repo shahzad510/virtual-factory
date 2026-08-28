@@ -644,25 +644,28 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 
 ---
 
-## ADR-039 — EtherNet/IP adapter is a CIP scanner/client; library before code (slice 6G)
+## ADR-039 — EtherNet/IP adapter is a CIP scanner/client; libplctag explicit messaging (slice 6G)
 
-- **Status:** Accepted (architecture). Library choice **pending**. **NOT IMPLEMENTED.**
-- **Date:** 2026-08-24
+- **Status:** Accepted. **IMPLEMENTED** / **TESTED** (2026-08-28).
+- **Date:** 2026-08-24 (library amendment 2026-08-28)
 
-**Context:** EtherNet/IP is CIP over Ethernet. It is not Modbus with another library. Implicit/cyclic I/O is a different subset from explicit messaging.
+**Context:** EtherNet/IP is CIP over Ethernet. It is not Modbus with another library. Implicit/cyclic I/O (Class 1, UDP 2222) is a different subset from explicit messaging.
 
 **Decision:**
 
-- Slice **6G** adds `EtherNetIpIndustrialAdapter` implementing `IndustrialAdapter`, **after** this ADR records a library.
-- Role: **scanner/client** to one device. One instance = one device session (IP + path/slot as applicable).
-- First subset: **explicit messaging** (tag/attribute read/write → telemetry/commands). Do not claim implicit/cyclic I/O unless the selected library **and** tests actually support it.
-- Candidates to evaluate before coding: **libplctag** (explicit CIP tag R/W; MPL-2.0 or LGPL-2+) or **EIPScanner** (C++ scanner; MIT). Do not hand-roll CIP.
-- Public headers must not include the CIP library. Local mock ≠ Allen-Bradley/hardware certification.
-- Explicit reconnect; comms Faulted ≠ machine fault.
+- Slice **6G** adds `EtherNetIpIndustrialAdapter` implementing `IndustrialAdapter`. `protocol()` returns `"ethernetip"`.
+- Role: **scanner/client** to one device. One instance = one device session (host + port + CIP path + plc type as applicable). N devices ⇒ N adapter instances. Several logical machines on one device are several `GenericEquipment` mappings (`PLC-001` etc. are configuration identities, not C++ classes).
+- **Library:** **libplctag v2.7.1**, commit `bdb10aeaf4f374cec7ae4e66887446dedf952dc1`. **License:** Mozilla Public License **2.0** (MPL-2.0; elect MPL-2.0 over LGPL-2+ offered in the same distribution). Built as shared `libplctag.so`; linked **privately** into `virtual_factory_industrial` via pkg-config / `.deps/libplctag` fallback. Public headers do **not** include `libplctag.h`.
+- **Private wrapper:** `industrial/src/eip_session.{hh,cc}` owns `plc_tag_create/read/write/destroy`. Adapter public header exposes only mapping config types.
+- **Subset implemented:** **explicit messaging / symbolic tag read/write only**. Class 1 implicit/cyclic I/O, UDP 2222, and producer/consumer I/O are **NOT IMPLEMENTED**. Do not claim them without library+test evidence.
+- CIP/EtherNet/IP is **not** hand-written fake TCP. Tests use libplctag **`ab_server`** ControlLogix emulator — **DEVELOPMENT / INTEGRATION VALIDATION ONLY**; not Allen-Bradley/Rockwell hardware certification.
+- `connect()` after `Faulted` recreates tags and reconnects explicitly. No application-level background reconnect thread.
+- `ConnectionState::Faulted` is communication failure. `Equipment::fault()` is machine fault from mapped fault tag only. Credentials/secrets are not exposed through Equipment or `lastError()`.
+- `IndustrialAdapter.hh` and `Equipment.hh` unchanged for 6G. OPC UA, Modbus, REST, MQTT, and Gazebo production code unchanged. No adapter manager.
 
-**Consequences:** 6G cannot start until a follow-up amendment names the library. Do not implement in this documentation step.
+**Consequences:** EtherNet/IP fits the existing multi-adapter contract. Do not start 6H PROFINET until separately approved. Do not claim hardware certification from `ab_server`.
 
-**Alternatives:** Pretend EIP is Modbus (rejected); implement implicit I/O first without library evidence (rejected); claim hardware support from a mock (rejected).
+**Alternatives:** Pretend EIP is Modbus (rejected); hand-roll CIP (rejected); EIPScanner (not selected; libplctag chosen for explicit tag API); implement implicit I/O first without tests (rejected); static-only libplctag in production (rejected: prefer shared `.so` with private link).
 
 ---
 
@@ -706,7 +709,7 @@ RT-Labs **p-net** is a PROFINET **IO-Device** stack (often GPLv3) requiring raw 
   - **6D** Modbus TCP / libmodbus — **IMPLEMENTED** / **TESTED**
   - **6E** REST industrial gateway — **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; not vendor certification)
   - **6F** MQTT / Paho C — **IMPLEMENTED** / **TESTED** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity)
-  - **6G** EtherNet/IP — **NOT IMPLEMENTED**
+  - **6G** EtherNet/IP / libplctag — **IMPLEMENTED** / **TESTED** (explicit messaging only; local `ab_server` fixture ≠ hardware certification)
   - **6H** PROFINET investigation / implement only if a valid production path is approved — **NOT IMPLEMENTED**
 - Order: 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
 - Do not start Phase 7 until Phase 6 scope is completed **or** remaining slices (especially 6H) are explicitly marked by an approved ADR.

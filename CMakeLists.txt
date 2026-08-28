@@ -9,9 +9,9 @@ project(virtual_factory)
 add_subdirectory(equipment)
 add_subdirectory(industrial)
 
-if (VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS OR VIRTUAL_FACTORY_PAHO_MQTT_LIBRARY_DIR)
+if (VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS OR VIRTUAL_FACTORY_PAHO_MQTT_LIBRARY_DIR OR VIRTUAL_FACTORY_LIBPLCTAG_LIBRARY_DIRS)
   set(CMAKE_BUILD_RPATH
-      "${VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS};${VIRTUAL_FACTORY_PAHO_MQTT_LIBRARY_DIR}")
+      "${VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS};${VIRTUAL_FACTORY_PAHO_MQTT_LIBRARY_DIR};${VIRTUAL_FACTORY_LIBPLCTAG_LIBRARY_DIRS}")
 endif()
 
 enable_testing()
@@ -166,3 +166,45 @@ set_property(
 add_test(NAME mqtt_multi_equipment_scalability_test
     COMMAND mqtt_multi_equipment_scalability_test)
 set_tests_properties(mqtt_multi_equipment_scalability_test PROPERTIES TIMEOUT 900)
+
+find_program(AB_SERVER_EXECUTABLE ab_server
+    PATHS
+        "${CMAKE_SOURCE_DIR}/.deps/libplctag/bin"
+        /usr/bin
+        /usr/local/bin
+)
+set(LIBPLCTAG_LIBDIR "")
+if (AB_SERVER_EXECUTABLE)
+  get_filename_component(_ab_prefix "${AB_SERVER_EXECUTABLE}" DIRECTORY)
+  get_filename_component(_ab_prefix "${_ab_prefix}" DIRECTORY)
+  if (EXISTS "${_ab_prefix}/lib")
+    set(LIBPLCTAG_LIBDIR "${_ab_prefix}/lib")
+  endif()
+endif()
+if (NOT AB_SERVER_EXECUTABLE)
+  message(FATAL_ERROR
+      "libplctag ab_server not found for eip_adapter_test. "
+      "Build libplctag v2.7.1 into .deps/libplctag "
+      "(DEVELOPMENT/INTEGRATION VALIDATION ONLY).")
+endif()
+
+add_executable(eip_adapter_test
+    tests/eip_adapter_test.cc
+    tests/eip_test_server.cc
+)
+target_include_directories(eip_adapter_test PRIVATE tests)
+target_compile_definitions(eip_adapter_test
+    PRIVATE
+        VF_AB_SERVER_EXECUTABLE="${AB_SERVER_EXECUTABLE}"
+        VF_LIBPLCTAG_LIBRARY_DIR="${LIBPLCTAG_LIBDIR}"
+)
+target_link_libraries(eip_adapter_test PRIVATE virtual_factory_industrial pthread)
+set(_eip_test_rpath "${VIRTUAL_FACTORY_LIBPLCTAG_LIBRARY_DIRS}")
+if (LIBPLCTAG_LIBDIR)
+  list(APPEND _eip_test_rpath "${LIBPLCTAG_LIBDIR}")
+endif()
+set_property(
+    TARGET eip_adapter_test
+    PROPERTY BUILD_RPATH "${_eip_test_rpath}")
+add_test(NAME eip_adapter_test COMMAND eip_adapter_test)
+set_tests_properties(eip_adapter_test PROPERTIES TIMEOUT 300)

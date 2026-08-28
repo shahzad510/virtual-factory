@@ -10,8 +10,8 @@ Preserve unless an approved ADR/SoT change says otherwise:
 - Gazebo is a simulation plant, not the production factory or the MES.
 - `Equipment` / `GenericEquipment` is an open-ended technical asset model. Conveyor, robot, pump, oven, mixer are **examples**, not a closed catalog. Do not add a C++ class per machine type without a strong, approved reason.
 - Equipment must not depend on Gazebo, open62541, Modbus/HTTP/MQTT/CIP/PROFINET libraries, or vendor SDKs.
-- Industrial adapters are **protocol-oriented** (`OpcUaIndustrialAdapter`, `ModbusIndustrialAdapter`, `RestIndustrialAdapter`, `MqttIndustrialAdapter`, mock; planned EtherNet/IP/PROFINET). Never `PumpOpcUaAdapter` / `RobotOpcUaAdapter`.
-- One `OpcUaIndustrialAdapter` = one `UA_Client` = one OPC UA endpoint. One `ModbusIndustrialAdapter` = one TCP session. One `RestIndustrialAdapter` = one HTTP origin. One `MqttIndustrialAdapter` = one MQTT broker. Many sources = many adapter instances.
+- Industrial adapters are **protocol-oriented** (`OpcUaIndustrialAdapter`, `ModbusIndustrialAdapter`, `RestIndustrialAdapter`, `MqttIndustrialAdapter`, `EtherNetIpIndustrialAdapter`, mock; planned PROFINET). Never `PumpOpcUaAdapter` / `RobotOpcUaAdapter`.
+- One `OpcUaIndustrialAdapter` = one `UA_Client` = one OPC UA endpoint. One `ModbusIndustrialAdapter` = one TCP session. One `RestIndustrialAdapter` = one HTTP origin. One `MqttIndustrialAdapter` = one MQTT broker. One `EtherNetIpIndustrialAdapter` = one EtherNet/IP device/session. Many sources = many adapter instances.
 - Adding industrial endpoints later must be configuration/onboarding (Phase 7), not a new C++ adapter class per PLC and not a Phase 6 adapter manager.
 - MES owns resource management, hierarchy, readiness, scheduling, materials, quality, genealogy, OEE/analytics. Equipment state ≠ MES availability. Capability ≠ availability.
 - MES must not depend on Gazebo or protocol/vendor APIs. Adapters must not own MES scheduling.

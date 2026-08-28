@@ -22,9 +22,9 @@ Gazebo is not MES. `ConveyorSystem` is not SCADA. The mock adapter is not a prod
 | --- | --- |
 | Branch | `master` (tracks `origin/master`) |
 | HEAD commit | Use `git log -1` for the hash after the 6F commit lands on `origin/master`. |
-| Working tree | Use `git status`. After 6F, EtherNet/IP/PROFINET remain unimplemented. |
+| Working tree | Use `git status`. After 6G, PROFINET (6H) remains unimplemented. |
 | Remote | `origin/master` |
-| Audit date | 2026-08-25 |
+| Audit date | 2026-08-28 |
 
 Use `git status` and `git log -1` when resuming; this file is not a substitute for Git.
 
@@ -42,7 +42,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6D** Production Modbus TCP adapter (`ModbusIndustrialAdapter`) | **COMPLETE** / **TESTED** |
 | **6E** REST industrial gateway adapter (`RestIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** MQTT industrial adapter (`MqttIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; see `docs/mqtt-scalability-test.md`) |
-| **6G** EtherNet/IP industrial adapter | **NOT IMPLEMENTED** |
+| **6G** EtherNet/IP industrial adapter (`EtherNetIpIndustrialAdapter`) | **COMPLETE** / **TESTED** (libplctag explicit messaging; local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
 | **6H** PROFINET | **NOT IMPLEMENTED** / investigation required (ADR-040). Do not fake a stack |
 
 ---
@@ -56,7 +56,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | 3 | Conveyor Control | **COMPLETE** |
 | 4 | Product Motion | **COMPLETE** (runtime verified) |
 | 5 | Industrial Equipment Abstraction | **COMPLETE** (open-ended / capability-driven) |
-| 6 | Industrial Adapter Layer | **IN PROGRESS** (slices 6A–6F done; 6G–6H not implemented) |
+| 6 | Industrial Adapter Layer | **IN PROGRESS** (slices 6A–6G done; 6H not implemented) |
 
 ---
 
@@ -64,7 +64,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 
 Implemented:
 
-- Adapter identity and protocol metadata (`protocol()` → `"mock"`, `"opcua"`, `"modbus"`, `"rest"`, or `"mqtt"`)
+- Adapter identity and protocol metadata (`protocol()` → `"mock"`, `"opcua"`, `"modbus"`, `"rest"`, `"mqtt"`, or `"ethernetip"`)
 - Connection state: Disconnected / Connected / Faulted
 - Connect / disconnect
 - Equipment exposure and lookup (`equipment()`, `equipmentById()`)
@@ -88,8 +88,11 @@ Implemented:
 - Multiple MQTT brokers via **multiple adapter instances** (one broker/session per instance); several machines on one broker via mappings
 - Mosquitto test broker helper and unit test `mqtt_adapter_test` (connect/poll/commands, JSON/numeric/boolean telemetry, GenericEquipment, two adapters on one broker, two brokers, client IDs, QoS 0/1/2, retained telemetry, malformed payload, Faulted vs `Equipment::fault()`, explicit reconnect, bounded poll, username/password, TLS verify default). **DEVELOPMENT/INTEGRATION VALIDATION ONLY** — not vendor/cloud certification
 - Multi-equipment MQTT scalability **test** (`mqtt_multi_equipment_scalability_test`): **VALIDATED** at 10/50/100/200 mappings on one broker and 2×50 on two brokers under those conditions. See `docs/mqtt-scalability-test.md`. **Not** production capacity certification. **Not** “supports 200 PLCs.”
+- `EtherNetIpIndustrialAdapter` (libplctag 2.7.1 explicit CIP tag messaging, ADR-039)
+- Multiple EtherNet/IP devices via **multiple adapter instances** (one device/session per instance); several logical machines on one device via mappings
+- libplctag `ab_server` ControlLogix emulator fixture and unit test `eip_adapter_test` (connect/poll/commands, multi-equipment, isolation, timeout/refused/invalid tag, Faulted vs `Equipment::fault()`, explicit reconnect, two devices). **DEVELOPMENT/INTEGRATION VALIDATION ONLY** — not Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under those test conditions — **not** production capacity
 
-Not implemented: EtherNet/IP (6G), PROFINET (6H); Sparkplug B; MQTT 5 architecture; MQTT wildcards; REST DELETE; Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
+Not implemented: PROFINET (6H); Class 1 implicit/cyclic EtherNet/IP I/O; Sparkplug B; MQTT 5 architecture; MQTT wildcards; REST DELETE; Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
 
 ---
 
@@ -112,6 +115,7 @@ industrial/
     ModbusIndustrialAdapter.hh          mapping config + Modbus TCP adapter
     RestIndustrialAdapter.hh            mapping config + REST gateway adapter
     MqttIndustrialAdapter.hh            mapping config + MQTT broker adapter
+    EtherNetIpIndustrialAdapter.hh      mapping config + EtherNet/IP adapter
   src/MockIndustrialAdapter.cc
   src/OpcUaIndustrialAdapter.cc
   src/ModbusIndustrialAdapter.cc
@@ -120,6 +124,8 @@ industrial/
   src/http_session.cc                   private libcurl client wrapper
   src/MqttIndustrialAdapter.cc
   src/mqtt_session.cc                   private Paho MQTTAsync client wrapper
+  src/EtherNetIpIndustrialAdapter.cc
+  src/eip_session.hh/.cc                private libplctag session wrapper
 gazebo/
   worlds/phase1/factory.sdf
   models/conveyor/                      CV-001 (static)
@@ -140,6 +146,8 @@ tests/rest_test_server.hh/.cc           TEST ONLY: HTTP/1.1 fixture, localhost
 tests/mqtt_adapter_test.cc
 tests/mqtt_test_broker.hh/.cc           TEST ONLY: Mosquitto process, localhost
 tests/mqtt_multi_equipment_scalability_test.cc  VALIDATION ONLY; not a production component
+tests/eip_adapter_test.cc
+tests/eip_test_server.hh/.cc            TEST ONLY: libplctag ab_server, localhost
 ```
 
 ### Simulation (Gazebo)
@@ -164,28 +172,30 @@ tests/mqtt_multi_equipment_scalability_test.cc  VALIDATION ONLY; not a productio
 - `virtual_factory::OpcUaIndustrialAdapter` (open62541 1.4.0-rc2)
 - `virtual_factory::ModbusIndustrialAdapter` (libmodbus 3.1.10)
 - `virtual_factory::RestIndustrialAdapter` (libcurl 8.5.0 + nlohmann/json 3.11.3)
+- `virtual_factory::MqttIndustrialAdapter` (Paho MQTT C 1.3.13)
+- `virtual_factory::EtherNetIpIndustrialAdapter` (libplctag 2.7.1)
 
-Gazebo plugin does **not** link `virtual_factory_industrial`, open62541, libmodbus, or libcurl. `IndustrialAdapter.hh` does **not** include open62541, libmodbus, curl, or nlohmann/json. Equipment headers do not include protocol SDKs.
+Gazebo plugin does **not** link `virtual_factory_industrial`, open62541, libmodbus, libcurl, Paho, or libplctag. `IndustrialAdapter.hh` does **not** include open62541, libmodbus, curl, nlohmann/json, Paho, or libplctag. Equipment headers do not include protocol SDKs.
 
 ---
 
 ## 7. Build status
 
-Last verified 2026-08-25.
+Last verified 2026-08-28.
 
 ```bash
-cmake -S . -B build
+cmake -S . -B build -DCMAKE_CXX_COMPILER=g++
 cmake --build build
 ```
 
-Equipment and industrial libraries compile. Plugin:
+Equipment and industrial libraries compile (including libplctag via `.deps/libplctag` when system package absent). Plugin:
 
 ```bash
 cmake -S gazebo/plugins/conveyor -B gazebo/plugins/conveyor/build
 cmake --build gazebo/plugins/conveyor/build
 ```
 
-Result: `ConveyorSystem` builds. Gazebo was not modified for MQTT.
+Result: `ConveyorSystem` builds. Gazebo was not modified for EtherNet/IP.
 
 ---
 
@@ -197,33 +207,36 @@ ctest --test-dir build --output-on-failure
 
 | Test | Result |
 | --- | --- |
-| `equipment_test` | **PASSED** (2026-08-25) |
-| `industrial_adapter_test` | **PASSED** (2026-08-25) |
-| `opcua_adapter_test` | **PASSED** (2026-08-25) |
-| `opcua_multi_server_scalability_test` | **VALIDATED** (2026-08-25, 204 s). See `docs/opcua-scalability-test.md`. In-process simulated servers; **not** production hardware proof. |
-| `modbus_adapter_test` | **PASSED** (2026-08-25) |
-| `rest_adapter_test` | **PASSED** (2026-08-25). Local HTTP fixture; **not** vendor certification |
-| `mqtt_adapter_test` | **PASSED** (2026-08-25). Local Mosquitto; **not** vendor/cloud certification |
-| `mqtt_multi_equipment_scalability_test` | **VALIDATED** (2026-08-25, ~213 s). See `docs/mqtt-scalability-test.md`. Local Mosquitto; **not** production capacity |
+| `equipment_test` | **PASSED** (2026-08-28) |
+| `industrial_adapter_test` | **PASSED** (2026-08-28) |
+| `opcua_adapter_test` | **PASSED** (2026-08-28) |
+| `opcua_multi_server_scalability_test` | **VALIDATED** (2026-08-28, ~25 s). See `docs/opcua-scalability-test.md`. In-process simulated servers; **not** production hardware proof. |
+| `modbus_adapter_test` | **PASSED** (2026-08-28) |
+| `rest_adapter_test` | **PASSED** (2026-08-28). Local HTTP fixture; **not** vendor certification |
+| `mqtt_adapter_test` | **PASSED** (2026-08-28). Local Mosquitto; **not** vendor/cloud certification |
+| `mqtt_multi_equipment_scalability_test` | **VALIDATED** (2026-08-28, ~210 s). See `docs/mqtt-scalability-test.md`. Local Mosquitto; **not** production capacity |
+| `eip_adapter_test` | **PASSED** (2026-08-28, ~6 s). Local libplctag `ab_server`; **not** Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under test conditions |
 
-Short unit tests including MQTT: 6/6 passed (excluding the long OPC UA / MQTT scale tests). The scalability tests are separate long-running validations, not claims of unlimited PLC scale. The MQTT two-broker check is localhost isolation, **not** a production capacity claim.
+Full suite: **9/9 passed** (total ~254 s). Short unit tests including EtherNet/IP: 7/7 passed (excluding the long OPC UA / MQTT scale tests). The scalability tests are separate long-running validations, not claims of unlimited PLC scale. EtherNet/IP two-device check is localhost isolation via `ab_server`, **not** a production capacity claim.
 
 ---
 
 ## 9. Gazebo runtime verification
 
-Headless 6000 iterations (2026-08-25, after MQTT adapter work; Gazebo sources unchanged):
+Headless 6000 iterations (2026-08-25, after MQTT adapter work; Gazebo sources unchanged for 6G):
 
 | Claim | Status |
 | --- | --- |
-| Plugin loads; CV-001 configured | VERIFIED |
-| PRODUCT-001 found | VERIFIED |
-| Heartbeat `type=belt_conveyor`; speed from telemetry `"speed"` | VERIFIED |
-| Product held at X=−1.5 m while stopped | VERIFIED |
-| START ~update 1000, 0.5 m/s | VERIFIED |
-| STOP ~update 5000; rest X=0.5 m | VERIFIED |
-| `dt=0.001 s` | VERIFIED |
+| Plugin loads; CV-001 configured | **NOT RE-RUN** (2026-08-28 audit; `gz-sim` not available in this CI environment) |
+| PRODUCT-001 found | **NOT RE-RUN** (prior 2026-08-25 verification retained; sources unchanged) |
+| Heartbeat `type=belt_conveyor`; speed from telemetry `"speed"` | **NOT RE-RUN** |
+| Product held at X=−1.5 m while stopped | **NOT RE-RUN** |
+| START ~update 1000, 0.5 m/s | **NOT RE-RUN** |
+| STOP ~update 5000; rest X=0.5 m | **NOT RE-RUN** |
+| `dt=0.001 s` | **NOT RE-RUN** |
 | Interactive GUI | **NOT TESTED** (headless only) |
+
+6G did not modify Gazebo plugin sources or `virtual_factory_equipment`. Prior headless verification (2026-08-25) remains the last executed Gazebo regression. Re-run locally when `gz-sim8` is installed.
 
 Kinematic result: −1.5 m → 0.5 m at 0.5 m/s (same as Phase 4). Development START/STOP timers unchanged.
 
@@ -239,10 +252,11 @@ Kinematic result: −1.5 m → 0.5 m at 0.5 m/s (same as Phase 4). Development S
 6. Modbus test slave is unsecured localhost TCP (no TLS, no authentication) — **DEVELOPMENT ONLY**.
 7. REST test fixture is unsecured localhost HTTP (no TLS on the fixture) — **DEVELOPMENT/INTEGRATION VALIDATION ONLY**, not vendor API certification.
 8. MQTT tests use a local Mosquitto process — **DEVELOPMENT/INTEGRATION VALIDATION ONLY**, not cloud/vendor MQTT certification. 6F does not implement Sparkplug B, MQTT 5, wildcard subscriptions, or an MES event bus.
-9. Command `parameter` is a single `double`. Holding-register writes clip to uint16. REST/MQTT command bodies substitute `{{value}}`.
-10. Plugin/model paths require `GZ_SIM_*` environment variables.
-11. Intended Modbus dependency is Ubuntu `libmodbus-dev` / `libmodbus5` 3.1.10-1ubuntu1. nlohmann-json intended package is `nlohmann-json3-dev` 3.11.3. Paho intended package is `libpaho-mqtt-dev` 1.3.13. Mosquitto is test-only (`mosquitto` 2.0.18). This environment could not `sudo apt install` (password required); debs were extracted to gitignored `.deps/` for the build. Developers should install the packages with apt. libcurl is the system `libcurl4-openssl-dev` 8.5.0.
-12. SoT PDF is generated from `docs/source/MES_SCADA_Virtual_Factory_Source_of_Truth.md` (`docs/source/generate-sot-pdf.sh`). Previous PDFs are in `docs/archive/` and are not authoritative. The Markdown source is how the PDF is maintained, not a second live SoT.
+9. EtherNet/IP tests use libplctag `ab_server` — **DEVELOPMENT/INTEGRATION VALIDATION ONLY**, not Allen-Bradley/Rockwell hardware certification. 6G implements explicit tag messaging only; Class 1 implicit/cyclic I/O is **NOT IMPLEMENTED**.
+10. Command `parameter` is a single `double`. Holding-register writes clip to uint16. REST/MQTT command bodies substitute `{{value}}`.
+11. Plugin/model paths require `GZ_SIM_*` environment variables.
+12. Intended Modbus dependency is Ubuntu `libmodbus-dev` / `libmodbus5` 3.1.10-1ubuntu1. nlohmann-json intended package is `nlohmann-json3-dev` 3.11.3. Paho intended package is `libpaho-mqtt-dev` 1.3.13. Mosquitto is test-only (`mosquitto` 2.0.18). libplctag intended version is **2.7.1** (commit `bdb10aeaf4f374cec7ae4e66887446dedf952dc1`, MPL-2.0); build to gitignored `.deps/libplctag` when not system-installed. open62541 1.4.0-rc2 may be built to `.deps/open62541` when `libopen62541-dev` is unavailable. libcurl is the system `libcurl4-openssl-dev` 8.5.0.
+13. SoT PDF is generated from `docs/source/MES_SCADA_Virtual_Factory_Source_of_Truth.md` (`docs/source/generate-sot-pdf.sh`). Previous PDFs are in `docs/archive/` and are not authoritative. The Markdown source is how the PDF is maintained, not a second live SoT.
 
 ---
 
@@ -250,8 +264,8 @@ Kinematic result: −1.5 m → 0.5 m at 0.5 m/s (same as Phase 4). Development S
 
 Label: **NOT IMPLEMENTED** / **PLANNED**.
 
-- EtherNet/IP (6G) adapters
 - Production PROFINET (6H) — investigation required; a TCP mock is not PROFINET
+- Class 1 implicit/cyclic EtherNet/IP I/O (UDP 2222); EtherNet/IP hardware certification beyond `ab_server` fixture
 - REST DELETE, background reconnect, production vendor HTTPS certification
 - Modbus RTU, TLS, FC 15/16 batch writes, background reconnect
 - OPC UA SignAndEncrypt, certificates, subscriptions, history, alarms/conditions
@@ -278,7 +292,7 @@ Intended scope (all **PLANNED**, none in code): configurable plant hierarchy; dy
 
 Do not implement Phase 7 until explicitly instructed. Do not put scheduling logic in `Equipment` or `IndustrialAdapter`.
 
-Remaining Phase 6 slices (not started): **6G EtherNet/IP** (next, after separate approval), then 6H PROFINET investigation. OPC UA is done (ADR-025). Modbus TCP is done (ADR-036). REST is done (ADR-037). MQTT is done (ADR-038). Slices: ADR-041. **Phase 6 remains IN PROGRESS.** Phase 7 remains **NOT STARTED**. Do **not** start 6G in this increment.
+Remaining Phase 6 slice (not started): **6H PROFINET investigation** (ADR-040). Slices 6A–6G are done (ADR-041). **Phase 6 remains IN PROGRESS.** Phase 7 remains **NOT STARTED**. Do **not** start 6H without separate approval.
 
 ---
 
@@ -289,4 +303,4 @@ Remaining Phase 6 slices (not started): **6G EtherNet/IP** (next, after separate
 3. Inspect `equipment/`, `industrial/`, `gazebo/plugins/conveyor/`, `tests/`.
 4. `cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure`
 5. `cmake --build gazebo/plugins/conveyor/build`
-6. Do **not** start MES (including Resource Management), SCADA, GUI, auth, or database. Do **not** start 6G EtherNet/IP until explicitly instructed. Do **not** infer those from the roadmap.
+6. Do **not** start MES (including Resource Management), SCADA, GUI, auth, or database. Do **not** start 6H PROFINET until explicitly instructed. Do **not** infer those from the roadmap.
