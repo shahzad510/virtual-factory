@@ -49,7 +49,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6E** REST industrial gateway adapter (`RestIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** MQTT industrial adapter (`MqttIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; see `docs/mqtt-scalability-test.md`) |
 | **6G** EtherNet/IP industrial adapter (`EtherNetIpIndustrialAdapter`) | **COMPLETE** / **TESTED** (libplctag explicit messaging; local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native IO-Controller **APPROVED FOR IMPLEMENTATION** pending Softing/Hilscher procurement — code **NOT IMPLEMENTED**. See `docs/profinet-gateway-integration.md`, `docs/profinet-native-evaluation.md` |
+| **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native: Softing SDK gate **FAILED**; Hilscher **evaluated** (feasible w/ cifX HW) — code **NOT IMPLEMENTED**. See `docs/profinet-hilscher-evaluation.md` |
 | **ICP-1A** AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** (`icp/`, `icp_runtime_test`) |
 
 ---

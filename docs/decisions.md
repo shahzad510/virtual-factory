@@ -870,6 +870,24 @@ Gateway:  PN IO-Device → Gateway → OPC UA|Modbus|REST|MQTT → existing adap
 
 **Phase status after amendment:** Phase 6 gateway completeness **unchanged (COMPLETE)**. Native PROFINET is an **ICP extension** of deferred 6H — **NOT IMPLEMENTED**. ICP-1B–1F and Phase 7 **NOT STARTED**.
 
+### Amendment 2026-08-29 (later) — Softing SDK gate FAILED; Hilscher evaluation COMPLETE
+
+**Softing:** Remains **primary software-centric candidate**, but the **SDK / EULA / redistribution gate FAILED** in the development environment (no Softing Controller Stack package, headers, libraries, or signed OEM terms available). Do **not** implement Softing wrappers from guessed APIs.
+
+**Hilscher evaluation:** Documented in [`docs/profinet-hilscher-evaluation.md`](profinet-hilscher-evaluation.md).
+
+| Finding | Status |
+| --- | --- |
+| cifX + **NXLFW-PNM** (PROFINET IO-Controller) + cifX C API | Technically **suitable** as native PN engine |
+| Hardware | **Mandatory** — native PN via this path requires Hilscher cifX/netX hardware |
+| Master license | **Required** for IO-Controller firmware use |
+| Smoke test | **NOT RUN** — no card/firmware in environment |
+| Production code | **NOT STARTED** — awaiting explicit approval + hardware/license |
+
+**Recommendation (evaluation only):** Hilscher is a **commercially viable alternate** for ICP **if** the product accepts a hardware SKU constraint. Softing remains preferred for a soft-NIC software SKU **when** Softing procurement succeeds. Do **not** auto-select Hilscher for coding without user approval.
+
+**Gateway path:** unchanged **SUPPORTED**.
+
 ---
 
 ## ADR-041 — Phase 6 uses slices 6A–6H inside official Phases 1–11

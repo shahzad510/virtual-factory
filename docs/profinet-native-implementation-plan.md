@@ -18,6 +18,8 @@
 
 **Hard gate:** Softing is **not** finally selected until the commercial SDK package, EULA, and redistribution terms are in hand and verified against ICP product needs. Until then: **primary candidate only**.
 
+**Update 2026-08-29:** Softing **SDK gate FAILED** in this environment. Hilscher feasibility: [`profinet-hilscher-evaluation.md`](profinet-hilscher-evaluation.md) — **FEASIBLE with mandatory cifX hardware**; **not approved for coding** until explicit approval + hardware/license + smoke test.
+
 Do **not** assume commercial redistribution rights without signed vendor evidence.
 
 ---
