@@ -1,7 +1,7 @@
 # MES + SCADA + Virtual Factory — Source of Truth
 
 <p class="subtitle">Architecture, phases, industrial integration, and MES design.<br>
-Revision 2026-08-28 (Phase 6 **COMPLETE**; slice 6H PROFINET **supported via gateway integration**; native IO-Controller deferred). Living architecture: change this document <em>intentionally</em>, then regenerate the PDF.</p>
+Revision 2026-08-29 (Phase 6 **COMPLETE**; modular **ICP + MES Core** product architecture ADR-042–045; Phase 7 = MES Core **NOT STARTED**; ICP product **NOT STARTED**). Living architecture: change this document <em>intentionally</em>, then regenerate the PDF.</p>
 
 **How to update this PDF:** edit `docs/source/MES_SCADA_Virtual_Factory_Source_of_Truth.md`, then run `docs/source/generate-sot-pdf.sh`. Do not maintain a second competing Source of Truth.
 
@@ -59,7 +59,56 @@ Adapters are **protocol-oriented**, not machine-oriented. Do not create `PumpOpc
 - EtherNet/IP: one device/session
 - PROFINET: **supported via industrial gateway** → OPC UA / Modbus / REST / MQTT (ADR-040); native IO-Controller **deferred**
 
-N sources ⇒ N adapter instances. An adapter **manager/registry** is **not** part of Phase 6; onboarding of large numbers of adapters is Phase 7 (ADR-028).
+N sources ⇒ N adapter instances. An adapter **manager/registry** is **not** part of Phase 6; it belongs to the **ICP product** (ADR-042). MES onboarding of plant/resources is Phase 7.
+
+---
+
+## 2.1 Commercial product architecture — PLANNED (ADR-042)
+
+The manufacturing software ecosystem consists of **two independently sellable products** plus optional integration:
+
+```text
+PHYSICAL FACTORY / GAZEBO (dev)
+        │
+        ▼
+┌───────────────────────────────────────────┐
+│ PRODUCT 1: INDUSTRIAL CONNECTIVITY        │
+│ PLATFORM (ICP)                            │
+│  adapters │ runtime │ config │ API       │
+│  ICP Designer GUI (ADR-044)               │
+└───────────────────┬───────────────────────┘
+                    │ Connectivity Integration Contract (CIC) ADR-043
+                    ▼
+┌───────────────────────────────────────────┐
+│ PRODUCT 2: MES CORE (Phase 7)             │
+│  hierarchy │ orders │ OEE │ analytics     │
+│  MES GUI (ADR-045)                        │
+└───────────────────┬───────────────────────┘
+                    │
+        SCADA (Phase 8) │ ERP / third-party (Phase 11)
+```
+
+**Independence rules:**
+
+- ICP is **commercially complete without MES** (connectivity + Designer + northbound CIC).
+- MES Core is **commercially complete without our ICP** when a CIC-compatible connectivity source exists.
+- **No hard dependency** on the other product’s implementation — only on **CIC**.
+- Each product: independently deployable, sellable, licensable, versioned, upgradeable, configurable, operable, **own GUI**.
+
+**Deployment models:**
+
+| Model | Topology |
+| --- | --- |
+| **A — ICP only** | Customer MES/SCADA/ERP ← CIC ← our ICP ← field |
+| **B — MES only** | Our MES ← CIC ← customer connectivity |
+| **C — Integrated** | Our ICP ← field; our MES ← CIC ← ICP |
+| **D — Mixed** | Third-party ICP ↔ our MES, or our ICP ↔ third-party MES, via CIC |
+
+**Modularity:** 100→1000+ PLCs is **ICP configuration/onboarding** (ADR-028 amendment), not C++ source changes.
+
+**Phase 6 status:** **ICP adapter foundation COMPLETE** — not the full ICP product. **ICP-1** slices (runtime, API, Designer) are **PLANNED**. **Phase 7** = MES Core — **NOT STARTED**.
+
+Detail: `docs/icp-product-architecture.md`, `docs/mes-core-product-architecture.md`, `docs/connectivity-integration-contract.md`.
 
 ---
 
@@ -70,8 +119,8 @@ N sources ⇒ N adapter instances. An adapter **manager/registry** is **not** pa
 | Virtual factory | Gazebo representation of a plant | **IMPLEMENTED** (Phases 1–4) |
 | Equipment control | C++ Gazebo System plugins | **IMPLEMENTED** (conveyor example) |
 | Equipment abstraction | Open-ended technical asset model | **IMPLEMENTED** (Phase 5) |
-| Industrial adapter layer | Protocol connectors into Equipment | **COMPLETE** (Phase 6: 6A–6G **IMPLEMENTED**/ **VALIDATED**; 6H **SUPPORTED VIA GATEWAY**) |
-| MES | Production execution and manufacturing information | **NOT IMPLEMENTED** (Phase 7) |
+| Industrial adapter layer | Protocol connectors into Equipment | **COMPLETE** — **ICP foundation** (6A–6G + 6H gateway); full **ICP product NOT STARTED** |
+| MES Core (Product 2) | Production execution and manufacturing information | **NOT IMPLEMENTED** (Phase 7) |
 | SCADA / HMI | Live monitoring, alarms, operator control | **NOT IMPLEMENTED** (Phase 8) |
 | Security | Authentication, RBAC, audit | **NOT IMPLEMENTED** (Phase 9) |
 | Real factory | Production devices through adapters | **NOT IMPLEMENTED** (Phase 10) |
@@ -91,7 +140,7 @@ This numbering is authoritative. Do not revive Stage 0–25, sensor-first, or ga
 | 4 | Product Motion | **IMPLEMENTED** |
 | 5 | Industrial Equipment Abstraction | **IMPLEMENTED** |
 | 6 | Industrial Adapter Layer | **COMPLETE** — 6A–6G implemented/tested; 6H **SUPPORTED VIA GATEWAY** (see §7) |
-| 7 | MES Core + Resource Management | **PLANNED / NOT IMPLEMENTED** |
+| 7 | MES Core + Resource Management (**Product 2**) | **PLANNED / NOT IMPLEMENTED** |
 | 8 | SCADA / Operational HMI | **PLANNED / NOT IMPLEMENTED** |
 | 9 | Security & Authorization | **PLANNED / NOT IMPLEMENTED** |
 | 10 | Real Factory Integration | **PLANNED / NOT IMPLEMENTED** |
@@ -264,11 +313,11 @@ Work Center is a **production capability**, not necessarily one machine. Example
 
 Real scenario: a plant has 100 PLCs; six months later a new line adds 100 more. The administrator must **not** modify and recompile C++ merely to add those PLCs.
 
-Future configuration/UI/API (Phase 7, UI later with Phase 8/9) must allow:
+Future configuration/UI/API (**ICP Designer**, ADR-044) must allow:
 
-- Add a PLC / industrial source (identity, protocol, endpoint, connection parameters)
-- Define equipment represented by that source and node/register mappings
-- Assign plant / building / floor / area / line / work center
+- Add a PLC / industrial source (identity, protocol, endpoint, connection parameters) — **in ICP**
+- Define equipment represented by that source and node/register mappings — **in ICP**
+- Assign plant / building / floor / area / line / work center — **in MES Core** (references `equipmentId` via CIC)
 - Assign responsible supervisor/manager
 - Assign capabilities and related resources
 - Enable/disable connection, test connectivity, monitor health
@@ -447,7 +496,12 @@ This project does **not** claim Opcenter feature parity and does **not** copy pr
 
 ## 29. GUI and application stack — PLANNED
 
-C++ remains for Gazebo plugins and industrial/performance code. Application GUI is web/.NET; Blazor is the documented candidate. Do not build the product MES/SCADA GUI as a large C++ desktop.
+C++ remains for Gazebo plugins and industrial/performance code (ICP runtime/adapters). **Two product GUIs** (ADR-011 amendment, ADR-044, ADR-045):
+
+- **ICP Designer** — drag/drop/configure/connect/deploy industrial topology (ICP product).
+- **MES GUI** — production execution, resources, orders, quality, OEE (MES Core product).
+
+Preferred stack: web/.NET (Blazor candidate). SCADA HMI is Phase 8. Do not build product GUIs as large C++ desktops.
 
 ---
 
@@ -483,13 +537,16 @@ Gazebo plugin is **not** an `IndustrialAdapter`.
 20. Do not implement Phase 7 until Phase 6 (slices 6A–6H, with 6H honestly marked) is complete or an approved ADR says otherwise.
 21. Phase 6 slices 6A–6H are implementation labels inside official Phase 6; they are not extra official phases.
 22. PROFINET must not be faked; p-net is an IO-Device stack, not an IO-Controller. PROFINET **is supported** through approved gateway integration (ADR-040).
+23. **Two products (ADR-042):** ICP and MES Core are independently sellable; integrate only via **CIC** (ADR-043).
+24. **ICP Designer** (ADR-044) and **MES GUI** (ADR-045) are separate core product components.
+25. Industrial onboarding belongs to **ICP**; MES references `equipmentId` through CIC (ADR-028 amendment).
 
 ---
 
 ## 32. Next direction
 
-**Now:** Phase 6 **COMPLETE** (final audit 2026-08-28). **6H SUPPORTED VIA GATEWAY** (ADR-040). Phase 7 when explicitly instructed. **Do not start MES code.**
+**Now:** Phase 6 **COMPLETE** (ICP adapter foundation). **ICP product (ICP-1) NOT STARTED.** **Phase 7 MES Core NOT STARTED.** Formalize implementation only after explicit approval per slice.
 
-**Then:** **Only when explicitly instructed:** Phase 7 MES Core + Resource Management, still consuming the existing Equipment and adapter contracts.
+**Then:** **ICP-1** (runtime, CIC API, Designer) may proceed as approved product work. **Phase 7 MES Core** when explicitly instructed — consumes CIC, not protocol SDKs.
 
 If a future choice conflicts with this document, revise the Source of Truth deliberately and regenerate this PDF.

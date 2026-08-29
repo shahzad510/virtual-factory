@@ -143,7 +143,14 @@ Architectural authority remains the [SoT PDF](MES_SCADA_Virtual_Factory_Source_o
 
 **Decision:** Application GUI uses a modern web stack. Preferred direction: **ASP.NET Core + Blazor** (or equivalent .NET web UI). C++ remains for simulation/industrial/performance code.
 
-**Consequences:** Do not start a Qt/wx/custom C++ HMI as the product GUI.
+**Amendment 2026-08-29 (ADR-042, ADR-044, ADR-045):** The ecosystem has **two product GUIs**, not one shared GUI:
+
+- **ICP Designer** — industrial connectivity topology: drag/drop/configure/connect/deploy (ADR-044). Part of **Industrial Connectivity Platform**.
+- **MES GUI** — production execution, resources, orders, quality, OEE, reporting (ADR-045). Part of **MES Core**.
+
+SCADA operational HMI remains **Phase 8** (may share .NET stack but is a distinct surface). Do not build Qt/wx/custom C++ desktop product GUIs.
+
+**Consequences:** Do not start a Qt/wx/custom C++ HMI as the product GUI. Do not merge ICP configuration into MES GUI or vice versa.
 
 **Alternatives:** Pure C++ GUI (rejected for enterprise UI cost); unspecified JS SPA (not chosen; .NET/Blazor is the documented candidate). Changing this requires an explicit ADR and SoT update.
 
@@ -452,9 +459,11 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 
 **Decision:** Future MES configuration/UI/API creates protocol adapter instances (`OpcUaIndustrialAdapter`, `ModbusIndustrialAdapter`, `RestIndustrialAdapter`, later MQTT/EtherNet/IP/PROFINET if approved) and mappings, then assigns resulting `Equipment` to plant locations and owners. No `PumpPLCAdapter` / `RobotPLCAdapter`. No new C++ adapter class per PLC. No Phase 6 adapter manager. Current C++ construction in tests is not the onboarding product. **PLANNED. NOT IMPLEMENTED.**
 
-**Consequences:** Onboarding uses Phase 6 protocol adapters. MES does not become a protocol stack.
+**Amendment 2026-08-29 (ADR-042):** **ICP owns industrial onboarding.** Adapter instances, protocol mappings, connection parameters, and equipment identities are created and stored in the **Industrial Connectivity Platform** (ICP configuration + **ICP Designer GUI**). MES Core references stable `equipmentId` values through the **Connectivity Integration Contract (CIC)** and assigns **MES plant/resource** metadata only. MES does not create `OpcUaIndustrialAdapter` instances or hold NodeId/register/topic maps.
 
-**Alternatives:** Compile-time PLC list (rejected); one mega-adapter with all endpoints (rejected: ADR-026).
+**Consequences:** Onboarding uses Phase 6 protocol adapters inside ICP. MES does not become a protocol stack. Scaling 100→1000+ PLCs is ICP configuration, not a C++ rebuild.
+
+**Alternatives:** Compile-time PLC list (rejected); one mega-adapter with all endpoints (rejected: ADR-026); MES-owned adapter manager (rejected: ADR-042).
 
 ---
 
@@ -845,4 +854,73 @@ Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/pri
 **Consequences:** Documentation and SoT now match the intended connectivity scope without inventing new official phases. 6G EtherNet/IP is the next implementation slice, only after separate approval.
 
 **Alternatives:** New official phases after Phase 6 (rejected: breaks 1–11); start MES after REST (rejected: user decision); claim PROFINET implemented via a stub (rejected: ADR-040).
+
+---
+
+## ADR-042 — Modular two-product ecosystem: ICP and MES Core
+
+- **Status:** Accepted
+- **Date:** 2026-08-29
+
+**Context:** The platform must be commercially modular: customers may buy industrial connectivity without MES, MES without our connectivity, or both integrated. Third-party MES, SCADA, and ERP must be able to consume our connectivity; our MES must consume third-party connectivity. Hard dependencies (`MES → our ICP code`, `ICP → our MES code`) would block independent sales and replacement.
+
+**Decision:**
+
+1. **Two independently deployable, sellable, licensable, versioned, upgradeable, configurable, operable products**, each with **its own GUI**:
+   - **Product 1: Industrial Connectivity Platform (ICP)**
+   - **Product 2: MES Core**
+2. Products communicate **only** through the documented, versioned, technology-independent **Connectivity Integration Contract (CIC)** (ADR-043).
+3. **Modularity is mandatory:** adding/removing/replacing industrial sources and external integrations is **configuration/onboarding**, not C++ source changes (100→1000+ PLCs).
+4. **Phase 6** delivered the **ICP adapter foundation** (`virtual_factory_equipment` + `virtual_factory_industrial`). It is **not** the complete ICP product.
+5. **Phase 7 (official SoT)** = **MES Core** product. **ICP product completion** uses **ICP-1** implementation slices (see `docs/icp-product-architecture.md`, `docs/roadmap.md`) — not new official SoT phase numbers.
+6. **Deployment models:** (A) ICP only → customer MES/SCADA/ERP; (B) MES only → customer connectivity; (C) integrated platform; (D) mixed third-party pairings via CIC.
+
+**Consequences:** AdapterManager, PollScheduler, ICP config storage, northbound API, and **ICP Designer** belong to ICP — **not** MES Phase 7. ADR-028 amended. MES references `equipmentId` via CIC; plant hierarchy and MES resources stay in MES. Protocol SDKs stay in ICP distribution only.
+
+**Alternatives:** Monolithic single product (rejected: blocks modular sales); MES owns adapters (rejected: protocol leak + coupling); shared single GUI (rejected: ADR-044/045).
+
+---
+
+## ADR-043 — Connectivity Integration Contract (CIC)
+
+- **Status:** Accepted
+- **Date:** 2026-08-29
+
+**Context:** Two products need a stable seam. In-process `Equipment*` pointers suffice for Phase 6 tests but not for independent deployment, third-party interchange, or separate versioning.
+
+**Decision:** Define **Connectivity Integration Contract (CIC)** — protocol-neutral, versioned (SemVer) schema for equipment identity, capabilities, telemetry (with observation timestamps), operational state, machine fault, communication health, commands, results, and industrial events.
+
+**Planned transports:** gRPC, REST/OpenAPI, WebSocket/SSE. Optional in-process SDK with **identical semantics**. **Not in CIC:** protocol mappings or vendor address spaces.
+
+See `docs/connectivity-integration-contract.md`. **PLANNED. NOT IMPLEMENTED.**
+
+**Consequences:** Third-party systems integrate with ICP via CIC. MES Core uses `IIndustrialDataProvider`. Southbound `RestIndustrialAdapter` ≠ northbound CIC REST.
+
+**Alternatives:** Direct `virtual_factory_industrial` link in MES (rejected); undocumented API (rejected).
+
+---
+
+## ADR-044 — ICP Designer GUI is a core ICP product component
+
+- **Status:** Accepted
+- **Date:** 2026-08-29
+
+**Context:** ICP must be commercially complete without MES. Visual industrial topology configuration is primary product value.
+
+**Decision:** **ICP Designer** is a **major ICP component**. UX: **DRAG → DROP → CONFIGURE → CONNECT → DEPLOY**. Configures sources, equipment, gateways (incl. PROFINET-via-gateway), and northbound CIC targets (MES, SCADA, ERP). Separate from MES GUI. **PLANNED** — slice **ICP-1F**. See `docs/icp-product-architecture.md`.
+
+**Alternatives:** YAML-only (insufficient for commercial ICP); merged with MES GUI (rejected).
+
+---
+
+## ADR-045 — MES Core product boundary and MES GUI
+
+- **Status:** Accepted
+- **Date:** 2026-08-29
+
+**Context:** MES Core is independently sellable and must consume industrial data without protocol SDKs.
+
+**Decision:** MES Core owns MES domain + **MES GUI** + MES API. Industrial data via **CIC** only (`IIndustrialDataProvider`). Official **Phase 7** = MES Core. **NOT IMPLEMENTED.** See `docs/mes-core-product-architecture.md`.
+
+**Alternatives:** MES reads fieldbuses directly (rejected); monolith with ICP (rejected: ADR-042).
 

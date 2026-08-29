@@ -14,31 +14,46 @@ Status labels used below: **IMPLEMENTED** | **PARTIALLY IMPLEMENTED** | **VALIDA
 
 ## 1. Overall system
 
-Intended production stack (SoT):
+Intended production stack (SoT) — **two commercial products** (ADR-042):
 
 ```text
 PHYSICAL FACTORY
-  PLCs / sensors / machines / other equipment
+  PLCs / sensors / machines / gateways
         │
         ▼
+┌─────────────────────────────────────┐
+│ INDUSTRIAL CONNECTIVITY PLATFORM    │
+│  (ICP — Product 1)                  │
+│  adapters │ runtime │ ICP Designer   │
+└─────────────────┬───────────────────┘
+                  │ Connectivity Integration Contract (CIC)
+                  ▼
+┌─────────────────────────────────────┐
+│ MES CORE (Product 2 — Phase 7)      │
+│  MES GUI                            │
+└─────────────────┬───────────────────┘
+                  │
+         SCADA (Phase 8) │ ERP (Phase 11)
+                  │
+         APPLICATION / API
+                  ▼
+              .NET / Blazor
+```
+
+**Phase 6 today:** ICP **adapter foundation** only (`virtual_factory_equipment` + `virtual_factory_industrial`). Full ICP product and MES Core are **PLANNED**.
+
+Legacy layer view (still valid inside ICP):
+
+```text
 INDUSTRIAL ADAPTERS          (protocol-oriented)
-  mock | OPC UA | Modbus | REST | MQTT | EtherNet/IP | PROFINET
+  mock | OPC UA | Modbus | REST | MQTT | EtherNet/IP | PROFINET (gateway)
         ▼
 NORMALIZED EQUIPMENT MODEL
-        │
-   ┌────┴────┐
-   ▼         ▼
- SCADA      MES
-   └────┬────┘
-        ▼
-APPLICATION / API
-        ▼
-     .NET / C#
-        ▼
-  Blazor / Web GUI
 ```
 
 Gazebo is a **simulation environment**, not this production stack.
+
+Detail: `docs/icp-product-architecture.md`, `docs/mes-core-product-architecture.md`, `docs/connectivity-integration-contract.md`.
 
 MES/SCADA must never depend directly on Gazebo ECM, Gazebo System plugins, Siemens/Allen-Bradley APIs, Modbus register maps, OPC UA node IDs, or vendor SDKs.
 
@@ -164,7 +179,7 @@ IndustrialAdapter           IMPLEMENTED (contract)
 
 Library `virtual_factory_industrial` links `virtual_factory_equipment`, **open62541** (OPC UA client), **libmodbus** (Modbus TCP client), **libcurl** (REST HTTP client), **Paho MQTT C** (`libpaho-mqtt3as`, MQTT 3.1.1), and **libplctag** (EtherNet/IP explicit messaging). nlohmann/json is adapter-private. `IndustrialAdapter.hh` does not include open62541, libmodbus, curl, nlohmann/json, Paho, or libplctag types. The Gazebo plugin does not link industrial, open62541, libmodbus, libcurl, Paho, or libplctag.
 
-**One adapter instance = one industrial source/session.** Several OPC UA servers ⇒ several `OpcUaIndustrialAdapter` instances (ADR-026). Several Modbus TCP endpoints ⇒ several `ModbusIndustrialAdapter` instances (ADR-036). Several REST origins ⇒ several `RestIndustrialAdapter` instances (ADR-037). Several MQTT brokers ⇒ several `MqttIndustrialAdapter` instances (ADR-038). Several EtherNet/IP devices ⇒ several `EtherNetIpIndustrialAdapter` instances (ADR-039). `connectionState()` is per-source. A faulted source does not take down equipment on other adapters. An adapter manager is **Phase 7**, not Phase 6.
+**One adapter instance = one industrial source/session.** Several OPC UA servers ⇒ several `OpcUaIndustrialAdapter` instances (ADR-026). Several Modbus TCP endpoints ⇒ several `ModbusIndustrialAdapter` instances (ADR-036). Several REST origins ⇒ several `RestIndustrialAdapter` instances (ADR-037). Several MQTT brokers ⇒ several `MqttIndustrialAdapter` instances (ADR-038). Several EtherNet/IP devices ⇒ several `EtherNetIpIndustrialAdapter` instances (ADR-039). `connectionState()` is per-source. A faulted source does not take down equipment on other adapters. An **adapter manager** belongs to the **ICP product** (ADR-042), not Phase 6 and not MES Core.
 
 Measured in-process validation (not production proof): [`opcua-scalability-test.md`](opcua-scalability-test.md). Validated at 100 and 200 simulated servers under those test conditions. Do not treat that as “unlimited PLCs” or production hardware certification.
 

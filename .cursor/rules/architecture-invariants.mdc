@@ -8,12 +8,14 @@ alwaysApply: true
 Preserve unless an approved ADR/SoT change says otherwise:
 
 - Gazebo is a simulation plant, not the production factory or the MES.
-- `Equipment` / `GenericEquipment` is an open-ended technical asset model. Conveyor, robot, pump, oven, mixer are **examples**, not a closed catalog. Do not add a C++ class per machine type without a strong, approved reason.
+- **Two commercial products (ADR-042):** **Industrial Connectivity Platform (ICP)** and **MES Core** are independently deployable, sellable, licensable, versioned, and each has **its own GUI**. They integrate **only** via the **Connectivity Integration Contract (CIC)** (ADR-043). No hard dependency: MES → our ICP implementation, or ICP → our MES implementation.
+- **Modularity (ADR-042):** Adding/removing/replacing industrial sources (100→1000+ PLCs) is **configuration/onboarding**, not C++ source changes. ICP owns adapter lifecycle and protocol config; MES owns business domain.
+- `Equipment` / `GenericEquipment` is an open-ended technical asset model. Conveyor, robot, pump, oven, mixer are **examples**, not a closed catalog. Do not add a C++ class per machine type without a strong, approved reason. **Shared contract library** (`virtual_factory_equipment`) — live adapter state stays in **ICP**.
 - Equipment must not depend on Gazebo, open62541, Modbus/HTTP/MQTT/CIP/PROFINET libraries, or vendor SDKs.
-- Industrial adapters are **protocol-oriented** (`OpcUaIndustrialAdapter`, `ModbusIndustrialAdapter`, `RestIndustrialAdapter`, `MqttIndustrialAdapter`, `EtherNetIpIndustrialAdapter`, mock). Never `PumpOpcUaAdapter` / `RobotOpcUaAdapter`. **PROFINET equipment integrates via approved industrial gateways** exposing OPC UA / Modbus / REST / MQTT (ADR-040); native IO-Controller in MES is **deferred**.
+- Industrial adapters are **protocol-oriented** (`OpcUaIndustrialAdapter`, `ModbusIndustrialAdapter`, `RestIndustrialAdapter`, `MqttIndustrialAdapter`, `EtherNetIpIndustrialAdapter`, mock). Never `PumpOpcUaAdapter` / `RobotOpcUaAdapter`. **PROFINET equipment integrates via approved industrial gateways** exposing OPC UA / Modbus / REST / MQTT (ADR-040); native IO-Controller in ICP is **deferred**. **ICP Designer** (ADR-044) configures connectivity — not MES GUI.
 - One `OpcUaIndustrialAdapter` = one `UA_Client` = one OPC UA endpoint. One `ModbusIndustrialAdapter` = one TCP session. One `RestIndustrialAdapter` = one HTTP origin. One `MqttIndustrialAdapter` = one MQTT broker. One `EtherNetIpIndustrialAdapter` = one EtherNet/IP device/session. Many sources = many adapter instances.
-- Adding industrial endpoints later must be configuration/onboarding (Phase 7), not a new C++ adapter class per PLC and not a Phase 6 adapter manager.
-- MES owns resource management, hierarchy, readiness, scheduling, materials, quality, genealogy, OEE/analytics. Equipment state ≠ MES availability. Capability ≠ availability.
-- MES must not depend on Gazebo or protocol/vendor APIs. Adapters must not own MES scheduling.
+- Adding industrial endpoints is **ICP configuration/onboarding** (ADR-028 amendment), not a new C++ adapter class per PLC. **AdapterManager** belongs to **ICP**, not Phase 6 and not MES.
+- MES Core must not depend on Gazebo or protocol/vendor APIs. Adapters must not own MES scheduling. MES consumes **CIC**, not `IndustrialAdapter` headers, in product architecture.
 - SCADA is visualization/operational control, not MES. Auth/RBAC is Phase 9. ERP/PLM/QMS/CMMS and advanced what-if are Phase 11.
-- Keep dependency direction: Gazebo → sim integration; Equipment → generic model; Adapter → protocol; MES → production/resources; SCADA → HMI. No reverse leaks.
+- Keep dependency direction: Gazebo → sim integration; Equipment → generic model; Adapter → protocol (ICP); CIC → integration seam; MES → production/resources; SCADA → HMI. No reverse leaks.
+- Southbound `RestIndustrialAdapter` (industrial HTTP client) ≠ northbound CIC REST API ≠ MES application API.

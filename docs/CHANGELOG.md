@@ -8,12 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Phase 6H gateway documentation strengthened (2026-08-28): expanded `docs/profinet-gateway-integration.md` — responsibility split, identity model, multi-gateway topology, failure isolation, capability limits, test evidence, 1,200-device benchmark rules. Native PROFINET **DEFERRED**. Phase 7 **NOT STARTED**. No production code changes.
+Two-product modular architecture (2026-08-29): ADR-042–045 — **ICP** and **MES Core** as independently deployable/sellable products with **own GUIs**; **CIC** integration contract; **ICP Designer** (drag/drop/configure/connect/deploy); ADR-028 amended (ICP owns industrial onboarding). **No code implemented.**
+
+### Added
+
+- `docs/icp-product-architecture.md`, `docs/mes-core-product-architecture.md`, `docs/connectivity-integration-contract.md`
+- ADR-042, ADR-043, ADR-044, ADR-045; ADR-011 and ADR-028 amendments
 
 ### Changed
 
-- `profinet-gateway-integration.md`: first-class gateway path formalized (sections A–C, isolation, capabilities).
-- ADR-040 gateway diagram includes MQTT; `architecture.md` §4.6 cross-references isolation and capability honesty.
+- SoT §2.1 commercial products; architecture-invariants; roadmap (ICP-1 + Phase 7 slices); architecture.md
 
 ---
 

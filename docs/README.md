@@ -23,7 +23,10 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 | 7 | This file | Resume procedure, commands, index. |
 | — | [opcua-scalability-test.md](opcua-scalability-test.md) | OPC UA multi-PLC **validation record** (measured scale ≠ production proof). |
 | — | [mqtt-scalability-test.md](mqtt-scalability-test.md) | MQTT multi-equipment **validation record** (measured scale ≠ production proof). |
-| — | [profinet-gateway-integration.md](profinet-gateway-integration.md) | Phase 6H PROFINET **supported via gateway** architecture (ADR-040). |
+| — | [icp-product-architecture.md](icp-product-architecture.md) | **ICP** product architecture (ADR-042, ADR-044). |
+| — | [mes-core-product-architecture.md](mes-core-product-architecture.md) | **MES Core** product architecture (ADR-045). |
+| — | [connectivity-integration-contract.md](connectivity-integration-contract.md) | **CIC** boundary between ICP and MES (ADR-043). |
+| — | [profinet-gateway-integration.md](profinet-gateway-integration.md) | Phase 6H PROFINET **supported via gateway** (ADR-040). |
 | — | [archive/](archive/) | Historical/legacy documents only. Not authoritative. |
 | — | Git history | Historical implementation record. |
 
@@ -51,7 +54,7 @@ Do not create a second source of truth. If architecture must change, update `dec
 9. Verify build and tests before modifying code (commands below).
 10. Never infer implementation from the roadmap alone.
 
-Continue from the **Next Step** in `implementation-status.md`. Do **not** start Phase 7 (MES) unless that work is explicitly instructed. Native PROFINET IO-Controller requires a **future approved ADR** (commercial stack or PI CS). Gateway-based PROFINET integration is **supported** (ADR-040, `profinet-gateway-integration.md`).
+Continue from **Next phase** in `implementation-status.md`. **ICP product (ICP-1) and Phase 7 MES Core are NOT STARTED.** Do not implement without explicit slice approval. Products integrate via **CIC** only (ADR-043).
 
 Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discipline, architecture invariants, plan-then-approve workflow). Those rules do not replace the SoT.
 
@@ -67,7 +70,8 @@ Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discip
 | Phase 6F MQTT | **IMPLEMENTED** / **TESTED** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity) |
 | Phase 6G EtherNet/IP | **IMPLEMENTED** / **TESTED** (libplctag explicit messaging; local `ab_server`; not hardware certification). Two-device isolation **VALIDATED** under test conditions |
 | Phase 6H PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040); native IO-Controller **DEFERRED** |
-| Phase 7 MES Core + Resource Management | **NOT STARTED** / **NOT IMPLEMENTED** (all MES scope **PLANNED**; ADR-024, 027–035) |
+| ICP product (ICP-1) | **NOT STARTED** (ADR-042, ADR-044; Phase 6 = foundation only) |
+| Phase 7 MES Core | **NOT STARTED** (ADR-045; consumes CIC only) |
 | SCADA, API, database, auth, Blazor, real PLC | **NOT IMPLEMENTED** |
 
 Equipment is open-ended (`Equipment` / `GenericEquipment`). `Conveyor` is a Gazebo simulation example, not a required machine catalog.

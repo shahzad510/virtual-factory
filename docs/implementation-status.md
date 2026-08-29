@@ -10,7 +10,9 @@
 
 ## 1. Project identity
 
-MES + SCADA + industrial adapter platform. Gazebo Sim 8 is a **simulation plant** used to develop and test the same normalized equipment model that real adapters will feed later.
+MES + SCADA + **modular manufacturing platform** (ICP + MES Core). Gazebo Sim 8 is a **simulation plant** used to develop and test the normalized equipment model.
+
+**Products (ADR-042):** **Industrial Connectivity Platform (ICP)** and **MES Core** — independently sellable; integrate via **CIC** (ADR-043). **Neither product started** beyond Phase 6 ICP adapter foundation.
 
 Gazebo is not MES. `ConveyorSystem` is not SCADA. The mock adapter is not a production protocol.
 
@@ -21,10 +23,10 @@ Gazebo is not MES. `ConveyorSystem` is not SCADA. The mock adapter is not a prod
 | Item | Value |
 | --- | --- |
 | Branch | `master` (tracks `origin/master`) |
-| HEAD commit | `024b0b1` → see `git log -1` after gateway formalization commit |
+| HEAD commit | `594c1fa` → see `git log -1` after two-product architecture commit |
 | Working tree | Use `git status`. |
 | Remote | `origin/master` |
-| Audit date | 2026-08-28 (Phase 6 final audit) |
+| Audit date | 2026-08-29 (two-product architecture formalized) |
 
 Use `git status` and `git log -1` when resuming; this file is not a substitute for Git.
 
@@ -271,8 +273,7 @@ Label: **NOT IMPLEMENTED** / **PLANNED**.
 - REST DELETE, background reconnect, production vendor HTTPS certification
 - Modbus RTU, TLS, FC 15/16 batch writes, background reconnect
 - OPC UA SignAndEncrypt, certificates, subscriptions, history, alarms/conditions
-- MES (orders, Resource Management, plant hierarchy, dynamic PLC onboarding, scheduler, OEE engine, materials, scrap, quality, genealogy, analytics)
-- Dynamic PLC management UI/API
+- MES Core product (Phase 7), ICP product (ICP-1), CIC northbound API, AdapterManager, ICP Designer, MES GUI
 - SCADA / HMI
 - Application API
 - Database
@@ -288,7 +289,9 @@ Label: **NOT IMPLEMENTED** / **PLANNED**.
 
 ## 12. Next phase
 
-**Phase 7 — MES Core + Resource Management — NOT IMPLEMENTED / NOT STARTED.**
+**ICP product (ICP-1):** **NOT STARTED** — runtime, CIC API, ICP Designer (ADR-042, ADR-044). Phase 6 adapter foundation **COMPLETE**.
+
+**Phase 7 — MES Core (Product 2):** **NOT IMPLEMENTED / NOT STARTED** (ADR-045).
 
 Intended scope (all **PLANNED**, none in code): configurable plant hierarchy; dynamic PLC/equipment onboarding; production orders; routing/BOM/BOP; Resource Management (capability vs availability; work centers; allocation/reservation; capacity); resource readiness with specific hold reasons; scheduling/dispatch; execution tracking; materials; scrap; quality; genealogy; downtime; OEE (distinct from broader efficiency); personnel/tools; maintenance availability; contextualized events and operational analytics. See `architecture.md` §10, SoT PDF §§8–23, ADR-024 and ADR-027–035.
 

@@ -26,7 +26,28 @@ Retired numbering (do not revive): Stage 0–25, old Phase 0–10, sensor-first 
 | 10 | Real Factory Integration | **PLANNED** |
 | 11 | Commercial Hardening & Enterprise Integration | **PLANNED** |
 
-Nothing else is IN PROGRESS. Phase 6 is **COMPLETE** (final audit 2026-08-28). Do not implement Phase 7 until explicitly instructed.
+Nothing else is IN PROGRESS. Phase 6 is **COMPLETE** (ICP adapter foundation). **ICP product (ICP-1) NOT STARTED.** Phase 7 MES Core **NOT STARTED**. Do not implement without explicit slice approval.
+
+---
+
+## Product 1 — Industrial Connectivity Platform (ICP)
+
+- **Status:** **PLANNED** — adapter foundation **COMPLETE** (Phase 6); product **NOT STARTED** (ADR-042, ADR-044).
+- **Objective:** Standalone industrial connectivity product: adapters, runtime, config, northbound CIC API, **ICP Designer GUI**.
+- **Must work without MES.**
+- **Implementation slices (not official SoT phase numbers):**
+
+| Slice | Scope | Status |
+| --- | --- | --- |
+| **ICP-1A** | AdapterManager, PollScheduler, LiveStateCache | **NOT STARTED** |
+| **ICP-1B** | Persistent configuration storage | **NOT STARTED** |
+| **ICP-1C** | CIC v1 northbound API (gRPC/REST/stream) | **NOT STARTED** |
+| **ICP-1D** | Command gateway, industrial events | **NOT STARTED** |
+| **ICP-1E** | Standalone deployable package | **NOT STARTED** |
+| **ICP-1F** | **ICP Designer** GUI (drag/drop/configure/connect/deploy) | **NOT STARTED** |
+
+- **Detail:** `docs/icp-product-architecture.md`, `docs/connectivity-integration-contract.md`
+- **PROFINET:** gateway-supported (6H); native deferred in ICP when approved.
 
 ---
 
@@ -83,12 +104,12 @@ Nothing else is IN PROGRESS. Phase 6 is **COMPLETE** (final audit 2026-08-28). D
 - **Order:** 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
 - **Status:** **COMPLETE** (final audit 2026-08-28). Do not start Phase 7 until explicitly instructed.
 
-## Phase 7 — MES Core + Resource Management
+## Phase 7 — MES Core + Resource Management (**Product 2**)
 
-- **Objective:** Production execution and manufacturing information: plant configuration, onboarding, resource readiness, orders, materials, quality, genealogy, OEE, downtime, scheduling, and operational analytics. Siemens Opcenter is a **capability benchmark only** (ADR-035).
+- **Objective:** Production execution and manufacturing information (MES Core product). Consumes industrial data **only via CIC** (ADR-043, ADR-045) — not protocol SDKs.
 - **Major components (none in repo — all PLANNED):**
   1. Configurable plant hierarchy (enterprise/site/building/floor/area/line/cell/work center — data, not C++ inheritance; ADR-027)
-  2. Dynamic PLC/equipment onboarding via configuration (another protocol adapter instance + mappings; no new C++ class per PLC; ADR-028)
+  2. Dynamic equipment assignment via CIC (`equipmentId` → plant location); **ICP owns protocol onboarding** (ADR-028 amendment)
   3. Production order / work order / operation management
   4. Product / process definitions, routing, BOM, bill of process
   5. Resource Management — capability vs availability; allocation; reservation; capacity (ADR-024, ADR-030)
@@ -109,8 +130,19 @@ Nothing else is IN PROGRESS. Phase 6 is **COMPLETE** (final audit 2026-08-28). D
   20. Tools / fixtures
   21. Maintenance availability (not a full CMMS)
   22. Reporting / KPI dashboards (GUI later)
-- **Dependencies:** Phase 5 equipment contract; realistically Phase 6 for live equipment. Do not put this logic in `Equipment` or `IndustrialAdapter`.
+- **Dependencies:** Phase 5 equipment **contract** semantics; **ICP-1C (CIC v1) minimum** for live industrial data; simulated provider may precede. Do not link protocol SDKs into MES.
+- **MES GUI:** core product component (ADR-045) — separate from ICP Designer.
+- **Detail:** `docs/mes-core-product-architecture.md`
 - **Status:** **NOT STARTED** / **NOT IMPLEMENTED**. Do not implement until explicitly instructed.
+
+### Phase 7 implementation slices (proposed)
+
+| Slice | Scope |
+| --- | --- |
+| **7A** | `IIndustrialDataProvider`, CIC client, simulated provider |
+| **7B** | Plant hierarchy + MES equipment registry |
+| **7C** | MES resource model (ADR-024, 030) |
+| **7D+** | Orders, events, historian, scheduling, OEE, MES API/GUI — as approved |
 
 ## Phase 8 — SCADA / Operational HMI
 
