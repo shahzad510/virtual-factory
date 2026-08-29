@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Docs — Kepware PROFINET architecture research (2026-08-29)
+
+Investigated how Kepware/PTC provides PROFINET-related connectivity before locking ICP to Hilscher. Official J7845 driver list does **not** confirm a soft-NIC PROFINET IO-Controller driver; Hilscher Universal is CIF+Profibus/DeviceNet; Edge omits PROFINET. Recommendation: dual Softing + Hilscher + gateway (**Option C**). No production code. See `docs/kepware-profinet-architecture-research.md`.
+
+### Added
+
+- `docs/kepware-profinet-architecture-research.md`
+
 ### Docs — Hilscher native PROFINET evaluation (2026-08-29)
 
 Softing SDK gate **FAILED** (no SDK/EULA/redistribution in environment). Hilscher cifX + NXLFW-PNM evaluated as **feasible alternate** with **mandatory hardware**; smoke test **not run** (no card). Native PROFINET still **NOT IMPLEMENTED**. Gateway **SUPPORTED**. See `docs/profinet-hilscher-evaluation.md`.

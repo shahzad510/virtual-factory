@@ -888,6 +888,16 @@ Gateway:  PN IO-Device → Gateway → OPC UA|Modbus|REST|MQTT → existing adap
 
 **Gateway path:** unchanged **SUPPORTED**.
 
+### Amendment 2026-08-29 (Kepware research) — do not lock ICP to Hilscher-only
+
+Research: [`docs/kepware-profinet-architecture-research.md`](kepware-profinet-architecture-research.md).
+
+**Findings (evidence-tiered):** Official PTC Driver Options (J7845) lists **Hilscher Universal** (CIF cards for DeviceNet/PROFIBUS) and does **not** list a soft-NIC **PROFINET IO-Controller** driver in the retrieved catalog. Kepware Edge (Linux/container) official protocol list **omits PROFINET**. Siemens connectivity in Kepware is primarily **S7/TCP drivers on standard NICs**, which is **not** the same as acting as a PROFINET IO-Controller. Third-party blogs claiming a Kepware PROFINET IO Controller driver remain **unverified** against that official list.
+
+**Product implication:** Kepware does **not** publicly prove that a commercial connectivity product can ship soft-NIC native PROFINET without special hardware. It **does** show (1) gateway/app-protocol patterns and (2) Hilscher hardware masters for some fieldbuses.
+
+**Recommended ICP native strategy (pending user approval):** **Option C** — Softing software stack (when procured) **and** Hilscher cifX hardware SKU **and** gateway always supported. **Do not implement Hilscher or Softing production code until explicitly approved.**
+
 ---
 
 ## ADR-041 — Phase 6 uses slices 6A–6H inside official Phases 1–11

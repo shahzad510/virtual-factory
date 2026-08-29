@@ -20,6 +20,8 @@
 
 **Update 2026-08-29:** Softing **SDK gate FAILED** in this environment. Hilscher feasibility: [`profinet-hilscher-evaluation.md`](profinet-hilscher-evaluation.md) — **FEASIBLE with mandatory cifX hardware**; **not approved for coding** until explicit approval + hardware/license + smoke test.
 
+**Kepware research (2026-08-29):** [`kepware-profinet-architecture-research.md`](kepware-profinet-architecture-research.md) — recommend **dual Softing + Hilscher + gateway** (Option C); do **not** lock to Hilscher-only; do **not** assume Kepware proves soft-NIC PN.
+
 Do **not** assume commercial redistribution rights without signed vendor evidence.
 
 ---

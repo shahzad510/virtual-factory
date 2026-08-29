@@ -30,6 +30,7 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 | — | [profinet-native-evaluation.md](profinet-native-evaluation.md) | Native PROFINET IO-Controller stack re-evaluation (ADR-040 amendment). |
 | — | [profinet-native-implementation-plan.md](profinet-native-implementation-plan.md) | Proposed native PROFINET implementation plan (**PLAN ONLY** — not coded). |
 | — | [profinet-hilscher-evaluation.md](profinet-hilscher-evaluation.md) | Hilscher cifX / NXLFW-PNM feasibility (**evaluation only**). |
+| — | [kepware-profinet-architecture-research.md](kepware-profinet-architecture-research.md) | Kepware/PTC PROFINET architecture research (**research only**). |
 | — | [archive/](archive/) | Historical/legacy documents only. Not authoritative. |
 | — | Git history | Historical implementation record. |
 
