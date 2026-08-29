@@ -8,15 +8,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES, or persistent config. `icp_runtime_test` + full suite **10/10 passed**. Phase 7 **NOT STARTED**. Native PROFINET **DEFERRED**.
+### Docs — Hilscher final product/platform compatibility gate (2026-08-29)
+
+Final commercial + platform gate before any native PROFINET code. Recommended SKU: **CIFX 50E-RE 1251.100** + **NXLIC-MASTER 8211.000** + **NXLFW-PNM 7428.840**. Recommendation **C** — proceed only for Win10/11 industrial PC; Windows Server not production-supported; Ubuntu 24.04 **TECHNICALLY POSSIBLE — NOT VENDOR VERIFIED**; Docker Desktop Win unsupported for native PN. Cost **QUOTE REQUIRED**. No production code. See `docs/profinet-hilscher-final-gate.md`.
+
+### Docs — Kepware PROFINET architecture research (2026-08-29)
+
+Investigated how Kepware/PTC provides PROFINET-related connectivity before locking ICP to Hilscher. Official J7845 driver list does **not** confirm a soft-NIC PROFINET IO-Controller driver; Hilscher Universal is CIF+Profibus/DeviceNet; Edge omits PROFINET. Recommendation: dual Softing + Hilscher + gateway (**Option C**). No production code. See `docs/kepware-profinet-architecture-research.md`.
 
 ### Added
 
-- `icp/` library and `tests/icp_runtime_test.cc`
+- `docs/kepware-profinet-architecture-research.md`
+
+### Docs — Hilscher native PROFINET evaluation (2026-08-29)
+
+Softing SDK gate **FAILED** (no SDK/EULA/redistribution in environment). Hilscher cifX + NXLFW-PNM evaluated as **feasible alternate** with **mandatory hardware**; smoke test **not run** (no card). Native PROFINET still **NOT IMPLEMENTED**. Gateway **SUPPORTED**. See `docs/profinet-hilscher-evaluation.md`.
+
+### Added
+
+- `docs/profinet-hilscher-evaluation.md`
+
+### Docs — 6H native PROFINET re-evaluation (2026-08-29)
+
+ADR-040 amended: gateway path remains **SUPPORTED**; native IO-Controller for **ICP** **APPROVED FOR IMPLEMENTATION** pending Softing (primary) or Hilscher (alternate) commercial procurement. Investigation report: `docs/profinet-native-evaluation.md`. Implementation plan (no code): `docs/profinet-native-implementation-plan.md`. **No** PROFINET production code, CMake, or adapter changes. ICP-1B–1F and Phase 7 **NOT STARTED**.
+
+### Added
+
+- `docs/profinet-native-evaluation.md`
+- `docs/profinet-native-implementation-plan.md`
 
 ### Changed
 
-- Root CMakeLists; roadmap / implementation-status / icp-product-architecture / architecture / CHANGELOG
+- ADR-040 amendment; gateway/ICP/architecture/status/roadmap/README; `.cursor/rules/architecture-invariants.mdc`; SoT Markdown + PDF (prior PDF archived)
+
+### Prior — ICP-1A (merged on master)
+
+ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Full suite **10/10 passed**.
 
 ---
 
