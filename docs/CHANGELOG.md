@@ -10,11 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Docs — 6H native PROFINET re-evaluation (2026-08-29)
 
-ADR-040 amended: gateway path remains **SUPPORTED**; native IO-Controller for **ICP** **APPROVED FOR IMPLEMENTATION** pending Softing (primary) or Hilscher (alternate) commercial procurement. Investigation report: `docs/profinet-native-evaluation.md`. **No** PROFINET production code, CMake, or adapter changes. ICP-1B–1F and Phase 7 **NOT STARTED**.
+ADR-040 amended: gateway path remains **SUPPORTED**; native IO-Controller for **ICP** **APPROVED FOR IMPLEMENTATION** pending Softing (primary) or Hilscher (alternate) commercial procurement. Investigation report: `docs/profinet-native-evaluation.md`. Implementation plan (no code): `docs/profinet-native-implementation-plan.md`. **No** PROFINET production code, CMake, or adapter changes. ICP-1B–1F and Phase 7 **NOT STARTED**.
 
 ### Added
 
 - `docs/profinet-native-evaluation.md`
+- `docs/profinet-native-implementation-plan.md`
 
 ### Changed
 
