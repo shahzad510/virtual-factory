@@ -40,7 +40,7 @@ PHYSICAL FACTORY
               .NET / Blazor
 ```
 
-**Phase 6 today:** ICP **adapter foundation** only (`virtual_factory_equipment` + `virtual_factory_industrial`). Full ICP product and MES Core are **PLANNED**.
+**Phase 6 / ICP-1A today:** ICP **adapter foundation** COMPLETE (`virtual_factory_equipment` + `virtual_factory_industrial`). **ICP-1A** runtime (`AdapterManager`, `PollScheduler`, `LiveStateCache` in `virtual_factory_icp`) **IMPLEMENTED** / **TESTED**. CIC, Designer, MES Core remain **PLANNED**.
 
 Legacy layer view (still valid inside ICP):
 
@@ -179,7 +179,7 @@ IndustrialAdapter           IMPLEMENTED (contract)
 
 Library `virtual_factory_industrial` links `virtual_factory_equipment`, **open62541** (OPC UA client), **libmodbus** (Modbus TCP client), **libcurl** (REST HTTP client), **Paho MQTT C** (`libpaho-mqtt3as`, MQTT 3.1.1), and **libplctag** (EtherNet/IP explicit messaging). nlohmann/json is adapter-private. `IndustrialAdapter.hh` does not include open62541, libmodbus, curl, nlohmann/json, Paho, or libplctag types. The Gazebo plugin does not link industrial, open62541, libmodbus, libcurl, Paho, or libplctag.
 
-**One adapter instance = one industrial source/session.** Several OPC UA servers ⇒ several `OpcUaIndustrialAdapter` instances (ADR-026). Several Modbus TCP endpoints ⇒ several `ModbusIndustrialAdapter` instances (ADR-036). Several REST origins ⇒ several `RestIndustrialAdapter` instances (ADR-037). Several MQTT brokers ⇒ several `MqttIndustrialAdapter` instances (ADR-038). Several EtherNet/IP devices ⇒ several `EtherNetIpIndustrialAdapter` instances (ADR-039). `connectionState()` is per-source. A faulted source does not take down equipment on other adapters. An **adapter manager** belongs to the **ICP product** (ADR-042), not Phase 6 and not MES Core.
+**One adapter instance = one industrial source/session.** Several OPC UA servers ⇒ several `OpcUaIndustrialAdapter` instances (ADR-026). Several Modbus TCP endpoints ⇒ several `ModbusIndustrialAdapter` instances (ADR-036). Several REST origins ⇒ several `RestIndustrialAdapter` instances (ADR-037). Several MQTT brokers ⇒ several `MqttIndustrialAdapter` instances (ADR-038). Several EtherNet/IP devices ⇒ several `EtherNetIpIndustrialAdapter` instances (ADR-039). `connectionState()` is per-source. A faulted source does not take down equipment on other adapters. **An adapter manager** is **ICP-1A** (`virtual_factory::icp::AdapterManager`) — not Phase 6 and not MES Core.
 
 Measured in-process validation (not production proof): [`opcua-scalability-test.md`](opcua-scalability-test.md). Validated at 100 and 200 simulated servers under those test conditions. Do not treat that as “unlimited PLCs” or production hardware certification.
 

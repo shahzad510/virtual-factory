@@ -23,10 +23,10 @@ Gazebo is not MES. `ConveyorSystem` is not SCADA. The mock adapter is not a prod
 | Item | Value |
 | --- | --- |
 | Branch | `master` (tracks `origin/master`) |
-| HEAD commit | `594c1fa` → see `git log -1` after two-product architecture commit |
+| HEAD commit | see `git log -1` (ICP-1A working tree until commit) |
 | Working tree | Use `git status`. |
 | Remote | `origin/master` |
-| Audit date | 2026-08-29 (two-product architecture formalized) |
+| Audit date | 2026-08-29 (ICP-1A) |
 
 Use `git status` and `git log -1` when resuming; this file is not a substitute for Git.
 
@@ -35,6 +35,10 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 ## 3. Current phase
 
 **Phase 6 — Industrial Adapter Layer — COMPLETE** (final audit 2026-08-28)
+
+**ICP product:** **ICP-1A IMPLEMENTED / TESTED**. ICP-1B–1F **NOT STARTED**.
+
+**Phase 7 MES Core:** **NOT STARTED**.
 
 | Slice | Status |
 | --- | --- |
@@ -46,6 +50,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6F** MQTT industrial adapter (`MqttIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; see `docs/mqtt-scalability-test.md`) |
 | **6G** EtherNet/IP industrial adapter (`EtherNetIpIndustrialAdapter`) | **COMPLETE** / **TESTED** (libplctag explicit messaging; local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
 | **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native IO-Controller **DEFERRED**. See `docs/profinet-gateway-integration.md` |
+| **ICP-1A** AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** (`icp/`, `icp_runtime_test`) |
 
 ---
 
@@ -181,25 +186,34 @@ tests/eip_test_server.hh/.cc            TEST ONLY: libplctag ab_server, localhos
 
 Gazebo plugin does **not** link `virtual_factory_industrial`, open62541, libmodbus, libcurl, Paho, or libplctag. `IndustrialAdapter.hh` does **not** include open62541, libmodbus, curl, nlohmann/json, Paho, or libplctag. Equipment headers do not include protocol SDKs.
 
+### ICP runtime (ICP-1A)
+
+- `virtual_factory::icp::AdapterManager` — owns adapters; connect/disconnect; duplicate adapter id / equipment id collision checks
+- `virtual_factory::icp::PollScheduler` — one scheduler thread; `pollOnce()`; **no** app-level auto-reconnect
+- `virtual_factory::icp::LiveStateCache` — latest-value snapshots with `observedAtUtc` on **cache DTOs only**
+- `virtual_factory::icp::AdapterFactory` — in-memory create helpers for Phase 6 adapters
+- Library: `virtual_factory_icp` under `icp/`
+- Does **not** depend on MES. Does **not** implement CIC, Designer, or persistent config.
+
 ---
 
 ## 7. Build status
 
-Last verified 2026-08-28.
+Last verified 2026-08-29 (ICP-1A).
 
 ```bash
 cmake -S . -B build -DCMAKE_CXX_COMPILER=g++
 cmake --build build
 ```
 
-Equipment and industrial libraries compile (including libplctag via `.deps/libplctag` when system package absent). Plugin:
+Equipment, industrial, and ICP libraries compile (including libplctag via `.deps/libplctag` when system package absent). Plugin:
 
 ```bash
 cmake -S gazebo/plugins/conveyor -B gazebo/plugins/conveyor/build
 cmake --build gazebo/plugins/conveyor/build
 ```
 
-Result: `ConveyorSystem` builds. Gazebo was not modified for EtherNet/IP.
+Result: `ConveyorSystem` builds. Gazebo was not modified for ICP-1A.
 
 ---
 
@@ -211,17 +225,18 @@ ctest --test-dir build --output-on-failure
 
 | Test | Result |
 | --- | --- |
-| `equipment_test` | **PASSED** (2026-08-28) |
-| `industrial_adapter_test` | **PASSED** (2026-08-28) |
-| `opcua_adapter_test` | **PASSED** (2026-08-28) |
-| `opcua_multi_server_scalability_test` | **VALIDATED** (2026-08-28, ~25 s). See `docs/opcua-scalability-test.md`. In-process simulated servers; **not** production hardware proof. |
-| `modbus_adapter_test` | **PASSED** (2026-08-28) |
-| `rest_adapter_test` | **PASSED** (2026-08-28). Local HTTP fixture; **not** vendor certification |
-| `mqtt_adapter_test` | **PASSED** (2026-08-28). Local Mosquitto; **not** vendor/cloud certification |
-| `mqtt_multi_equipment_scalability_test` | **VALIDATED** (2026-08-28, ~210 s). See `docs/mqtt-scalability-test.md`. Local Mosquitto; **not** production capacity |
-| `eip_adapter_test` | **PASSED** (2026-08-28, ~6 s). Local libplctag `ab_server`; **not** Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under test conditions |
+| `equipment_test` | **PASSED** (2026-08-29) |
+| `industrial_adapter_test` | **PASSED** (2026-08-29) |
+| `opcua_adapter_test` | **PASSED** (2026-08-29) |
+| `opcua_multi_server_scalability_test` | **VALIDATED** (2026-08-29). See `docs/opcua-scalability-test.md`. **Not** production hardware proof. |
+| `modbus_adapter_test` | **PASSED** (2026-08-29) |
+| `rest_adapter_test` | **PASSED** (2026-08-29). Local HTTP fixture; **not** vendor certification |
+| `mqtt_adapter_test` | **PASSED** (2026-08-29). Local Mosquitto; **not** vendor/cloud certification |
+| `mqtt_multi_equipment_scalability_test` | **VALIDATED** (2026-08-29). See `docs/mqtt-scalability-test.md`. **Not** production capacity |
+| `eip_adapter_test` | **PASSED** (2026-08-29). Local `ab_server`; **not** hardware certification |
+| `icp_runtime_test` | **PASSED** (2026-08-29). Multi-adapter manager, scheduler, cache, fault isolation, collisions |
 
-Full suite: **9/9 passed** (see `git log` / latest regression run). Gateway-backed PROFINET path validated by existing multi-equipment adapter tests (see `docs/profinet-gateway-integration.md` §7). No native `profinet_adapter_test`. **Native PROFINET gateway hardware not tested in CI.**
+Full suite: **10/10 passed**. Gateway-backed PROFINET path validated by existing multi-equipment adapter tests. No native `profinet_adapter_test`. **Native PROFINET gateway hardware not tested in CI.**
 
 ---
 
@@ -273,7 +288,7 @@ Label: **NOT IMPLEMENTED** / **PLANNED**.
 - REST DELETE, background reconnect, production vendor HTTPS certification
 - Modbus RTU, TLS, FC 15/16 batch writes, background reconnect
 - OPC UA SignAndEncrypt, certificates, subscriptions, history, alarms/conditions
-- MES Core product (Phase 7), ICP product (ICP-1), CIC northbound API, AdapterManager, ICP Designer, MES GUI
+- MES Core product (Phase 7), ICP-1B–1F (persistent config, CIC API, events, package, Designer)
 - SCADA / HMI
 - Application API
 - Database
@@ -289,10 +304,10 @@ Label: **NOT IMPLEMENTED** / **PLANNED**.
 
 ## 12. Next phase
 
-**ICP product (ICP-1):** **NOT STARTED** — runtime, CIC API, ICP Designer (ADR-042, ADR-044). Phase 6 adapter foundation **COMPLETE**.
+**ICP product:** **ICP-1A COMPLETE**. Next approved slice among ICP-1B–1F only when instructed.
 
 **Phase 7 — MES Core (Product 2):** **NOT IMPLEMENTED / NOT STARTED** (ADR-045).
 
-Intended scope (all **PLANNED**, none in code): configurable plant hierarchy; dynamic PLC/equipment onboarding; production orders; routing/BOM/BOP; Resource Management (capability vs availability; work centers; allocation/reservation; capacity); resource readiness with specific hold reasons; scheduling/dispatch; execution tracking; materials; scrap; quality; genealogy; downtime; OEE (distinct from broader efficiency); personnel/tools; maintenance availability; contextualized events and operational analytics. See `architecture.md` §10, SoT PDF §§8–23, ADR-024 and ADR-027–035.
+Intended MES scope (all **PLANNED**, none in code): configurable plant hierarchy; equipment assignment via CIC; production orders; Resource Management; readiness; scheduling; materials; scrap; quality; genealogy; downtime; OEE; analytics. See `architecture.md` §10, SoT, ADR-024 and ADR-027–035, `docs/mes-core-product-architecture.md`.
 
-Phase 6 is **COMPLETE** (final audit 2026-08-28). Do not implement Phase 7 until explicitly instructed. Do not put scheduling logic in `Equipment` or `IndustrialAdapter`.
+Do not put scheduling logic in `Equipment`, `IndustrialAdapter`, or ICP adapters. Do not start Phase 7 or ICP-1B+ until explicitly instructed.

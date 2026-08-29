@@ -8,16 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Two-product modular architecture (2026-08-29): ADR-042–045 — **ICP** and **MES Core** as independently deployable/sellable products with **own GUIs**; **CIC** integration contract; **ICP Designer** (drag/drop/configure/connect/deploy); ADR-028 amended (ICP owns industrial onboarding). **No code implemented.**
+ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES, or persistent config. `icp_runtime_test` + full suite **10/10 passed**. Phase 7 **NOT STARTED**. Native PROFINET **DEFERRED**.
 
 ### Added
 
-- `docs/icp-product-architecture.md`, `docs/mes-core-product-architecture.md`, `docs/connectivity-integration-contract.md`
-- ADR-042, ADR-043, ADR-044, ADR-045; ADR-011 and ADR-028 amendments
+- `icp/` library and `tests/icp_runtime_test.cc`
 
 ### Changed
 
-- SoT §2.1 commercial products; architecture-invariants; roadmap (ICP-1 + Phase 7 slices); architecture.md
+- Root CMakeLists; roadmap / implementation-status / icp-product-architecture / architecture / CHANGELOG
 
 ---
 
