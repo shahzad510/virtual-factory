@@ -1,7 +1,7 @@
 # MES + SCADA + Virtual Factory — Source of Truth
 
 <p class="subtitle">Architecture, phases, industrial integration, and MES design.<br>
-Revision 2026-08-29 (Phase 6 **COMPLETE**; modular **ICP + MES Core** product architecture ADR-042–045; Phase 7 = MES Core **NOT STARTED**; ICP product **NOT STARTED**). Living architecture: change this document <em>intentionally</em>, then regenerate the PDF.</p>
+Revision 2026-08-29 (Phase 6 **COMPLETE**; ICP-1A done; 6H native PROFINET re-evaluated ADR-040 amendment; Phase 7 = MES Core **NOT STARTED**). Living architecture: change this document <em>intentionally</em>, then regenerate the PDF.</p>
 
 **How to update this PDF:** edit `docs/source/MES_SCADA_Virtual_Factory_Source_of_Truth.md`, then run `docs/source/generate-sot-pdf.sh`. Do not maintain a second competing Source of Truth.
 
@@ -57,7 +57,7 @@ Adapters are **protocol-oriented**, not machine-oriented. Do not create `PumpOpc
 - REST: one HTTP origin/gateway
 - MQTT: one **broker** connection (many machines via topic mappings)
 - EtherNet/IP: one device/session
-- PROFINET: **supported via industrial gateway** → OPC UA / Modbus / REST / MQTT (ADR-040); native IO-Controller **deferred**
+- PROFINET: **supported via industrial gateway** → OPC UA / Modbus / REST / MQTT (ADR-040); native IO-Controller **APPROVED FOR IMPLEMENTATION** in ICP pending Softing/Hilscher procurement — **NOT IMPLEMENTED**
 
 N sources ⇒ N adapter instances. An adapter **manager/registry** is **not** part of Phase 6; it belongs to the **ICP product** (ADR-042). MES onboarding of plant/resources is Phase 7.
 
@@ -180,7 +180,7 @@ Do not implement Phase 7 until explicitly instructed. Phase 6 is **COMPLETE** (f
 - MES, resource management, scheduler, OEE engine, materials, scrap, quality, genealogy, analytics engine
 - Dynamic PLC management UI/API; adapter manager/registry
 - SCADA, GUI, authentication/RBAC, database, application API
-- PROFINET (6H): **supported via gateway integration** (ADR-040, `docs/profinet-gateway-integration.md`); native IO-Controller **deferred**
+- PROFINET (6H): **supported via gateway** (ADR-040); native **APPROVED** pending stack — not coded (`docs/profinet-native-evaluation.md`)
 - Machine-specific classes such as `Robot.hh`, `Pump.hh`, `Oven.hh`
 
 Development Start/Stop at simulation updates 1000/5000 is a **temporary test**, not industrial control.
@@ -216,7 +216,7 @@ Official Phase **6** remains “Industrial Adapter Layer.” Implementation work
 | **6E** | REST industrial **gateway** adapter (HTTP client) | **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** | MQTT industrial adapter (broker client) | **IMPLEMENTED** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** at 10/50/100/200 mappings + 2×50 brokers (see `docs/mqtt-scalability-test.md`; **not** production capacity) |
 | **6G** | EtherNet/IP industrial adapter (libplctag explicit CIP tag messaging) | **IMPLEMENTED** / **TESTED** (local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| **6H** | PROFINET — **SUPPORTED VIA GATEWAY** (ADR-040); native IO-Controller **DEFERRED** | **SUPPORTED VIA GATEWAY** |
+| **6H** | PROFINET — **SUPPORTED VIA GATEWAY**; native **APPROVED** pending stack (ADR-040 amendment) | **GATEWAY SUPPORTED**; native **NOT IMPLEMENTED** |
 
 Intended order: 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
 
@@ -254,17 +254,15 @@ MQTT is **broker pub/sub**. The adapter is an MQTT **client** (Eclipse Paho MQTT
 
 CIP over Ethernet via **libplctag v2.7.1** (commit `bdb10aeaf4f374cec7ae4e66887446dedf952dc1`, MPL-2.0). The adapter is a **scanner/client**, not “Modbus with another library.” **Explicit messaging / symbolic tag read/write only.** Class 1 implicit/cyclic I/O (UDP 2222) is **NOT IMPLEMENTED**. Do not claim implicit/cyclic I/O unless genuinely implemented and tested. One instance = one device/session (host + port + CIP path + plc type). Several logical machines on one device are `GenericEquipment` mappings (`PLC-001` is configuration identity, not a C++ class). Private `eip_session` wrapper; public headers do not include `libplctag.h`. `connect()` after `Faulted` is explicit. Communication Faulted ≠ `Equipment::fault()`. Tests: libplctag **`ab_server`** ControlLogix emulator — **DEVELOPMENT/INTEGRATION VALIDATION ONLY**, not Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under those test conditions — **not** production capacity.
 
-### 7.6 PROFINET (6H) — **SUPPORTED VIA GATEWAY**; native IO-Controller **DEFERRED** (ADR-040)
+### 7.6 PROFINET (6H) — gateway **SUPPORTED**; native **APPROVED** pending stack (ADR-040)
 
-PROFINET IO uses IO-Controller / IO-Device roles and Layer 2 cyclic process data. **Native `ProfinetIndustrialAdapter` is NOT IMPLEMENTED** — no suitable OSS C/C++ IO-Controller for this repo (p-net is IO-Device only; PI CS requires membership; commercial stacks require license).
+PROFINET IO uses IO-Controller / IO-Device roles and Layer 2 cyclic process data. **Native `ProfinetIndustrialAdapter` is NOT IMPLEMENTED**.
 
-**Final architectural decision (ADR-040):** **6H is satisfied by supported gateway integration** — a **first-class**, **approved** path. PROFINET equipment reaches the platform through an **external industrial gateway** (OPC UA / Modbus TCP / REST / MQTT) and existing adapters **6B–6F**. `GenericEquipment` and MES boundaries unchanged. Do not fake PROFINET with TCP/UDP.
+**Gateway (ADR-040, retained):** **6H is satisfied by supported gateway integration** — first-class path via OPC UA / Modbus / REST / MQTT adapters **6B–6F**. Do not fake PROFINET with TCP/UDP. Do not remove the gateway path. See `docs/profinet-gateway-integration.md`.
 
-See `docs/profinet-gateway-integration.md` for configuration model, capability matrix, multi-PLC topology, and MES-side test evidence.
+**Native (ADR-040 amendment 2026-08-29):** For **ICP** (not MES), native IO-Controller is **APPROVED FOR IMPLEMENTATION** pending Softing (primary) or Hilscher (alternate) commercial procurement. See `docs/profinet-native-evaluation.md`. p-net is IO-Device only (rejected as controller).
 
-Native PROFINET (commercial or PI stack) remains a **deferred future option** requiring a new ADR.
-
-Phase 7 onboarding (ADR-028) instantiates these protocol adapters from configuration. No new C++ adapter class per PLC. No Phase 6 adapter manager.
+ICP onboarding / ICP Designer (ADR-028 amendment, ADR-044) instantiate protocol adapters from configuration. No new C++ adapter class per PLC.
 
 ---
 

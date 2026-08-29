@@ -19,7 +19,7 @@ Retired numbering (do not revive): Stage 0–25, old Phase 0–10, sensor-first 
 | 3 | Conveyor Control | **DONE** |
 | 4 | Product Motion | **DONE** |
 | 5 | Industrial Equipment Abstraction | **DONE** |
-| 6 | Industrial Adapter Layer | **COMPLETE** (6A–6G implemented/tested; 6H supported via gateway; native PN deferred) |
+| 6 | Industrial Adapter Layer | **COMPLETE** (6A–6G implemented/tested; 6H gateway supported; native PN approved pending stack — not coded) |
 | 7 | MES Core + Resource Management | **NOT STARTED** |
 | 8 | SCADA / Operational HMI | **PLANNED** |
 | 9 | Security & Authorization | **PLANNED** |
@@ -47,7 +47,7 @@ Nothing else is IN PROGRESS beyond **ICP-1A**. Phase 6 is **COMPLETE**. **ICP-1B
 | **ICP-1F** | **ICP Designer** GUI (drag/drop/configure/connect/deploy) | **NOT STARTED** |
 
 - **Detail:** `docs/icp-product-architecture.md`, `docs/connectivity-integration-contract.md`
-- **PROFINET:** gateway-supported (6H); native deferred in ICP when approved.
+- **PROFINET:** gateway-supported (6H); native IO-Controller **APPROVED FOR IMPLEMENTATION** pending Softing/Hilscher procurement (ADR-040 amendment) — **NOT IMPLEMENTED**. See `docs/profinet-native-evaluation.md`.
 
 ---
 
@@ -100,7 +100,7 @@ Nothing else is IN PROGRESS beyond **ICP-1A**. Phase 6 is **COMPLETE**. **ICP-1B
   - **6E** REST industrial gateway (HTTP client, libcurl) — **DONE** (localhost fixture; not vendor certification)
   - **6F** MQTT (one broker connection; Paho MQTT C) — **DONE** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity)
   - **6G** EtherNet/IP (libplctag explicit CIP tag messaging) — **DONE** (local `ab_server`; not hardware certification)
-  - **6H** PROFINET — **SUPPORTED VIA GATEWAY** (ADR-040); native IO-Controller **DEFERRED**. See `docs/profinet-gateway-integration.md`
+  - **6H** PROFINET — **SUPPORTED VIA GATEWAY** (ADR-040); native **APPROVED** pending Softing/Hilscher — not coded. See `docs/profinet-native-evaluation.md`
 - **Order:** 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
 - **Status:** **COMPLETE** (final audit 2026-08-28). Do not start Phase 7 until explicitly instructed.
 
@@ -180,7 +180,7 @@ Nothing else is IN PROGRESS beyond **ICP-1A**. Phase 6 is **COMPLETE**. **ICP-1B
 | --- | --- | --- |
 | Product sensor SEN-001 | Equipment after Phase 5 | **DEFERRED** |
 | OpenPLC / interlocks / auto-manual | Behind adapters / PLC | **DEFERRED** |
-| OPC UA nodes, Modbus maps, UAExpert | Phase 6 | OPC UA **DONE** (6B, ADR-025). 6C **VALIDATED** (simulated). Modbus TCP **DONE** (6D, ADR-036). REST **DONE** (6E, ADR-037; local fixture ≠ vendor certification). MQTT **DONE** (6F, ADR-038; local Mosquitto ≠ vendor certification). EtherNet/IP **DONE** (6G, ADR-039; local `ab_server` ≠ hardware certification). PROFINET **SUPPORTED VIA GATEWAY** (6H, ADR-040; native deferred). UAExpert diagnostic only. |
+| OPC UA nodes, Modbus maps, UAExpert | Phase 6 | OPC UA **DONE** (6B). Modbus **DONE** (6D). REST **DONE** (6E). MQTT **DONE** (6F). EtherNet/IP **DONE** (6G). PROFINET **GATEWAY SUPPORTED** (6H); native **APPROVED** pending stack — not coded. UAExpert diagnostic only. |
 | Multi-machine line via GenericEquipment | After contract | **DEFERRED** |
 | Resource Management, plant hierarchy, dynamic PLC onboarding, readiness reasons | MES Phase 7 | **PLANNED** (ADR-024, 027–030; not implemented) |
 | Materials, scrap, quality, genealogy | MES Phase 7 | **PLANNED** (ADR-031, 034; not implemented) |

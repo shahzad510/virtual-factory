@@ -678,10 +678,11 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 
 ---
 
-## ADR-040 — PROFINET **supported via gateway integration**; native IO-Controller deferred (slice 6H)
+## ADR-040 — PROFINET gateway **supported**; native IO-Controller **approved for ICP** (pending stack procurement)
 
-- **Status:** Accepted. Investigation **COMPLETE** (2026-08-28). Final architectural decision **COMPLETE** (2026-08-28). **6H SUPPORTED VIA GATEWAY** — first-class MES integration path. Native `ProfinetIndustrialAdapter` **DEFERRED**.
-- **Date:** 2026-08-24 (investigation 2026-08-28; final decision 2026-08-28)
+- **Status:** Accepted. Gateway investigation **COMPLETE** (2026-08-28). **Gateway path remains SUPPORTED.** Native IO-Controller **re-evaluated** (2026-08-29) for **ICP** product need → **APPROVED FOR IMPLEMENTATION** pending commercial stack selection / license and explicit coding approval. Native code **NOT IMPLEMENTED**.
+- **Date:** 2026-08-24 (gateway investigation 2026-08-28; native re-evaluation 2026-08-29)
+- **Detail:** [`docs/profinet-native-evaluation.md`](profinet-native-evaluation.md), [`docs/profinet-gateway-integration.md`](profinet-gateway-integration.md)
 
 **Context:** PROFINET IO uses Ethernet Layer 2, cyclic real-time process data, DCP, GSDML engineering, slot/submodule addressing, and IO-Controller / IO-Device roles. It is not TCP/UDP request/response like OPC UA, Modbus, REST, or MQTT. Slice **6H** required investigation before any code.
 
@@ -825,6 +826,68 @@ Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/pri
 
 **Alternatives:** Fake TCP PROFINET (rejected); p-net as controller (rejected); GPL Python wrapper (rejected); silent PROFINET omission (rejected); mandatory native commercial stack for Phase 6 closure (rejected — gateway suffices).
 
+### Amendment 2026-08-29 — Native PROFINET reopened for ICP (not MES)
+
+**Why reconsidered:** ADR-042 defines ICP as a standalone commercial connectivity product. Gateway integration remains sufficient for **MES** protocol independence, but ICP product strategy now requires **direct** field connectivity where feasible. Native PROFINET belongs in **ICP**, never in MES. MES continues to consume only CIC / normalized equipment identities.
+
+**Both paths must coexist:**
+
+```text
+Native:   PN IO-Device → ICP ProfinetIndustrialAdapter (IO-Controller) → GenericEquipment → CIC → consumers
+Gateway:  PN IO-Device → Gateway → OPC UA|Modbus|REST|MQTT → existing adapters → GenericEquipment → CIC → consumers
+```
+
+**Re-evaluation conclusion (evidence in `docs/profinet-native-evaluation.md`):**
+
+| Path | Status |
+| --- | --- |
+| Gateway integration | **SUPPORTED** (unchanged; do not remove) |
+| Native IO-Controller | **APPROVED FOR IMPLEMENTATION** — contingent on Softing (primary) or Hilscher (alternate) commercial license + explicit implementation-slice approval |
+| Code in this repo | **NOT IMPLEMENTED** — investigation/docs only this cycle |
+
+**Selected role (unchanged):** ICP = **PROFINET IO-Controller**; never IO-Device; never p-net-as-controller; never fake TCP/UDP.
+
+**Recommended stacks:**
+
+1. **Primary — Softing PROFINET Controller Stack** (portable C IO-Controller, CC-A/B, cyclic IO, multi-device, Linux + Windows product lines, Communication Configurator / GSDML).
+2. **Strong alternate — Hilscher cifX + PROFINET Controller firmware** (production Windows/Linux with hardware offload).
+3. **Situational — Siemens PROFINET Driver** (strong Linux/OEM path; Windows standard-NIC **not** productive per Siemens docs).
+4. **Rejected as controller:** RT-Labs p-net (device only), profinet-py (GPL Python), fake sockets.
+5. **PI Community Stack:** viable long-term **toolkit** with membership + license, **not** a turnkey SDK — not first choice for ICP time-to-product.
+
+**Platform honesty:**
+
+| | Ubuntu 24.04 | Win 10/11/Server | Docker Linux | Docker Desktop Win |
+| --- | --- | --- | --- | --- |
+| ICP Core + gateway PN | ✓ | ✓ | ✓ | ✓ |
+| Softing native (expected) | ✓ validate | ✓ validate | conditional L2 | ✗ |
+| Hilscher native | ✓ | ✓ preferred Win RT | passthrough only | ✗ / rare |
+| Siemens soft-NIC Win | — | demo / not productive | — | — |
+
+**Architecture (future code — not started):** One `ProfinetIndustrialAdapter` = one IO-Controller on one NIC/segment; many IO-Devices; process image → `poll()` → LiveStateCache; no PN types in `Equipment.hh` / CIC / MES. `IndustrialAdapter.hh` remains sufficient.
+
+**Implementation gate:** Do **not** create `ProfinetIndustrialAdapter`, install production PN SDKs into the default OSS build, or change CMake for PROFINET until the user explicitly approves the selected stack **and** an implementation plan after procurement.
+
+**Phase status after amendment:** Phase 6 gateway completeness **unchanged (COMPLETE)**. Native PROFINET is an **ICP extension** of deferred 6H — **NOT IMPLEMENTED**. ICP-1B–1F and Phase 7 **NOT STARTED**.
+
+### Amendment 2026-08-29 (later) — Softing SDK gate FAILED; Hilscher evaluation COMPLETE
+
+**Softing:** Remains **primary software-centric candidate**, but the **SDK / EULA / redistribution gate FAILED** in the development environment (no Softing Controller Stack package, headers, libraries, or signed OEM terms available). Do **not** implement Softing wrappers from guessed APIs.
+
+**Hilscher evaluation:** Documented in [`docs/profinet-hilscher-evaluation.md`](profinet-hilscher-evaluation.md).
+
+| Finding | Status |
+| --- | --- |
+| cifX + **NXLFW-PNM** (PROFINET IO-Controller) + cifX C API | Technically **suitable** as native PN engine |
+| Hardware | **Mandatory** — native PN via this path requires Hilscher cifX/netX hardware |
+| Master license | **Required** for IO-Controller firmware use |
+| Smoke test | **NOT RUN** — no card/firmware in environment |
+| Production code | **NOT STARTED** — awaiting explicit approval + hardware/license |
+
+**Recommendation (evaluation only):** Hilscher is a **commercially viable alternate** for ICP **if** the product accepts a hardware SKU constraint. Softing remains preferred for a soft-NIC software SKU **when** Softing procurement succeeds. Do **not** auto-select Hilscher for coding without user approval.
+
+**Gateway path:** unchanged **SUPPORTED**.
+
 ---
 
 ## ADR-041 — Phase 6 uses slices 6A–6H inside official Phases 1–11
@@ -845,7 +908,7 @@ Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/pri
   - **6E** REST industrial gateway — **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; not vendor certification)
   - **6F** MQTT / Paho C — **IMPLEMENTED** / **TESTED** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity)
   - **6G** EtherNet/IP / libplctag — **IMPLEMENTED** / **TESTED** (explicit messaging only; local `ab_server` fixture ≠ hardware certification)
-  - **6H** PROFINET — **SUPPORTED VIA GATEWAY** (ADR-040); native IO-Controller **DEFERRED**
+  - **6H** PROFINET — **SUPPORTED VIA GATEWAY** (ADR-040); native IO-Controller **APPROVED FOR IMPLEMENTATION** pending stack procurement (ADR-040 amendment 2026-08-29); code **NOT IMPLEMENTED**
 - Order: 6A → 6B → 6C → 6D → 6E → 6F → 6G → 6H → Phase 6 final audit → Phase 7.
 - Do not start Phase 7 until Phase 6 scope is completed **or** remaining slices (especially 6H) are explicitly marked by an approved ADR.
 - Do not implement an adapter manager in Phase 6 (ADR-028).

@@ -26,7 +26,7 @@ Gazebo is not MES. `ConveyorSystem` is not SCADA. The mock adapter is not a prod
 | HEAD commit | see `git log -1` (ICP-1A working tree until commit) |
 | Working tree | Use `git status`. |
 | Remote | `origin/master` |
-| Audit date | 2026-08-29 (ICP-1A) |
+| Audit date | 2026-08-29 (ICP-1A + 6H native PROFINET re-evaluation) |
 
 Use `git status` and `git log -1` when resuming; this file is not a substitute for Git.
 
@@ -49,7 +49,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6E** REST industrial gateway adapter (`RestIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** MQTT industrial adapter (`MqttIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; see `docs/mqtt-scalability-test.md`) |
 | **6G** EtherNet/IP industrial adapter (`EtherNetIpIndustrialAdapter`) | **COMPLETE** / **TESTED** (libplctag explicit messaging; local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native IO-Controller **DEFERRED**. See `docs/profinet-gateway-integration.md` |
+| **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native: Softing SDK gate **FAILED**; Hilscher **evaluated** (feasible w/ cifX HW) — code **NOT IMPLEMENTED**. See `docs/profinet-hilscher-evaluation.md` |
 | **ICP-1A** AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** (`icp/`, `icp_runtime_test`) |
 
 ---
@@ -63,7 +63,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | 3 | Conveyor Control | **COMPLETE** |
 | 4 | Product Motion | **COMPLETE** (runtime verified) |
 | 5 | Industrial Equipment Abstraction | **COMPLETE** (open-ended / capability-driven) |
-| 6 | Industrial Adapter Layer | **COMPLETE** (6A–6G implemented/tested; 6H supported via gateway; native PN deferred) |
+| 6 | Industrial Adapter Layer | **COMPLETE** (6A–6G implemented/tested; 6H gateway supported; native PN approved pending stack — not coded) |
 
 ---
 
@@ -99,9 +99,9 @@ Implemented:
 - Multiple EtherNet/IP devices via **multiple adapter instances** (one device/session per instance); several logical machines on one device via mappings
 - libplctag `ab_server` ControlLogix emulator fixture and unit test `eip_adapter_test` (connect/poll/commands, multi-equipment, isolation, timeout/refused/invalid tag, Faulted vs `Equipment::fault()`, explicit reconnect, two devices). **DEVELOPMENT/INTEGRATION VALIDATION ONLY** — not Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under those test conditions — **not** production capacity
 
-- **PROFINET (6H):** supported via industrial gateway → OPC UA / Modbus / REST / MQTT (ADR-040, `docs/profinet-gateway-integration.md`). Native IO-Controller **deferred**.
+- **PROFINET (6H):** gateway path **SUPPORTED** (ADR-040, `docs/profinet-gateway-integration.md`). Native IO-Controller **APPROVED FOR IMPLEMENTATION** pending Softing/Hilscher procurement (`docs/profinet-native-evaluation.md`) — code **NOT IMPLEMENTED**.
 
-Not implemented in adapters: native PROFINET IO-Controller; Class 1 implicit/cyclic EtherNet/IP I/O; Sparkplug B; MQTT 5 architecture; MQTT wildcards; REST DELETE; Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
+Not implemented in adapters: native PROFINET IO-Controller (approved pending stack); Class 1 implicit/cyclic EtherNet/IP I/O; Sparkplug B; MQTT 5 architecture; MQTT wildcards; REST DELETE; Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
 
 ---
 
@@ -283,7 +283,7 @@ Kinematic result: −1.5 m → 0.5 m at 0.5 m/s (same as Phase 4). Development S
 
 Label: **NOT IMPLEMENTED** / **PLANNED**.
 
-- Native PROFINET IO-Controller in MES (**deferred**; gateway path is supported)
+- Native PROFINET IO-Controller in **ICP** (**approved pending stack procurement**; gateway path still supported). Never implement native PN inside MES.
 - Class 1 implicit/cyclic EtherNet/IP I/O (UDP 2222); EtherNet/IP hardware certification beyond `ab_server` fixture
 - REST DELETE, background reconnect, production vendor HTTPS certification
 - Modbus RTU, TLS, FC 15/16 batch writes, background reconnect

@@ -27,6 +27,9 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 | — | [mes-core-product-architecture.md](mes-core-product-architecture.md) | **MES Core** product architecture (ADR-045). |
 | — | [connectivity-integration-contract.md](connectivity-integration-contract.md) | **CIC** boundary between ICP and MES (ADR-043). |
 | — | [profinet-gateway-integration.md](profinet-gateway-integration.md) | Phase 6H PROFINET **supported via gateway** (ADR-040). |
+| — | [profinet-native-evaluation.md](profinet-native-evaluation.md) | Native PROFINET IO-Controller stack re-evaluation (ADR-040 amendment). |
+| — | [profinet-native-implementation-plan.md](profinet-native-implementation-plan.md) | Proposed native PROFINET implementation plan (**PLAN ONLY** — not coded). |
+| — | [profinet-hilscher-evaluation.md](profinet-hilscher-evaluation.md) | Hilscher cifX / NXLFW-PNM feasibility (**evaluation only**). |
 | — | [archive/](archive/) | Historical/legacy documents only. Not authoritative. |
 | — | Git history | Historical implementation record. |
 
@@ -69,7 +72,7 @@ Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discip
 | Phase 6E REST industrial gateway | **IMPLEMENTED** / **TESTED** (localhost HTTP fixture; not vendor certification) |
 | Phase 6F MQTT | **IMPLEMENTED** / **TESTED** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity) |
 | Phase 6G EtherNet/IP | **IMPLEMENTED** / **TESTED** (libplctag explicit messaging; local `ab_server`; not hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| Phase 6H PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040); native IO-Controller **DEFERRED** |
+| Phase 6H PROFINET | **SUPPORTED VIA GATEWAY**; native **APPROVED FOR IMPLEMENTATION** pending stack (not coded) |
 | ICP product | **ICP-1A IMPLEMENTED / TESTED**; ICP-1B–1F **NOT STARTED** |
 | Phase 7 MES Core | **NOT STARTED** (ADR-045; consumes CIC only) |
 | SCADA, API, database, auth, Blazor, real PLC | **NOT IMPLEMENTED** |

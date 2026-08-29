@@ -29,7 +29,7 @@ ICP must be **commercially complete and useful without MES Core**.
 | --- | --- | --- |
 | Protocol adapters (OPC UA, Modbus, MQTT, REST, EtherNet/IP) | ICP | **IMPLEMENTED** |
 | PROFINET via gateway | ICP | **SUPPORTED VIA GATEWAY** (ADR-040) |
-| Native PROFINET IO-Controller | ICP (future) | **DEFERRED** |
+| Native PROFINET IO-Controller | ICP | **APPROVED FOR IMPLEMENTATION** pending Softing/Hilscher procurement (ADR-040 amendment); code **NOT IMPLEMENTED** — see `docs/profinet-native-evaluation.md` |
 | `Equipment` / normalized live state | ICP | **IMPLEMENTED** (contract lib) |
 | Adapter lifecycle (`AdapterManager`) | ICP | **IMPLEMENTED** (ICP-1A) |
 | Poll scheduling (`PollScheduler`) | ICP | **IMPLEMENTED** (ICP-1A) |
@@ -66,8 +66,8 @@ The ICP GUI is **not** an afterthought. It is a **major product component** (ADR
  MQTT             PLC-003 ───┤──►  ICP Runtime  ──►  MES (via CIC)
  REST             Machine-001┤                        SCADA
  EtherNet/IP      Gateway-001┘                        ERP
- PROFINET Gateway
- Native PROFINET (future)
+ PROFINET Gateway          (supported)
+ Native PROFINET           (approved pending stack; not implemented)
 ```
 
 Designer responsibilities (planned):
