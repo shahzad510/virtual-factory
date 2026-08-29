@@ -8,15 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES, or persistent config. `icp_runtime_test` + full suite **10/10 passed**. Phase 7 **NOT STARTED**. Native PROFINET **DEFERRED**.
+### Docs — 6H native PROFINET re-evaluation (2026-08-29)
+
+ADR-040 amended: gateway path remains **SUPPORTED**; native IO-Controller for **ICP** **APPROVED FOR IMPLEMENTATION** pending Softing (primary) or Hilscher (alternate) commercial procurement. Investigation report: `docs/profinet-native-evaluation.md`. **No** PROFINET production code, CMake, or adapter changes. ICP-1B–1F and Phase 7 **NOT STARTED**.
 
 ### Added
 
-- `icp/` library and `tests/icp_runtime_test.cc`
+- `docs/profinet-native-evaluation.md`
 
 ### Changed
 
-- Root CMakeLists; roadmap / implementation-status / icp-product-architecture / architecture / CHANGELOG
+- ADR-040 amendment; gateway/ICP/architecture/status/roadmap/README; `.cursor/rules/architecture-invariants.mdc`; SoT Markdown + PDF (prior PDF archived)
+
+### Prior — ICP-1A (merged on master)
+
+ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Full suite **10/10 passed**.
 
 ---
 

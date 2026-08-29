@@ -1,10 +1,12 @@
 # PROFINET gateway integration (Phase 6 slice 6H)
 
-**Status:** **SUPPORTED VIA GATEWAY** (ADR-040). **Native PROFINET IO-Controller in MES:** **DEFERRED**.
+**Status:** **SUPPORTED VIA GATEWAY** (ADR-040). This path remains **first-class** and must **not** be removed when native PROFINET is added.
 
-This document describes the **approved, first-class** integration path by which PROFINET PLCs and IO-Devices reach the MES through the existing `IndustrialAdapter` layer. It is **not** a workaround, a stub, or a failure to implement PROFINET.
+**Native PROFINET:** **APPROVED FOR IMPLEMENTATION** in **ICP** pending commercial stack procurement (ADR-040 amendment 2026-08-29). Code **NOT IMPLEMENTED**. See [`profinet-native-evaluation.md`](profinet-native-evaluation.md). Native PROFINET does **not** belong in MES.
 
-**Functional requirement:** A PLC using PROFINET must be capable of communicating with the MES in the **same normalized way** as a PLC using OPC UA, Modbus TCP, REST, MQTT, or EtherNet/IP. That requirement is met when a PROFINET gateway exposes process data through a protocol already implemented in Phase 6.
+This document describes the **approved, first-class gateway** integration path by which PROFINET PLCs and IO-Devices reach ICP / MES consumers through the existing `IndustrialAdapter` layer. It is **not** a workaround, a stub, or a failure to implement PROFINET.
+
+**Functional requirement:** A PLC using PROFINET must be capable of communicating with consumers in the **same normalized way** as a PLC using OPC UA, Modbus TCP, REST, MQTT, or EtherNet/IP. That requirement is met when a PROFINET gateway exposes process data through a protocol already implemented in Phase 6 — and will also be met by a future native IO-Controller adapter behind the same `Equipment` boundary.
 
 ---
 
@@ -203,7 +205,7 @@ Gateway integration preserves **MES-relevant process data and control capabiliti
 
 ### PROFINET native vs gateway northbound
 
-| Capability | PROFINET native (deferred) | Gateway → OPC UA | Gateway → Modbus | Gateway → MQTT | Gateway → REST |
+| Capability | PROFINET native (approved pending stack) | Gateway → OPC UA | Gateway → Modbus | Gateway → MQTT | Gateway → REST |
 | --- | --- | --- | --- | --- | --- |
 | Cyclic RT / IRT IO | ✓ (native stack) | Polled/subscribed via gateway | Polled registers | Pub/sub latency | Request/response |
 | Sub-ms process timing | Possible (native) | Not guaranteed | Not guaranteed | Not guaranteed | Not guaranteed |
@@ -243,11 +245,11 @@ ctest --test-dir build --output-on-failure
 
 ---
 
-## 8. Native PROFINET (deferred)
+## 8. Native PROFINET (approved pending stack; not coded)
 
-A future **native** `ProfinetIndustrialAdapter` (IO-Controller, cyclic RT, GSDML, full PN diagnostics) requires a **separate ADR** and commercial or PI Community Stack approval. It must not contaminate the gateway-first architecture.
+A future **native** `ProfinetIndustrialAdapter` (IO-Controller, cyclic RT, GSDML, PN diagnostics) is **APPROVED FOR IMPLEMENTATION** in **ICP** pending Softing/Hilscher procurement (ADR-040 amendment 2026-08-29). See [`profinet-native-evaluation.md`](profinet-native-evaluation.md). It must **not** replace or remove this gateway path.
 
-Until then: **PROFINET is supported through gateway integration** — not “unsupported.”
+Until native code ships: **PROFINET is supported through gateway integration** — not “unsupported.”
 
 ---
 
@@ -293,7 +295,9 @@ Never claim: “supports 1,200 PLCs” or “16 GB laptop certified for 1,200 de
 | Phase 6 | **COMPLETE** |
 | 6A–6G | **IMPLEMENTED / TESTED** |
 | 6H | **SUPPORTED VIA GATEWAY** |
-| Native PROFINET IO-Controller | **DEFERRED** |
-| Phase 7 | **NOT STARTED** |
+| Native PROFINET IO-Controller | **APPROVED FOR IMPLEMENTATION** pending stack; **NOT IMPLEMENTED** |
+| ICP-1A | **IMPLEMENTED / TESTED** |
+| ICP-1B–1F | **NOT STARTED** |
+| Phase 7 / MES | **NOT STARTED** |
 
 See also: ADR-040, `docs/architecture.md` §4.6, `docs/implementation-status.md`.
