@@ -2,6 +2,8 @@
 
 **Status:** Evaluation **COMPLETE** (2026-08-29). Native PROFINET remains **NOT IMPLEMENTED**. Gateway path remains **SUPPORTED VIA GATEWAY**.
 
+**Follow-up:** Final commercial/platform gate — [`profinet-hilscher-final-gate.md`](profinet-hilscher-final-gate.md) (SKU lock **CIFX 50E-RE 1251.100**; recommendation **C**).
+
 **Context:** Softing PROFINET Controller Stack remains the **primary software-centric candidate**, but the Softing **SDK/EULA/redistribution gate FAILED** in this environment (no SDK, no signed commercial terms). This document evaluates **Hilscher** as the **alternate** path — **not** an automatic selection.
 
 **Authority:** ADR-040, [`profinet-native-evaluation.md`](profinet-native-evaluation.md), [`profinet-native-implementation-plan.md`](profinet-native-implementation-plan.md).

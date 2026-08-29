@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Docs — Hilscher final product/platform compatibility gate (2026-08-29)
+
+Final commercial + platform gate before any native PROFINET code. Recommended SKU: **CIFX 50E-RE 1251.100** + **NXLIC-MASTER 8211.000** + **NXLFW-PNM 7428.840**. Recommendation **C** — proceed only for Win10/11 industrial PC; Windows Server not production-supported; Ubuntu 24.04 **TECHNICALLY POSSIBLE — NOT VENDOR VERIFIED**; Docker Desktop Win unsupported for native PN. Cost **QUOTE REQUIRED**. No production code. See `docs/profinet-hilscher-final-gate.md`.
+
 ### Docs — Kepware PROFINET architecture research (2026-08-29)
 
 Investigated how Kepware/PTC provides PROFINET-related connectivity before locking ICP to Hilscher. Official J7845 driver list does **not** confirm a soft-NIC PROFINET IO-Controller driver; Hilscher Universal is CIF+Profibus/DeviceNet; Edge omits PROFINET. Recommendation: dual Softing + Hilscher + gateway (**Option C**). No production code. See `docs/kepware-profinet-architecture-research.md`.

@@ -22,6 +22,8 @@
 
 **Kepware research (2026-08-29):** [`kepware-profinet-architecture-research.md`](kepware-profinet-architecture-research.md) — recommend **dual Softing + Hilscher + gateway** (Option C); do **not** lock to Hilscher-only; do **not** assume Kepware proves soft-NIC PN.
 
+**Hilscher final gate (2026-08-29):** [`profinet-hilscher-final-gate.md`](profinet-hilscher-final-gate.md) — recommendation **C**: procure **CIFX 50E-RE 1251.100** + **NXLIC-MASTER** + **NXLFW-PNM**; production native PN claims limited to **Windows 10/11**; Server unsupported; Ubuntu 24.04 not vendor-verified; Docker Desktop Win unsupported. **Still no coding** until explicit approval after procurement + smoke test.
+
 Do **not** assume commercial redistribution rights without signed vendor evidence.
 
 ---

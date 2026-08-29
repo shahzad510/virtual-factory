@@ -898,6 +898,29 @@ Research: [`docs/kepware-profinet-architecture-research.md`](kepware-profinet-ar
 
 **Recommended ICP native strategy (pending user approval):** **Option C** — Softing software stack (when procured) **and** Hilscher cifX hardware SKU **and** gateway always supported. **Do not implement Hilscher or Softing production code until explicitly approved.**
 
+### Amendment 2026-08-29 (final) — Hilscher product / platform compatibility gate
+
+**Detail:** [`docs/profinet-hilscher-final-gate.md`](profinet-hilscher-final-gate.md).
+
+**SKU lock (procurement):** **CIFX 50E-RE** part **1251.100** (netX 100) + **NXLIC-MASTER** **8211.000** + **NXLFW-PNM** **7428.840** + **NXDRV-WIN** / **NXDRV-LINUX**.
+
+**Platform gate:**
+
+| Platform | Native Hilscher PN |
+| --- | --- |
+| Windows 10 | Proceed (driver-supported) |
+| Windows 11 | Proceed (driver verified) |
+| Windows Server | **Not** production-supported (one-off Server 2019 FAQ only) |
+| Ubuntu 24.04 | **TECHNICALLY POSSIBLE — NOT VENDOR VERIFIED** |
+| Docker Linux | Prefer host driver + host PN agent; not default in-container controller |
+| Docker Desktop Windows | **Unsupported** — native Windows service/application only |
+
+**Commercial model:** ICP Standard (gateway PN, no Hilscher HW) and ICP Industrial / PROFINET Edition (Hilscher HW + master license) are both legitimate. Cost: **QUOTE REQUIRED**. OEM redistribution of drivers/firmware requires written Hilscher terms — download ≠ redistribute.
+
+**Gate recommendation:** **C — PROCEED ONLY FOR SPECIFIC PLATFORM/SKU** (Win10/11 industrial PC + CIFX 50E-RE stack). **No** production code until explicit approval after this gate + hardware/license + smoke test.
+
+**Gateway path:** unchanged **SUPPORTED**. Softing remains preferred soft-NIC candidate when SDK/OEM terms exist.
+
 ---
 
 ## ADR-041 — Phase 6 uses slices 6A–6H inside official Phases 1–11

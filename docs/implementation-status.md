@@ -49,7 +49,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6E** REST industrial gateway adapter (`RestIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** MQTT industrial adapter (`MqttIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; see `docs/mqtt-scalability-test.md`) |
 | **6G** EtherNet/IP industrial adapter (`EtherNetIpIndustrialAdapter`) | **COMPLETE** / **TESTED** (libplctag explicit messaging; local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native: Softing SDK gate **FAILED**; Hilscher **evaluated** (feasible w/ cifX HW) — code **NOT IMPLEMENTED**. See `docs/profinet-hilscher-evaluation.md` |
+| **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native: Softing SDK gate **FAILED**; Hilscher final platform gate **COMPLETE** — recommendation **C** (Win10/11 + CIFX 50E-RE only); code **NOT IMPLEMENTED**. See `docs/profinet-hilscher-final-gate.md` |
 | **ICP-1A** AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** (`icp/`, `icp_runtime_test`) |
 
 ---
@@ -99,7 +99,7 @@ Implemented:
 - Multiple EtherNet/IP devices via **multiple adapter instances** (one device/session per instance); several logical machines on one device via mappings
 - libplctag `ab_server` ControlLogix emulator fixture and unit test `eip_adapter_test` (connect/poll/commands, multi-equipment, isolation, timeout/refused/invalid tag, Faulted vs `Equipment::fault()`, explicit reconnect, two devices). **DEVELOPMENT/INTEGRATION VALIDATION ONLY** — not Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under those test conditions — **not** production capacity
 
-- **PROFINET (6H):** gateway path **SUPPORTED** (ADR-040, `docs/profinet-gateway-integration.md`). Native IO-Controller **APPROVED FOR IMPLEMENTATION** pending Softing/Hilscher procurement (`docs/profinet-native-evaluation.md`) — code **NOT IMPLEMENTED**.
+- **PROFINET (6H):** gateway path **SUPPORTED** (ADR-040, `docs/profinet-gateway-integration.md`). Native IO-Controller **APPROVED strategically** pending stack; Hilscher final gate recommends **C** (specific SKU/platforms) — code **NOT IMPLEMENTED**. See `docs/profinet-hilscher-final-gate.md`.
 
 Not implemented in adapters: native PROFINET IO-Controller (approved pending stack); Class 1 implicit/cyclic EtherNet/IP I/O; Sparkplug B; MQTT 5 architecture; MQTT wildcards; REST DELETE; Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
 
