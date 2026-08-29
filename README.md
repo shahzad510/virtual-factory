@@ -17,8 +17,8 @@ MES + SCADA + industrial adapter platform. Gazebo Sim is a **virtual plant** for
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Change history |
 | [docs/archive/](docs/archive/) | Historical documents only — not authoritative |
 
-**Current state:** Phase 6 **COMPLETE** (ICP adapter foundation). **ICP product NOT STARTED.** **Phase 7 MES Core NOT STARTED.** Two-product architecture: ADR-042–045.
+**Current state:** Phase 6 **COMPLETE**. **ICP-1A IMPLEMENTED / TESTED**. ICP-1B–1F and Phase 7 MES Core **NOT STARTED**.
 
-**Next step:** Approve and implement **ICP-1** or **Phase 7** slices explicitly — do not start without approval.
+**Next step:** Approve next slice (**ICP-1B** or later) explicitly — do not start without approval.
 
 **SoT maintenance:** edit `docs/source/MES_SCADA_Virtual_Factory_Source_of_Truth.md`, then run `docs/source/generate-sot-pdf.sh`. The PDF is the architectural authority; the Markdown is how that PDF is maintained.

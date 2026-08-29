@@ -31,19 +31,20 @@ ICP must be **commercially complete and useful without MES Core**.
 | PROFINET via gateway | ICP | **SUPPORTED VIA GATEWAY** (ADR-040) |
 | Native PROFINET IO-Controller | ICP (future) | **DEFERRED** |
 | `Equipment` / normalized live state | ICP | **IMPLEMENTED** (contract lib) |
-| Adapter lifecycle (`AdapterManager`) | ICP | **NOT IMPLEMENTED** |
-| Poll scheduling (`PollScheduler`) | ICP | **NOT IMPLEMENTED** |
-| Connection management / reconnect policy | ICP | **NOT IMPLEMENTED** (explicit reconnect in adapters only) |
-| Configuration & equipment mappings | ICP | **NOT IMPLEMENTED** (C++ config in tests only) |
-| Industrial data acquisition | ICP | **PARTIAL** (`poll()` in adapters) |
+| Adapter lifecycle (`AdapterManager`) | ICP | **IMPLEMENTED** (ICP-1A) |
+| Poll scheduling (`PollScheduler`) | ICP | **IMPLEMENTED** (ICP-1A) |
+| Connection management / reconnect policy | ICP | **PARTIAL** — explicit `connect()` only; **no** app-level auto-reconnect (ICP-1A) |
+| Configuration & equipment mappings | ICP | **PARTIAL** — in-memory factory/config in ICP-1A; durable store is ICP-1B |
+| Industrial data acquisition | ICP | **IMPLEMENTED** — adapters + PollScheduler |
 | Command execution to field | ICP | **IMPLEMENTED** (via `Equipment::execute`) |
-| Connection health / diagnostics | ICP | **PARTIAL** (`ConnectionState`, `lastError`) |
-| Industrial event acquisition | ICP | **NOT IMPLEMENTED** |
-| Northbound **Connectivity Integration Contract** | ICP | **NOT IMPLEMENTED** (ADR-043) |
+| Connection health / diagnostics | ICP | **IMPLEMENTED** — `ConnectionState` / cache `stale` + `communicationState` |
+| Industrial event acquisition | ICP | **NOT IMPLEMENTED** (ICP-1D) |
+| Northbound **Connectivity Integration Contract** | ICP | **NOT IMPLEMENTED** (ADR-043 / ICP-1C) |
 | ICP API (gRPC / REST / stream) | ICP | **NOT IMPLEMENTED** |
-| **ICP Designer GUI** | ICP | **NOT IMPLEMENTED** (ADR-044) |
-| ICP configuration storage | ICP | **NOT IMPLEMENTED** |
-| ICP deployment package | ICP | **NOT IMPLEMENTED** |
+| **ICP Designer GUI** | ICP | **NOT IMPLEMENTED** (ADR-044 / ICP-1F) |
+| ICP configuration storage | ICP | **NOT IMPLEMENTED** (ICP-1B) |
+| ICP deployment package | ICP | **NOT IMPLEMENTED** (ICP-1E) |
+| Live state cache | ICP | **IMPLEMENTED** (ICP-1A `LiveStateCache`) |
 
 ICP must **not** depend on MES business logic, MES database, work orders, OEE, scheduling, materials, or MES GUI.
 
@@ -120,13 +121,13 @@ ICP does **not** embed MES-specific assumptions in adapters or runtime.
 
 | Slice | Deliverable |
 | --- | --- |
-| **ICP-1A** | Runtime: AdapterManager, PollScheduler, LiveStateCache |
-| **ICP-1B** | Persistent configuration storage |
-| **ICP-1C** | CIC v1 northbound API |
-| **ICP-1D** | Command gateway + industrial events |
-| **ICP-1E** | Standalone deployable package |
-| **ICP-1F** | ICP Designer GUI (MVP) |
+| **ICP-1A** | Runtime: AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** |
+| **ICP-1B** | Persistent configuration storage | **NOT STARTED** |
+| **ICP-1C** | CIC v1 northbound API | **NOT STARTED** |
+| **ICP-1D** | Command gateway + industrial events | **NOT STARTED** |
+| **ICP-1E** | Standalone deployable package | **NOT STARTED** |
+| **ICP-1F** | ICP Designer GUI (MVP) | **NOT STARTED** |
 
-**Current repo state:** Phase 6 adapter libraries only. **No ICP-1 slice started.**
+**Current repo state:** Phase 6 adapters + **ICP-1A runtime** (`icp/` → `virtual_factory_icp`). CIC, Designer, MES **not** started.
 
 See `docs/roadmap.md` and ADR-042.

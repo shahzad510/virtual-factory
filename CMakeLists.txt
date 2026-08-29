@@ -4,10 +4,12 @@ project(virtual_factory)
 
 # Gazebo-independent industrial equipment contract (SoT Phase 5)
 # and industrial adapter layer (SoT Phase 6).
+# ICP runtime foundation (ICP-1A) lives under icp/.
 # The conveyor Gazebo plugin is still built from
 # gazebo/plugins/conveyor so existing plugin build commands keep working.
 add_subdirectory(equipment)
 add_subdirectory(industrial)
+add_subdirectory(icp)
 
 if (VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS OR VIRTUAL_FACTORY_PAHO_MQTT_LIBRARY_DIR OR VIRTUAL_FACTORY_LIBPLCTAG_LIBRARY_DIRS)
   set(CMAKE_BUILD_RPATH
@@ -208,3 +210,12 @@ set_property(
     PROPERTY BUILD_RPATH "${_eip_test_rpath}")
 add_test(NAME eip_adapter_test COMMAND eip_adapter_test)
 set_tests_properties(eip_adapter_test PROPERTIES TIMEOUT 300)
+
+add_executable(icp_runtime_test
+    tests/icp_runtime_test.cc
+    tests/opcua_test_server.cc
+)
+target_include_directories(icp_runtime_test PRIVATE tests)
+target_link_libraries(icp_runtime_test PRIVATE virtual_factory_icp)
+add_test(NAME icp_runtime_test COMMAND icp_runtime_test)
+set_tests_properties(icp_runtime_test PROPERTIES TIMEOUT 120)
