@@ -28,6 +28,7 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 | — | [connectivity-integration-contract.md](connectivity-integration-contract.md) | **CIC** boundary between ICP and MES (ADR-043). |
 | — | [profinet-gateway-integration.md](profinet-gateway-integration.md) | Phase 6H PROFINET **supported via gateway** (ADR-040). |
 | — | [profinet-native-evaluation.md](profinet-native-evaluation.md) | Native PROFINET IO-Controller stack re-evaluation (ADR-040 amendment). |
+| — | [profinet-native-implementation-plan.md](profinet-native-implementation-plan.md) | Proposed native PROFINET implementation plan (**PLAN ONLY** — not coded). |
 | — | [archive/](archive/) | Historical/legacy documents only. Not authoritative. |
 | — | Git history | Historical implementation record. |
 
