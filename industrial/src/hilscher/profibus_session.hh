@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "cifx_runtime.hh"
+
 namespace virtual_factory
 {
 namespace internal
@@ -17,11 +19,14 @@ struct ProfibusSessionConfig
   unsigned channel{0};
   unsigned masterAddress{1};
   unsigned baudRateKbps{19200};
-  /// Exported SYCON configuration artifact for the DP master.
   std::string configArtifactPath;
+  std::string expectedFirmwareName;
+  unsigned ioTimeoutMs{1000};
 };
 
-/// Private Hilscher PROFIBUS DP Master session (cifX API wrapper).
+/// Private Hilscher PROFIBUS DP Master session.
+/// Uses the official cifX API only. DP-V1 / GSD protocol packet IDs from
+/// NXLFW-DPM Protocol API headers are NOT invented here.
 class ProfibusSession
 {
 public:
@@ -37,21 +42,22 @@ public:
   void close();
   bool connected() const;
 
-  bool readInputArea(std::size_t byteOffset, std::size_t length, std::vector<std::uint8_t> *out);
+  bool readInputArea(
+      std::size_t byteOffset, std::size_t length, std::vector<std::uint8_t> *out);
   bool writeOutputArea(
-      std::size_t byteOffset,
-      const std::vector<std::uint8_t> &data);
+      std::size_t byteOffset, const std::vector<std::uint8_t> &data);
 
+  std::string firmwareName() const;
   std::string lastError() const;
 
 private:
+  bool matchesFirmware(const std::string &name) const;
+
   bool open_{false};
   ProfibusSessionConfig config_;
   std::string last_error_;
-#if defined(VF_HILSCHER_CIFX_AVAILABLE) && VF_HILSCHER_CIFX_AVAILABLE
-  struct Impl;
-  Impl *impl_{nullptr};
-#endif
+  std::string firmware_name_;
+  CifxChannel channel_;
 };
 
 }  // namespace internal

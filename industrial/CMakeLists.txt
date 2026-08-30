@@ -83,6 +83,9 @@ add_library(virtual_factory_industrial STATIC
     src/EtherNetIpIndustrialAdapter.cc
     src/eip_session.cc
     src/hilscher/hilscher_availability.cc
+    src/hilscher/cifx_runtime.cc
+    src/hilscher/profinet_session.cc
+    src/hilscher/profibus_session.cc
     src/hilscher/profinet_session.cc
     src/hilscher/profibus_session.cc
     src/ProfinetIndustrialAdapter.cc
@@ -107,7 +110,11 @@ if (VF_HILSCHER_CIFX_AVAILABLE)
   target_compile_definitions(virtual_factory_industrial
       PRIVATE VF_HILSCHER_CIFX_AVAILABLE=1)
   target_link_libraries(virtual_factory_industrial
-      PRIVATE ${HILSCHER_CIFX_LIBRARY})
+      PRIVATE ${HILSCHER_CIFX_LIBRARY} pthread rt)
+  get_filename_component(HILSCHER_CIFX_LIBRARY_DIR
+      "${HILSCHER_CIFX_LIBRARY}" DIRECTORY)
+  target_link_directories(virtual_factory_industrial
+      INTERFACE ${HILSCHER_CIFX_LIBRARY_DIR})
 else()
   target_compile_definitions(virtual_factory_industrial
       PRIVATE VF_HILSCHER_CIFX_AVAILABLE=0)
@@ -144,7 +151,7 @@ target_link_libraries(virtual_factory_industrial
         ${LIBPLCTAG_LIBRARIES}
 )
 
-if (LIBMODBUS_LIBRARY_DIRS OR PAHO_MQTT_LIBRARY_DIR OR LIBPLCTAG_LIBRARY_DIRS)
+if (LIBMODBUS_LIBRARY_DIRS OR PAHO_MQTT_LIBRARY_DIR OR LIBPLCTAG_LIBRARY_DIRS OR HILSCHER_CIFX_LIBRARY_DIR)
   set(_vf_industrial_rpath "")
   if (LIBMODBUS_LIBRARY_DIRS)
     list(APPEND _vf_industrial_rpath ${LIBMODBUS_LIBRARY_DIRS})
@@ -167,6 +174,9 @@ if (LIBMODBUS_LIBRARY_DIRS OR PAHO_MQTT_LIBRARY_DIR OR LIBPLCTAG_LIBRARY_DIRS)
             ${LIBPLCTAG_LIBRARY_DIRS}
     )
   endif()
+  if (HILSCHER_CIFX_LIBRARY_DIR)
+    list(APPEND _vf_industrial_rpath ${HILSCHER_CIFX_LIBRARY_DIR})
+  endif()
   set_property(
       TARGET virtual_factory_industrial
       PROPERTY BUILD_RPATH "${_vf_industrial_rpath}")
@@ -186,6 +196,12 @@ set(VIRTUAL_FACTORY_LIBPLCTAG_LIBRARY_DIRS
 
 set(VIRTUAL_FACTORY_HILSCHER_CIFX_AVAILABLE
     "${VF_HILSCHER_CIFX_AVAILABLE}" PARENT_SCOPE)
+set(VIRTUAL_FACTORY_HILSCHER_CIFX_FOUND
+    "${VF_HILSCHER_CIFX_FOUND}" PARENT_SCOPE)
+if (HILSCHER_CIFX_LIBRARY_DIR)
+  set(VIRTUAL_FACTORY_HILSCHER_CIFX_LIBRARY_DIR
+      "${HILSCHER_CIFX_LIBRARY_DIR}" PARENT_SCOPE)
+endif()
 
 set_target_properties(virtual_factory_industrial PROPERTIES
     CXX_STANDARD 17

@@ -223,8 +223,16 @@ set_tests_properties(icp_runtime_test PROPERTIES TIMEOUT 120)
 add_executable(native_fieldbus_scaffolding_test
     tests/native_fieldbus_scaffolding_test.cc
 )
+target_include_directories(native_fieldbus_scaffolding_test
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/industrial/src)
 target_link_libraries(native_fieldbus_scaffolding_test
     PRIVATE virtual_factory_industrial virtual_factory_icp pthread)
+if (VIRTUAL_FACTORY_HILSCHER_CIFX_LIBRARY_DIR)
+  set_property(
+      TARGET native_fieldbus_scaffolding_test
+      APPEND PROPERTY BUILD_RPATH "${VIRTUAL_FACTORY_HILSCHER_CIFX_LIBRARY_DIR}")
+endif()
 add_test(NAME native_fieldbus_scaffolding_test
     COMMAND native_fieldbus_scaffolding_test)
 set_tests_properties(native_fieldbus_scaffolding_test PROPERTIES TIMEOUT 60)

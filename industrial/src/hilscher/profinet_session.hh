@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "cifx_runtime.hh"
+
 namespace virtual_factory
 {
 namespace internal
@@ -13,15 +15,18 @@ namespace internal
 
 struct ProfinetSessionConfig
 {
-  /// cifX board identifier (driver enumeration / slot id).
   std::string boardId;
   unsigned channel{0};
   /// Exported SYCON / Communication Studio artifact (e.g. config.nxd).
   std::string configArtifactPath;
+  /// Optional firmware name substring (e.g. "PROFINET"); empty = skip check.
+  std::string expectedFirmwareName;
+  unsigned ioTimeoutMs{1000};
 };
 
-/// Private Hilscher PROFINET IO-Controller session (cifX API wrapper).
-/// No Hilscher types in this header.
+/// Private Hilscher PROFINET IO-Controller session.
+/// Uses the official cifX API only. Protocol mailbox (DCP/AR) packet IDs
+/// from NXLFW-PNM Protocol API headers are NOT invented here.
 class ProfinetSession
 {
 public:
@@ -37,24 +42,22 @@ public:
   void close();
   bool connected() const;
 
-  /// Read bytes from the controller process input image.
-  bool readInputArea(std::size_t byteOffset, std::size_t length, std::vector<std::uint8_t> *out);
-
-  /// Write bytes to the controller process output image.
+  bool readInputArea(
+      std::size_t byteOffset, std::size_t length, std::vector<std::uint8_t> *out);
   bool writeOutputArea(
-      std::size_t byteOffset,
-      const std::vector<std::uint8_t> &data);
+      std::size_t byteOffset, const std::vector<std::uint8_t> &data);
 
+  std::string firmwareName() const;
   std::string lastError() const;
 
 private:
+  bool matchesFirmware(const std::string &name) const;
+
   bool open_{false};
   ProfinetSessionConfig config_;
   std::string last_error_;
-#if defined(VF_HILSCHER_CIFX_AVAILABLE) && VF_HILSCHER_CIFX_AVAILABLE
-  struct Impl;
-  Impl *impl_{nullptr};
-#endif
+  std::string firmware_name_;
+  CifxChannel channel_;
 };
 
 }  // namespace internal

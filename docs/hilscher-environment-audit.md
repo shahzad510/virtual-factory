@@ -1,9 +1,8 @@
 # Hilscher cifX environment audit — native fieldbus track
 
-**Date:** 2026-08-30  
+**Date:** 2026-08-30 (re-audit after NXDRV-LINUX clone)  
 **Host:** Cloud Agent VM (Ubuntu 24.04, x86_64)  
-**Branch:** `cursor/icp-native-fieldbus-hilscher-a88d`  
-**Purpose:** Verify whether legitimate Hilscher SDK, drivers, firmware, or hardware are available before native PROFINET/PROFIBUS integration.
+**Purpose:** Track installed vs external Hilscher material. Firmware and cards remain absent.
 
 ---
 
@@ -11,18 +10,17 @@
 
 | Item | Result |
 | --- | --- |
-| Hilscher cifX SDK (`cifXAPI.h`, `libcifx`) | **NOT FOUND** |
-| NXDRV / driver packages | **NOT FOUND** |
+| Official NXDRV-LINUX (GitHub) | **Obtained** into gitignored `.deps/nxdrvlinux` — **not committed** |
+| libcifx (`cifXUser.h`, `libcifx.so`) | **Built locally** to `.deps/libcifx` — **not committed** |
+| NXDRV-WIN | **NOT INSTALLED** (Linux host) |
 | PROFINET firmware (NXLFW-PNM) | **NOT FOUND** |
-| PROFIBUS firmware (NXLFW-DPM / CIFXDPM.NXF) | **NOT FOUND** |
-| License files (NXLIC-MASTER) | **NOT FOUND** |
+| PROFIBUS firmware | **NOT FOUND** |
+| NXLIC-MASTER | **NOT FOUND** |
 | Hilscher PCI/USB hardware | **NOT FOUND** |
-| Environment variables (`HILSCHER_CIFX_ROOT`, `CIFX_SDK_ROOT`) | **NOT SET** |
-| Vendor smoke test | **NOT RUN** — blocked by missing SDK/hardware |
-| Native PROFINET production integration | **BLOCKED BY SDK/HARDWARE** |
-| Native PROFIBUS production integration | **BLOCKED BY SDK/HARDWARE** |
+| Native plant IO | **HARDWARE VALIDATION PENDING** |
+| Production native support claim | **Not valid** |
 
-**No proprietary SDK or firmware was downloaded during this audit.** Per project policy, proprietary material must not be committed to Git without authorization.
+Proprietary firmware was **not** downloaded. See [`hilscher-sdk-license.md`](hilscher-sdk-license.md).
 
 ---
 

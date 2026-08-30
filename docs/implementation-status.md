@@ -52,7 +52,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native IO-Controller scaffolding **PARTIALLY IMPLEMENTED** — **BLOCKED BY SDK/HARDWARE**. See `docs/profinet-gateway-integration.md`, `docs/native-fieldbus-implementation-status.md` |
 | **6I** PROFIBUS (native) | Gateway **SUPPORTED** (ADR-046). Native DP Master scaffolding **PARTIALLY IMPLEMENTED** — **BLOCKED BY SDK/HARDWARE**. See `docs/profibus-native-evaluation.md` |
 | **ICP-1A** AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** (`icp/`, `icp_runtime_test`) |
-| **Native fieldbus (Hilscher)** Stage A | **IMPLEMENTED** / **TESTED** (stub backends; `native_fieldbus_scaffolding_test`). **TESTED** here means scaffolding construction, integration, and honest SDK/hardware-blocked failure handling only — **not** native PROFINET/PROFIBUS connectivity, Hilscher hardware, cyclic IO, or DP Master operation. Stage B/C **BLOCKED BY SDK/HARDWARE** |
+| **Native fieldbus (Hilscher)** | cifX API **SOFTWARE-INTEGRATION TESTED** when flags ON (no hardware). Default build: stub. Plant native IO **HARDWARE VALIDATION PENDING**. Stage A scaffolding remains. See `docs/native-fieldbus-implementation-status.md` |
 
 ---
 
@@ -299,7 +299,7 @@ Kinematic result: −1.5 m → 0.5 m at 0.5 m/s (same as Phase 4). Development S
 
 Label: **NOT IMPLEMENTED** / **PLANNED**.
 
-- Native PROFINET/PROFIBUS IO-Controller — **NOT IMPLEMENTED**; Stage-A ICP scaffolding exists (`ProfinetIndustrialAdapter`, `ProfibusIndustrialAdapter`); production native connectivity is **BLOCKED BY Hilscher SDK/HARDWARE**. Native fieldbus belongs to **ICP**, not MES Core. Gateway paths remain supported
+- Native PROFINET/PROFIBUS IO-Controller — **NOT IMPLEMENTED** as production plant connectivity. ICP cifX software path exists behind `VF_ENABLE_HILSCHER_*` (**SOFTWARE-INTEGRATION TESTED**; **HARDWARE VALIDATION PENDING**). Native fieldbus belongs to **ICP**, not MES Core. Gateway paths remain **SUPPORTED VIA GATEWAY**.
 - Class 1 implicit/cyclic EtherNet/IP I/O (UDP 2222); EtherNet/IP hardware certification beyond `ab_server` fixture
 - REST DELETE, background reconnect, production vendor HTTPS certification
 - Modbus RTU, TLS, FC 15/16 batch writes, background reconnect

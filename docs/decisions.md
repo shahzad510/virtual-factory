@@ -839,6 +839,12 @@ Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/pri
 - Status: **PARTIALLY IMPLEMENTED** / **BLOCKED BY SDK/HARDWARE** — not **TESTED** for plant connectivity.
 - See [`native-fieldbus-implementation-status.md`](../native-fieldbus-implementation-status.md), [`hilscher-environment-audit.md`](../hilscher-environment-audit.md).
 
+### Amendment 2026-08-30 — cifX software integration (no hardware)
+
+- Official NXDRV-LINUX libcifx may be linked when `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS` are ON.
+- Documented cifX APIs only; PNM/DPM protocol mailbox **NOT IMPLEMENTED** without firmware Protocol API headers.
+- Plant connectivity remains **HARDWARE VALIDATION PENDING**. Gateway path unchanged.
+
 ---
 
 ## ADR-046 — PROFIBUS **supported via gateway**; native DP Master approved (Hilscher track)

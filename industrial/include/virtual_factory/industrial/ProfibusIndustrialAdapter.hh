@@ -49,11 +49,20 @@ struct ProfibusSignalMapping
   bool mapped{false};
 };
 
+struct ProfibusModuleMapping
+{
+  unsigned slot{0};
+  std::string ident;
+  std::size_t inputLength{0};
+  std::size_t outputLength{0};
+};
+
 struct ProfibusSlaveMapping
 {
   unsigned stationAddress{0};
   std::uint16_t vendorId{0};
   std::uint16_t deviceId{0};
+  std::vector<ProfibusModuleMapping> modules;
 };
 
 struct ProfibusEquipmentMapping
@@ -68,12 +77,13 @@ struct ProfibusEquipmentMapping
   ProfibusSignalMapping fault;
 };
 
-/// Native PROFIBUS DP Master adapter (Hilscher cifX target).
+/// Native PROFIBUS DP Master adapter (Hilscher cifX).
 ///
 /// One adapter instance = one DP Master → many DP slaves.
 ///
-/// **Status:** SCAFFOLDING — BLOCKED BY SDK/HARDWARE until cifX integration
-/// and smoke test complete.
+/// **Status:** cifX API integrated when VF_ENABLE_HILSCHER_PROFIBUS is ON
+/// and libcifx is present. Plant cyclic IO remains **HARDWARE VALIDATION
+/// PENDING**.
 class ProfibusIndustrialAdapter : public IndustrialAdapter
 {
 public:
@@ -81,10 +91,13 @@ public:
   {
     std::string boardId;
     unsigned channel{0};
+    std::string interfaceName;
     unsigned masterAddress{1};
     unsigned baudRateKbps{19200};
     std::string configArtifactPath;
+    std::string expectedFirmwareName;
     int pollTimeoutMs{0};
+    std::size_t processImageBytes{256};
     std::vector<ProfibusEquipmentMapping> equipment;
   };
 
@@ -118,6 +131,9 @@ private:
   void bindEquipment();
   void enterFault(const std::string &reason);
   int operationTimeoutMs() const;
+  bool refreshEquipment();
+  bool writeMappedCommand(
+      const ProfibusCommandMapping &mapping, double parameter);
 
   std::string id_;
   AdapterConfig config_;
@@ -125,6 +141,8 @@ private:
   std::string last_error_;
   std::unique_ptr<SessionHandle> session_;
   std::vector<std::unique_ptr<BoundEquipment>> bound_;
+  std::vector<std::uint8_t> input_image_;
+  std::vector<std::uint8_t> output_image_;
 };
 
 }  // namespace virtual_factory

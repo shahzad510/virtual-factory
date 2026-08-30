@@ -2,6 +2,7 @@
 
 #include <virtual_factory/equipment/GenericEquipment.hh>
 
+#include "hilscher/process_image_codec.hh"
 #include "hilscher/profinet_session.hh"
 
 #include <utility>
@@ -12,9 +13,24 @@ namespace virtual_factory
 namespace
 {
 
-bool isSetCommand(const std::string &command)
+internal::ProcessValueType toProcessType(ProfinetValueType type)
 {
-  return command.size() > 4 && command.compare(0, 4, "set_") == 0;
+  switch (type)
+  {
+    case ProfinetValueType::Bool:
+      return internal::ProcessValueType::Bool;
+    case ProfinetValueType::Uint8:
+      return internal::ProcessValueType::Uint8;
+    case ProfinetValueType::Uint16:
+      return internal::ProcessValueType::Uint16;
+    case ProfinetValueType::Int32:
+      return internal::ProcessValueType::Int32;
+    case ProfinetValueType::Real:
+      return internal::ProcessValueType::Real;
+    case ProfinetValueType::Int16:
+    default:
+      return internal::ProcessValueType::Int16;
+  }
 }
 
 }  // namespace
@@ -84,9 +100,11 @@ public:
       return {false, "unknown command"};
     }
 
-    (void)parameter;
-    (void)isSetCommand;
-    return {false, "PROFINET output write not available (SDK blocked)"};
+    if (!this->adapter_->writeMappedCommand(*mapped, parameter))
+    {
+      return {false, this->adapter_->lastError()};
+    }
+    return {true, "written"};
   }
 
   std::vector<TelemetryPoint> telemetry() const override
@@ -97,6 +115,58 @@ public:
   EquipmentStatus status() const override
   {
     return this->inner_.status();
+  }
+
+  bool refreshFromImage(const std::vector<std::uint8_t> &input)
+  {
+    for (const auto &point : this->mapping_->telemetry)
+    {
+      double value = 0.0;
+      if (!internal::processImageRead(
+              input,
+              toProcessType(point.valueType),
+              point.inputByteOffset,
+              point.bitOffset,
+              &value))
+      {
+        return false;
+      }
+      this->inner_.setTelemetry(point.name, value, point.unit);
+    }
+
+    if (this->mapping_->state.mapped)
+    {
+      double running = 0.0;
+      if (!internal::processImageRead(
+              input,
+              toProcessType(this->mapping_->state.valueType),
+              this->mapping_->state.inputByteOffset,
+              this->mapping_->state.bitOffset,
+              &running))
+      {
+        return false;
+      }
+      this->inner_.setOperationalState(
+          running != 0.0 ? OperationalState::Running
+                           : OperationalState::Stopped);
+    }
+
+    if (this->mapping_->fault.mapped)
+    {
+      double fault = 0.0;
+      if (!internal::processImageRead(
+              input,
+              toProcessType(this->mapping_->fault.valueType),
+              this->mapping_->fault.inputByteOffset,
+              this->mapping_->fault.bitOffset,
+              &fault))
+      {
+        return false;
+      }
+      this->inner_.setFault(fault != 0.0);
+    }
+
+    return true;
   }
 
 private:
@@ -163,6 +233,8 @@ bool ProfinetIndustrialAdapter::connect()
   sessionConfig.boardId = this->config_.boardId;
   sessionConfig.channel = this->config_.channel;
   sessionConfig.configArtifactPath = this->config_.configArtifactPath;
+  sessionConfig.expectedFirmwareName = this->config_.expectedFirmwareName;
+  sessionConfig.ioTimeoutMs = static_cast<unsigned>(this->operationTimeoutMs());
 
   if (!this->session_->session.open(sessionConfig))
   {
@@ -170,6 +242,10 @@ bool ProfinetIndustrialAdapter::connect()
     return false;
   }
 
+  const std::size_t bytes =
+      this->config_.processImageBytes > 0 ? this->config_.processImageBytes : 256;
+  this->input_image_.assign(bytes, 0);
+  this->output_image_.assign(bytes, 0);
   this->connection_state_ = ConnectionState::Connected;
   this->last_error_.clear();
   return true;
@@ -178,6 +254,8 @@ bool ProfinetIndustrialAdapter::connect()
 void ProfinetIndustrialAdapter::disconnect()
 {
   this->session_->session.close();
+  this->input_image_.clear();
+  this->output_image_.clear();
   this->connection_state_ = ConnectionState::Disconnected;
   this->last_error_.clear();
 }
@@ -212,7 +290,10 @@ void ProfinetIndustrialAdapter::poll()
     return;
   }
 
-  this->enterFault("PROFINET cyclic poll not available (SDK blocked)");
+  if (!this->refreshEquipment())
+  {
+    this->enterFault(this->session_->session.lastError());
+  }
 }
 
 void ProfinetIndustrialAdapter::bindEquipment()
@@ -234,6 +315,41 @@ void ProfinetIndustrialAdapter::enterFault(const std::string &reason)
 int ProfinetIndustrialAdapter::operationTimeoutMs() const
 {
   return this->config_.pollTimeoutMs > 0 ? this->config_.pollTimeoutMs : 2000;
+}
+
+bool ProfinetIndustrialAdapter::refreshEquipment()
+{
+  if (!this->session_->session.readInputArea(
+          0, this->input_image_.size(), &this->input_image_))
+  {
+    return false;
+  }
+
+  for (auto &entry : this->bound_)
+  {
+    if (!entry->refreshFromImage(this->input_image_))
+    {
+      this->last_error_ = "PROFINET process-image mapping out of range";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ProfinetIndustrialAdapter::writeMappedCommand(
+    const ProfinetCommandMapping &mapping, double parameter)
+{
+  if (!internal::processImageWrite(
+          &this->output_image_,
+          toProcessType(mapping.valueType),
+          mapping.outputByteOffset,
+          mapping.bitOffset,
+          parameter))
+  {
+    this->last_error_ = "PROFINET output mapping out of range";
+    return false;
+  }
+  return this->session_->session.writeOutputArea(0, this->output_image_);
 }
 
 }  // namespace virtual_factory
