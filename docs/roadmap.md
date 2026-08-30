@@ -47,7 +47,8 @@ Nothing else is IN PROGRESS beyond **ICP-1A**. Phase 6 is **COMPLETE**. **ICP-1B
 | **ICP-1F** | **ICP Designer** GUI (drag/drop/configure/connect/deploy) | **NOT STARTED** |
 
 - **Detail:** `docs/icp-product-architecture.md`, `docs/connectivity-integration-contract.md`
-- **PROFINET:** gateway-supported (6H); native deferred in ICP when approved.
+- **PROFINET:** gateway-supported (6H); native deferred in ICP when approved. See `docs/profinet-gateway-integration.md`.
+- **PROFIBUS:** gateway-supported; native DP Master approved pending implementation gate (ADR-046) — **NOT IMPLEMENTED**. See `docs/profibus-native-evaluation.md`.
 
 ---
 
