@@ -50,6 +50,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6F** MQTT industrial adapter (`MqttIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; see `docs/mqtt-scalability-test.md`) |
 | **6G** EtherNet/IP industrial adapter (`EtherNetIpIndustrialAdapter`) | **COMPLETE** / **TESTED** (libplctag explicit messaging; local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
 | **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native IO-Controller **DEFERRED**. See `docs/profinet-gateway-integration.md` |
+| **PROFIBUS** | Gateway **SUPPORTED** (ADR-046). Native DP Master **APPROVED FOR IMPLEMENTATION** — **NOT IMPLEMENTED**. See `docs/profibus-native-evaluation.md` |
 | **ICP-1A** AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** (`icp/`, `icp_runtime_test`) |
 
 ---
@@ -101,7 +102,7 @@ Implemented:
 
 - **PROFINET (6H):** supported via industrial gateway → OPC UA / Modbus / REST / MQTT (ADR-040, `docs/profinet-gateway-integration.md`). Native IO-Controller **deferred**.
 
-Not implemented in adapters: native PROFINET IO-Controller; Class 1 implicit/cyclic EtherNet/IP I/O; Sparkplug B; MQTT 5 architecture; MQTT wildcards; REST DELETE; Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
+Not implemented in adapters: native PROFINET IO-Controller; native PROFIBUS DP Master (ADR-046 evaluation complete); Class 1 implicit/cyclic EtherNet/IP I/O; Sparkplug B; MQTT 5 architecture; MQTT wildcards; REST DELETE; Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
 
 ---
 

@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Docs — PROFIBUS native connectivity evaluation (2026-08-30)
+
+PROFIBUS added to ICP roadmap evaluation. Gateway path **SUPPORTED**; native DP Master **APPROVED FOR IMPLEMENTATION** (not coded). Primary native path: **Hilscher CIFX 50E-DP 1251.410** + **CIFXDPM** + **NXLIC-MASTER** — same cifX platform as native PROFINET but **different card** (RS-485 vs Ethernet). Simultaneous PN+PB on one host: **50E-RE + 50E-DP**. Recommendation **F** (native + gateway). See `docs/profibus-native-evaluation.md`, ADR-046. **No production code.**
+
 ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES, or persistent config. `icp_runtime_test` + full suite **10/10 passed**. Phase 7 **NOT STARTED**. Native PROFINET **DEFERRED**.
 
 ### Added
