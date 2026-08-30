@@ -825,6 +825,63 @@ Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/pri
 
 **Alternatives:** Fake TCP PROFINET (rejected); p-net as controller (rejected); GPL Python wrapper (rejected); silent PROFINET omission (rejected); mandatory native commercial stack for Phase 6 closure (rejected — gateway suffices).
 
+### Amendment 2026-08-29 — Native IO-Controller approved for ICP implementation
+
+- Native PROFINET IO-Controller **APPROVED FOR IMPLEMENTATION** inside **ICP** (not MES), pending commercial stack procurement and explicit coding slice approval.
+- **Primary candidate:** Softing PROFINET Controller Stack. **Alternate:** Hilscher cifX + NXLFW-PNM (CIFX 50E-RE).
+- Gateway path remains **first-class**; ICP Standard must not require Hilscher hardware.
+- See [`profinet-native-evaluation.md`](../profinet-native-evaluation.md), [`profinet-hilscher-final-gate.md`](../profinet-hilscher-final-gate.md).
+
+### Amendment 2026-08-30 — Stage A scaffolding (Hilscher track)
+
+- `ProfinetIndustrialAdapter` **scaffolding IMPLEMENTED** with private `profinet_session` stub; **no production cyclic IO** until cifX smoke test.
+- `VF_ENABLE_HILSCHER_PROFINET` / `VF_HILSCHER_CIFX_AVAILABLE` CMake flags; default OFF when SDK absent.
+- Status: **PARTIALLY IMPLEMENTED** / **BLOCKED BY SDK/HARDWARE** — not **TESTED** for plant connectivity.
+- See [`native-fieldbus-implementation-status.md`](../native-fieldbus-implementation-status.md), [`hilscher-environment-audit.md`](../hilscher-environment-audit.md).
+
+---
+
+## ADR-046 — PROFIBUS **supported via gateway**; native DP Master approved (Hilscher track)
+
+- **Status:** Accepted. Investigation **COMPLETE** (2026-08-29). Native `ProfibusIndustrialAdapter` **APPROVED FOR IMPLEMENTATION** pending SDK/hardware smoke test.
+- **Date:** 2026-08-29 (Stage A scaffolding 2026-08-30)
+
+**Context:** PROFIBUS DP uses RS-485 cyclic process data, GSD-based slave configuration, and DP Master/Slave roles. Like PROFINET, the MES requirement is protocol-independent `GenericEquipment` — fieldbus specifics stay below the adapter boundary.
+
+### Roles
+
+| Role | Adapter need |
+| --- | --- |
+| **DP Master** | **Required** — one master per adapter / bus segment |
+| **DP Slave** | Target equipment on the bus |
+| **Gateway** | PB device → OPC UA/Modbus/REST/MQTT → existing adapters |
+
+**Selected native role:** **DP Master** via Hilscher cifX (**CIFX 50E-DP 1251.410**, CIFXDPM/NXLFW-DPM firmware, NXLIC-MASTER).
+
+### Decision
+
+| Path | Status |
+| --- | --- |
+| **Gateway integration** | **APPROVED and SUPPORTED** — same pattern as PROFINET gateway (ADR-040) |
+| **Native DP Master** | **APPROVED FOR IMPLEMENTATION** — Hilscher cifX primary; Softing PBpro alternate if procurement fails |
+| **Fake serial/TCP PROFIBUS** | **Rejected** |
+
+### Simultaneous PROFINET + PROFIBUS
+
+One ICP host may run **CIFX 50E-RE** (PROFINET) and **CIFX 50E-DP** (PROFIBUS) simultaneously — **two cards**, not one RE card for both. **Not verified** until hardware smoke test.
+
+### Stage A scaffolding (2026-08-30)
+
+- `ProfibusIndustrialAdapter` + private `profibus_session` stub compile without SDK.
+- Production cyclic IO **BLOCKED BY SDK/HARDWARE**.
+- Gateway path unchanged.
+
+**Consequences:** ICP Industrial SKU can add native PB without MES changes. ICP Standard remains gateway-only.
+
+**Alternatives:** Gateway-only forever (rejected for Industrial SKU goal); profirust/experimental software-only master (rejected for v1); custom GSD parser in-repo (deferred — use vendor tooling).
+
+See [`profibus-native-evaluation.md`](../profibus-native-evaluation.md).
+
 ---
 
 ## ADR-041 — Phase 6 uses slices 6A–6H inside official Phases 1–11

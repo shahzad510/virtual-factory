@@ -27,6 +27,10 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 | — | [mes-core-product-architecture.md](mes-core-product-architecture.md) | **MES Core** product architecture (ADR-045). |
 | — | [connectivity-integration-contract.md](connectivity-integration-contract.md) | **CIC** boundary between ICP and MES (ADR-043). |
 | — | [profinet-gateway-integration.md](profinet-gateway-integration.md) | Phase 6H PROFINET **supported via gateway** (ADR-040). |
+| — | [hilscher-environment-audit.md](hilscher-environment-audit.md) | Hilscher SDK/hardware audit — native fieldbus **BLOCKED** on this host. |
+| — | [native-fieldbus-implementation-status.md](native-fieldbus-implementation-status.md) | Native PROFINET/PROFIBUS Stage A/B/C status. |
+| — | [profibus-native-evaluation.md](profibus-native-evaluation.md) | Native PROFIBUS evaluation (ADR-046). |
+| — | [profinet-native-evaluation.md](profinet-native-evaluation.md) | Native PROFINET evaluation (ADR-040 amendment). |
 | — | [archive/](archive/) | Historical/legacy documents only. Not authoritative. |
 | — | Git history | Historical implementation record. |
 

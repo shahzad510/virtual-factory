@@ -19,7 +19,7 @@ Retired numbering (do not revive): Stage 0–25, old Phase 0–10, sensor-first 
 | 3 | Conveyor Control | **DONE** |
 | 4 | Product Motion | **DONE** |
 | 5 | Industrial Equipment Abstraction | **DONE** |
-| 6 | Industrial Adapter Layer | **COMPLETE** (6A–6G implemented/tested; 6H supported via gateway; native PN deferred) |
+| 6 | Industrial Adapter Layer | **COMPLETE** (6A–6G implemented/tested; 6H gateway supported; native PN/PB scaffolding Stage A — production IO **BLOCKED BY SDK/HARDWARE**) |
 | 7 | MES Core + Resource Management | **NOT STARTED** |
 | 8 | SCADA / Operational HMI | **PLANNED** |
 | 9 | Security & Authorization | **PLANNED** |
@@ -47,7 +47,8 @@ Nothing else is IN PROGRESS beyond **ICP-1A**. Phase 6 is **COMPLETE**. **ICP-1B
 | **ICP-1F** | **ICP Designer** GUI (drag/drop/configure/connect/deploy) | **NOT STARTED** |
 
 - **Detail:** `docs/icp-product-architecture.md`, `docs/connectivity-integration-contract.md`
-- **PROFINET:** gateway-supported (6H); native deferred in ICP when approved.
+- **PROFINET:** gateway-supported (6H); native Hilscher scaffolding **PARTIALLY IMPLEMENTED** — production **BLOCKED BY SDK/HARDWARE**.
+- **PROFIBUS:** gateway-supported; native Hilscher scaffolding **PARTIALLY IMPLEMENTED** — production **BLOCKED BY SDK/HARDWARE**.
 
 ---
 

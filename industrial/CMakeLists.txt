@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.16)
 
 project(virtual_factory_industrial)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(FindHilscherCifX)
+
 # Prefer workspace-local open62541 when the system package is not installed.
 list(APPEND CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/.deps/open62541")
 find_package(open62541 REQUIRED)
@@ -79,18 +82,46 @@ add_library(virtual_factory_industrial STATIC
     src/mqtt_session.cc
     src/EtherNetIpIndustrialAdapter.cc
     src/eip_session.cc
+    src/hilscher/hilscher_availability.cc
+    src/hilscher/profinet_session.cc
+    src/hilscher/profibus_session.cc
+    src/ProfinetIndustrialAdapter.cc
+    src/ProfibusIndustrialAdapter.cc
 )
 
 target_include_directories(virtual_factory_industrial
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${LIBMODBUS_INCLUDE_DIRS}
         ${LIBCURL_INCLUDE_DIRS}
         ${NLOHMANN_JSON_INCLUDE_DIR}
         ${PAHO_MQTT_INCLUDE_DIR}
         ${LIBPLCTAG_INCLUDE_DIRS}
 )
+
+if (VF_HILSCHER_CIFX_AVAILABLE)
+  target_include_directories(virtual_factory_industrial
+      PRIVATE ${HILSCHER_CIFX_INCLUDE_DIR})
+  target_compile_definitions(virtual_factory_industrial
+      PRIVATE VF_HILSCHER_CIFX_AVAILABLE=1)
+  target_link_libraries(virtual_factory_industrial
+      PRIVATE ${HILSCHER_CIFX_LIBRARY})
+else()
+  target_compile_definitions(virtual_factory_industrial
+      PRIVATE VF_HILSCHER_CIFX_AVAILABLE=0)
+endif()
+
+if (VF_ENABLE_HILSCHER_PROFINET)
+  target_compile_definitions(virtual_factory_industrial
+      PRIVATE VF_ENABLE_HILSCHER_PROFINET=1)
+endif()
+
+if (VF_ENABLE_HILSCHER_PROFIBUS)
+  target_compile_definitions(virtual_factory_industrial
+      PRIVATE VF_ENABLE_HILSCHER_PROFIBUS=1)
+endif()
 
 target_link_libraries(virtual_factory_industrial
     PUBLIC
@@ -152,6 +183,9 @@ set(VIRTUAL_FACTORY_PAHO_MQTT_LIBRARY_DIR
     "${PAHO_MQTT_LIBRARY_DIR}" PARENT_SCOPE)
 set(VIRTUAL_FACTORY_LIBPLCTAG_LIBRARY_DIRS
     "${LIBPLCTAG_LIBRARY_DIRS}" PARENT_SCOPE)
+
+set(VIRTUAL_FACTORY_HILSCHER_CIFX_AVAILABLE
+    "${VF_HILSCHER_CIFX_AVAILABLE}" PARENT_SCOPE)
 
 set_target_properties(virtual_factory_industrial PROPERTIES
     CXX_STANDARD 17
