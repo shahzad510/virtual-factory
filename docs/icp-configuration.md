@@ -81,17 +81,17 @@ Protocol-neutral records (not Siemens/Allen-Bradley/Pump/Robot C++ types):
 
 Supported `protocol` values: `mock`, `opcua`, `modbus`, `mqtt`, `rest`, `ethernetip`, `profinet`, `profibus`.
 
-Loading a file **does not** require the Hilscher SDK. Native PROFINET/PROFIBUS fields are configuration data only. Plant IO remains **HARDWARE VALIDATION PENDING**. ICP-1B does **not** implement native fieldbus communication.
+Loading a file **does not** require the Hilscher SDK. Native PROFINET/PROFIBUS fields describe **intended topology**. On the isolated Hilscher branch, `NativeFieldbusConfigMapper` converts catalog records into `ProfinetIndustrialAdapter::AdapterConfig` / `ProfibusIndustrialAdapter::AdapterConfig`. Runtime still determines hardware availability. Plant IO remains **HARDWARE VALIDATION PENDING**.
 
-### PROFINET fields (model only)
+### PROFINET fields
 
-Controller/interface: `boardId`, `channel`, `interfaceName`, `configArtifactPath`.  
+Controller/interface: `boardId`, `channel`, `interfaceName`, `stationName`, `configArtifactPath`, `expectedFirmwareName`.  
 Device: `stationName`, `ipAddress`, `vendorId`, `deviceId`, `submodules[]`.  
 Mappings: telemetry / commands / state / fault (byte/bit offsets).
 
-### PROFIBUS fields (model only)
+### PROFIBUS fields
 
-Master/interface: `boardId`, `channel`, `masterAddress`, `baudRateKbps`, `configArtifactPath`.  
+Master/interface: `boardId`, `channel`, `masterAddress`, `baudRateKbps`, `configArtifactPath`, `expectedFirmwareName`.  
 Slave: `stationAddress` (1–126), `modules[]`.  
 Mappings: telemetry / commands / state / fault.
 
@@ -167,6 +167,6 @@ Phase 9 remains the home for RBAC and production secret management.
 - ICP Designer GUI
 - CIC northbound API
 - Connecting/deploying adapters from the configuration file automatically
-- Native PROFINET/PROFIBUS protocol stacks
+- Native PROFINET/PROFIBUS protocol stacks, DCP, AR, cyclic plant IO, or GSD/GSDML parsing
 - Database persistence
 - MES configuration

@@ -13,6 +13,7 @@
 #include <virtual_factory/industrial/MqttIndustrialAdapter.hh>
 #include <virtual_factory/industrial/OpcUaIndustrialAdapter.hh>
 #include <virtual_factory/industrial/RestIndustrialAdapter.hh>
+#include <virtual_factory/icp/config/ConfigurationModel.hh>
 
 namespace virtual_factory
 {
@@ -51,6 +52,14 @@ public:
 
   static std::unique_ptr<ProfibusIndustrialAdapter> createProfibus(
       std::string id, ProfibusIndustrialAdapter::AdapterConfig config);
+
+  /// Build from an ICP-1B catalog record. Hardware is not required.
+  /// Returns nullptr when the record is not a valid native fieldbus adapter.
+  static std::unique_ptr<ProfinetIndustrialAdapter> createProfinetFromRecord(
+      const AdapterConfigRecord &record, ConfigResult *result = nullptr);
+
+  static std::unique_ptr<ProfibusIndustrialAdapter> createProfibusFromRecord(
+      const AdapterConfigRecord &record, ConfigResult *result = nullptr);
 };
 
 }  // namespace icp

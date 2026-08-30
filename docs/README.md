@@ -77,6 +77,7 @@ Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discip
 | Phase 6F MQTT | **IMPLEMENTED** / **TESTED** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity) |
 | Phase 6G EtherNet/IP | **IMPLEMENTED** / **TESTED** (libplctag explicit messaging; local `ab_server`; not hardware certification). Two-device isolation **VALIDATED** under test conditions |
 | Phase 6H PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040); native **IMPLEMENTED TO SOFTWARE BOUNDARY** (isolated Hilscher branch; **HARDWARE VALIDATION PENDING**) |
+| Native PROFIBUS | **SUPPORTED VIA GATEWAY**; native **IMPLEMENTED TO SOFTWARE BOUNDARY** (isolated Hilscher branch; **HARDWARE VALIDATION PENDING**) |
 | ICP product | **ICP-1A IMPLEMENTED / TESTED**; **ICP-1B IMPLEMENTED / TESTED** (on this isolated branch); **ICP-1C NOT STARTED**; **ICP Designer NOT STARTED** |
 | Phase 7 MES Core | **NOT STARTED** (ADR-045; consumes CIC only) |
 | SCADA, API, database, auth, Blazor, real PLC | **NOT IMPLEMENTED** |

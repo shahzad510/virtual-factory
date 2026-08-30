@@ -55,6 +55,8 @@ struct ProfibusModuleMapping
 {
   unsigned slot{0};
   std::string moduleType;
+  std::size_t inputLength{0};
+  std::size_t outputLength{0};
 };
 
 struct ProfibusSlaveMapping
@@ -96,6 +98,8 @@ public:
     unsigned masterAddress{1};
     unsigned baudRateKbps{19200};
     std::string configArtifactPath;
+    /// Optional firmware name substring (e.g. "PROFIBUS"); empty = default check.
+    std::string expectedFirmwareName;
     int pollTimeoutMs{0};
     std::vector<ProfibusEquipmentMapping> equipment;
   };

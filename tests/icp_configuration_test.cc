@@ -195,8 +195,10 @@ virtual_factory::icp::AdapterConfigRecord profinetAdapter()
   adapter.protocol = "profinet";
   adapter.connection.boardId = "cifx0";
   adapter.connection.channel = 0;
+  adapter.connection.stationName = "icp-pn-controller";
   adapter.connection.configArtifactPath = "/opt/icp/pn/config.nxd";
   adapter.connection.interfaceName = "eth1";
+  adapter.connection.expectedFirmwareName = "PROFINET";
   virtual_factory::icp::EquipmentMappingRecord device;
   device.equipmentId = "PN-DEV-001";
   device.type = "io-device";
@@ -237,6 +239,8 @@ virtual_factory::icp::AdapterConfigRecord profibusAdapter()
   adapter.connection.channel = 0;
   adapter.connection.masterAddress = 1;
   adapter.connection.baudRateKbps = 1500;
+  adapter.connection.configArtifactPath = "/opt/icp/pb/config.nxd";
+  adapter.connection.expectedFirmwareName = "PROFIBUS";
   virtual_factory::icp::EquipmentMappingRecord slave;
   slave.equipmentId = "PB-SLAVE-001";
   slave.type = "dp-slave";
@@ -389,6 +393,9 @@ void testRoundTripAndRestart()
   expect(
       restarted.adapter("pn-controller")->equipment.front().stationName == "mixer-station",
       "PROFINET station name persisted");
+  expect(
+      restarted.adapter("pn-controller")->connection.stationName == "icp-pn-controller",
+      "PROFINET controller station name persisted");
   expect(
       restarted.adapter("pb-master")->equipment.front().stationAddress == 12,
       "PROFIBUS station address persisted");

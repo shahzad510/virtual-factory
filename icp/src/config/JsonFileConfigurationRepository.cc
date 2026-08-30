@@ -374,8 +374,9 @@ AdapterConnectionRecord parseConnection(
       {"endpointUrl", "host", "port", "timeoutMs", "pollTimeoutMs",
        "keepaliveSeconds", "scheme", "basePath", "healthPath", "clientId",
        "path", "plcType", "useTls", "tlsVerify", "boardId", "channel",
-       "interfaceName", "configArtifactPath", "expectedFirmwareName",
-       "masterAddress", "baudRateKbps", "processImageBytes"},
+       "interfaceName", "stationName", "configArtifactPath",
+       "expectedFirmwareName", "masterAddress", "baudRateKbps",
+       "processImageBytes"},
       path);
   record.endpointUrl = asString(result, object, "endpointUrl", path);
   record.host = asString(result, object, "host", path);
@@ -394,6 +395,7 @@ AdapterConnectionRecord parseConnection(
   record.boardId = asString(result, object, "boardId", path);
   record.channel = asUnsigned(result, object, "channel", path, 0);
   record.interfaceName = asString(result, object, "interfaceName", path);
+  record.stationName = asString(result, object, "stationName", path);
   record.configArtifactPath = asString(result, object, "configArtifactPath", path);
   record.expectedFirmwareName = asString(result, object, "expectedFirmwareName", path);
   record.masterAddress = asUnsigned(result, object, "masterAddress", path, 0);
@@ -660,6 +662,7 @@ json connectionToJson(const AdapterConnectionRecord &record)
       {"boardId", record.boardId},
       {"channel", record.channel},
       {"interfaceName", record.interfaceName},
+      {"stationName", record.stationName},
       {"configArtifactPath", record.configArtifactPath},
       {"expectedFirmwareName", record.expectedFirmwareName},
       {"masterAddress", record.masterAddress},

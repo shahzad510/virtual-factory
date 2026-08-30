@@ -24,6 +24,7 @@ add_library(virtual_factory_icp STATIC
     src/config/ConfigurationValidator.cc
     src/config/JsonFileConfigurationRepository.cc
     src/config/ConfigurationCatalog.cc
+    src/config/NativeFieldbusConfigMapper.cc
 )
 
 target_include_directories(virtual_factory_icp

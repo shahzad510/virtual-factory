@@ -97,7 +97,9 @@ Preserved adapter topology (mandatory):
 - One REST origin → one adapter instance
 - One MQTT broker → one adapter session
 - One EtherNet/IP device → one adapter instance
-- PROFINET → gateway → one of the above per gateway northbound endpoint
+- One native PROFINET controller/interface → one `ProfinetIndustrialAdapter` (many IO-Devices)
+- One native PROFIBUS DP Master → one `ProfibusIndustrialAdapter` (many slaves)
+- Gateway PROFINET/PROFIBUS → one of the software-protocol adapters per gateway northbound endpoint
 
 Many logical `GenericEquipment` mappings may share one adapter session (e.g. one MQTT broker, one OPC UA gateway server).
 

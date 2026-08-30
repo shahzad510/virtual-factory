@@ -102,8 +102,8 @@ Implemented:
 - Multiple EtherNet/IP devices via **multiple adapter instances** (one device/session per instance); several logical machines on one device via mappings
 - libplctag `ab_server` ControlLogix emulator fixture and unit test `eip_adapter_test` (connect/poll/commands, multi-equipment, isolation, timeout/refused/invalid tag, Faulted vs `Equipment::fault()`, explicit reconnect, two devices). **DEVELOPMENT/INTEGRATION VALIDATION ONLY** — not Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under those test conditions — **not** production capacity
 
-- **PROFINET (6H):** supported via industrial gateway → OPC UA / Modbus / REST / MQTT (ADR-040, `docs/profinet-gateway-integration.md`). Native `ProfinetIndustrialAdapter` **scaffolding only** — connect/cyclic IO **BLOCKED BY SDK/HARDWARE** (`docs/hilscher-environment-audit.md`).
-- **PROFIBUS:** gateway path **supported** (ADR-046). Native `ProfibusIndustrialAdapter` **scaffolding only** — **BLOCKED BY SDK/HARDWARE**.
+- **PROFINET (6H):** supported via industrial gateway → OPC UA / Modbus / REST / MQTT (ADR-040, `docs/profinet-gateway-integration.md`). Native `ProfinetIndustrialAdapter` **IMPLEMENTED TO SOFTWARE BOUNDARY** on this isolated branch — **HARDWARE VALIDATION PENDING**. On `master`: Stage A scaffolding only.
+- **PROFIBUS:** gateway path **supported** (ADR-046). Native `ProfibusIndustrialAdapter` **IMPLEMENTED TO SOFTWARE BOUNDARY** on this isolated branch — **HARDWARE VALIDATION PENDING**. On `master`: Stage A scaffolding only.
 
 Not implemented in adapters: real Hilscher cyclic PROFINET/PROFIBUS IO; Class 1 implicit/cyclic EtherNet/IP I/O; Sparkplug B; MQTT 5 architecture; MQTT wildcards; REST DELETE; Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
 
@@ -129,8 +129,8 @@ industrial/
     RestIndustrialAdapter.hh            mapping config + REST gateway adapter
     MqttIndustrialAdapter.hh            mapping config + MQTT broker adapter
     EtherNetIpIndustrialAdapter.hh      mapping config + EtherNet/IP adapter
-    ProfinetIndustrialAdapter.hh        native PN scaffolding (Hilscher target)
-    ProfibusIndustrialAdapter.hh        native PB scaffolding (Hilscher target)
+    ProfinetIndustrialAdapter.hh        native PN (software boundary; hardware pending)
+    ProfibusIndustrialAdapter.hh        native PB (software boundary; hardware pending)
   src/MockIndustrialAdapter.cc
   src/OpcUaIndustrialAdapter.cc
   src/ModbusIndustrialAdapter.cc
@@ -143,14 +143,15 @@ industrial/
   src/eip_session.hh/.cc                private libplctag session wrapper
   src/ProfinetIndustrialAdapter.cc
   src/ProfibusIndustrialAdapter.cc
-  src/hilscher/                         private Hilscher session stubs (no public vendor types)
+  src/hilscher/                         private cifX runtime + sessions (no public vendor types)
   cmake/FindHilscherCifX.cmake          optional SDK detection; flags default OFF
 icp/
-  include/virtual_factory/icp/AdapterFactory.hh   + createProfinet/createProfibus
-  include/virtual_factory/icp/config/            ICP-1B configuration API
+  include/virtual_factory/icp/AdapterFactory.hh   + createProfinet/createProfibus + FromRecord
+  include/virtual_factory/icp/config/            ICP-1B configuration API + NativeFieldbusConfigMapper
   src/config/ConfigurationValidator.cc
   src/config/JsonFileConfigurationRepository.cc
   src/config/ConfigurationCatalog.cc
+  src/config/NativeFieldbusConfigMapper.cc
   src/AdapterFactory.cc
 gazebo/
   worlds/phase1/factory.sdf

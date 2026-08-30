@@ -56,11 +56,14 @@ struct ProfinetSubslotMapping
   std::uint16_t slot{0};
   std::uint16_t subslot{1};
   std::string moduleType;
+  std::size_t inputLength{0};
+  std::size_t outputLength{0};
 };
 
 struct ProfinetIoDeviceMapping
 {
   std::string stationName;
+  std::string ipAddress;
   std::uint16_t vendorId{0};
   std::uint16_t deviceId{0};
   std::vector<ProfinetSubslotMapping> subslots;
@@ -98,6 +101,8 @@ public:
     /// Controller/interface station name (ICP metadata; encoded in SYCON).
     std::string stationName;
     std::string configArtifactPath;
+    /// Optional firmware name substring (e.g. "PROFINET"); empty = default check.
+    std::string expectedFirmwareName;
     int pollTimeoutMs{0};
     std::vector<ProfinetEquipmentMapping> equipment;
   };

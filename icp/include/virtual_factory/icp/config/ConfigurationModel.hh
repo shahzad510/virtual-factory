@@ -152,6 +152,8 @@ struct AdapterConnectionRecord
   std::string boardId;
   unsigned channel{0};
   std::string interfaceName;
+  /// Controller/master station name (ICP metadata; live DCP/DP naming is firmware).
+  std::string stationName;
   std::string configArtifactPath;
   std::string expectedFirmwareName;
   unsigned masterAddress{0};

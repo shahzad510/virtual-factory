@@ -232,6 +232,7 @@ bool ProfinetIndustrialAdapter::connect()
   sessionConfig.channel = this->config_.channel;
   sessionConfig.stationName = this->config_.stationName;
   sessionConfig.configArtifactPath = this->config_.configArtifactPath;
+  sessionConfig.expectedFirmwareName = this->config_.expectedFirmwareName;
   sessionConfig.ioTimeoutMs =
       static_cast<unsigned>(this->operationTimeoutMs());
 

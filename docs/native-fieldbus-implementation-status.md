@@ -39,7 +39,8 @@ ICP and MES remain independently deployable. Native fieldbus is **ICP-only**. Hi
 - Real session lifecycle (driver init, enumeration, channel, host/bus state, config download, IO, watchdog)
 - Process-image codec + GenericEquipment mapping
 - Extended in-memory ICP-1B-compatible AdapterConfig (slots/subslots, modules, mappings)
-- SOFTWARE-INTEGRATION tests (`process_image_codec_test`, `native_fieldbus_software_integration_test`)
+- ICP-1B catalog merged onto this branch only; `NativeFieldbusConfigMapper` + `AdapterFactory::create*FromRecord`
+- SOFTWARE-INTEGRATION tests (`process_image_codec_test`, `native_fieldbus_software_integration_test`, ICP-1B JSON + PollScheduler)
 - CMake: find `cifXUser.h`; SDK found does **not** enable the backend unless a flag is ON
 
 ---
@@ -128,9 +129,24 @@ Controller/master **station name**, baud rate, and slave lists in `AdapterConfig
 
 ### ICP-1B configuration
 
-This branch **reuses in-memory `AdapterConfig` structs** (the ICP-1A/Stage A configuration objects). It does **not** create a second persistence system.
+This isolated branch **reuses ICP-1B** (`ConfigurationCatalog` + JSON repository + `NativeFieldbusConfigMapper`). It does **not** create a second persistence system.
 
-JSON catalog persistence (`schema=virtual-factory.icp.config`) lives on the **unmerged** branch `cursor/icp-1b-persistent-config-a88d` and is **not** on `master`. Native AdapterConfig fields (controller/interface, station name, device identity, slots/subslots, modules, process/telemetry/command/state/fault mapping) are loadable **without Hilscher hardware**. Wiring those structs from the JSON catalog is deferred until ICP-1B is merged by explicit approval.
+JSON catalog files load **without Hilscher hardware**. Runtime `connect()` still fails honestly until CIFX 50E-RE / CIFX 50E-DP + firmware/license are present.
+
+Mapping path:
+
+```text
+ICP-1B JSON
+  → ConfigurationCatalog
+  → NativeFieldbusConfigMapper
+  → ProfinetIndustrialAdapter::AdapterConfig / ProfibusIndustrialAdapter::AdapterConfig
+  → AdapterFactory
+  → AdapterManager / PollScheduler / LiveStateCache
+```
+
+Controller/interface, station name, device identity, slots/subslots, modules, process-data mappings, telemetry, commands, state, and faults are catalog fields. Live DCP/AR/DP cyclic IO remains **Hilscher Protocol API / firmware / hardware required.**
+
+ICP-1B also exists on its own unmerged branch. Master does **not** contain ICP-1B. This merge is Hilscher-branch-only so the native path can be discarded without touching master.
 
 ---
 
@@ -158,9 +174,32 @@ cmake -S . -B build \
 | --- | --- |
 | `native_fieldbus_scaffolding_test` | Construction, blocked connect, equipment, AdapterManager |
 | `process_image_codec_test` | Encode/decode + GenericEquipment mapping (no hardware) |
-| `native_fieldbus_software_integration_test` | Config (slots/modules), factory, manager, cache, missing artifact, missing hardware, explicit reconnect, enumerate |
+| `native_fieldbus_software_integration_test` | Config (slots/modules), factory, manager, cache, ICP-1B JSON persistence, PollScheduler, missing artifact, missing hardware, explicit reconnect, enumerate |
 
 **Not claimed:** REAL PROFINET, REAL PROFIBUS, HARDWARE VALIDATION.
+
+---
+
+## Softing — future alternative (not implemented)
+
+**Decision (2026-08-30):** Continue with **Hilscher** as the primary native fieldbus implementation path for ICP. **Softing is not being implemented** on this branch.
+
+The existing Softing investigation remains documentation only:
+
+- [`profinet-native-evaluation.md`](profinet-native-evaluation.md)
+- [`profinet-native-implementation-plan.md`](profinet-native-implementation-plan.md)
+- [`profibus-native-evaluation.md`](profibus-native-evaluation.md)
+
+Reconsider Softing later only if:
+
+- current OEM availability is confirmed
+- Windows 10/11 support is confirmed
+- Ubuntu 24.04 support/portability is confirmed
+- RT behavior is acceptable
+- OEM redistribution terms are acceptable
+- a current SDK is available
+
+Architecture must allow swapping Hilscher for Softing (or another vendor, or gateway-only) **without** changing `Equipment.hh`, `GenericEquipment`, MES, CIC, or protocol-neutral ICP interfaces. No Softing headers, libraries, or CMake options are added here.
 
 ---
 

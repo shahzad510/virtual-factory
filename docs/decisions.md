@@ -846,6 +846,14 @@ Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/pri
 - DCP/AR/RT1 remain firmware/Protocol API — not invented. Gateway remains **SUPPORTED**.
 - See [`native-fieldbus-implementation-status.md`](native-fieldbus-implementation-status.md), [`hilscher-sdk-license.md`](hilscher-sdk-license.md), [`hilscher-hardware-smoke-test.md`](hilscher-hardware-smoke-test.md).
 
+### Amendment 2026-08-30 — Hilscher is the primary native path; Softing is a future alternative
+
+- Softing investigation **COMPLETE**. Softing is **not implemented**.
+- **Primary native implementation:** Hilscher cifX (this isolated branch).
+- Softing may be reconsidered later if OEM availability, Windows 10/11, Ubuntu 24.04, RT quality, redistribution terms, and a current SDK are confirmed.
+- Architecture remains vendor-swappable below `IndustrialAdapter` / GenericEquipment.
+- **Do not merge this branch to master** until explicit approval.
+
 ---
 
 ## ADR-046 — PROFIBUS **supported via gateway**; native DP Master approved (Hilscher track)
@@ -870,7 +878,7 @@ Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/pri
 | Path | Status |
 | --- | --- |
 | **Gateway integration** | **APPROVED and SUPPORTED** — same pattern as PROFINET gateway (ADR-040) |
-| **Native DP Master** | **APPROVED FOR IMPLEMENTATION** — Hilscher cifX primary; Softing PBpro alternate if procurement fails |
+| **Native DP Master** | **APPROVED FOR IMPLEMENTATION** — Hilscher cifX primary; Softing PBpro is a **future alternative** (not implemented) |
 | **Fake serial/TCP PROFIBUS** | **Rejected** |
 
 ### Simultaneous PROFINET + PROFIBUS
@@ -887,6 +895,10 @@ One ICP host may run **CIFX 50E-RE** (PROFINET) and **CIFX 50E-DP** (PROFIBUS) s
 - `cursor/icp-hilscher-native-development-a88d`: real cifX host API for DP Master lifecycle + process-image mapping.
 - Native PROFIBUS: **IMPLEMENTED TO SOFTWARE BOUNDARY**. DCP-equivalent DP mailbox commands are **not invented**.
 - Gateway path unchanged.
+
+### Amendment 2026-08-30 — Softing not implemented
+
+- Softing PBpro remains documented as a future alternative. No Softing dependencies on this branch.
 
 **Consequences:** ICP Industrial SKU can add native PB without MES changes. ICP Standard remains gateway-only.
 

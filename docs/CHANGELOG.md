@@ -19,6 +19,7 @@ ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManage
 ### Added
 
 - Isolated-branch SOFTWARE-INTEGRATION tests: `process_image_codec_test`, `native_fieldbus_software_integration_test`
+- ICP-1B catalog → native AdapterConfig mapper (`NativeFieldbusConfigMapper`)
 - `docs/hilscher-sdk-license.md`, `docs/hilscher-hardware-smoke-test.md`
 - ICP-1B configuration API under `icp/include/virtual_factory/icp/config/`
 - `tests/icp_configuration_test.cc`

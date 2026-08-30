@@ -233,6 +233,7 @@ bool ProfibusIndustrialAdapter::connect()
   sessionConfig.masterAddress = this->config_.masterAddress;
   sessionConfig.baudRateKbps = this->config_.baudRateKbps;
   sessionConfig.configArtifactPath = this->config_.configArtifactPath;
+  sessionConfig.expectedFirmwareName = this->config_.expectedFirmwareName;
   sessionConfig.ioTimeoutMs =
       static_cast<unsigned>(this->operationTimeoutMs());
 
