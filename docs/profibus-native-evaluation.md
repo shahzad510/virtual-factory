@@ -1,8 +1,6 @@
 # PROFIBUS native connectivity evaluation (ICP)
 
-**Status:** Evaluation **COMPLETE** (2026-08-30). **No production code.** No SDKs installed. Gateway path remains a required supported fallback.
-
-**Scope:** Architecture, technology, hardware, licensing, and product evaluation only. No `ProfibusIndustrialAdapter`, no CMake changes, no protected header edits.
+**Status:** Evaluation **COMPLETE** (2026-08-30). Native DP Master **IMPLEMENTED TO SOFTWARE BOUNDARY** on the isolated Hilscher branch. **HARDWARE VALIDATION PENDING.** Softing PBpro remains a **future alternative** (not implemented). Gateway path remains **SUPPORTED**.
 
 **Authority:** ADR-042 (ICP product), ADR-040 (fieldbus pattern), [`icp-product-architecture.md`](icp-product-architecture.md), [`profinet-hilscher-final-gate.md`](profinet-hilscher-final-gate.md) (on branch `cursor/icp-6h-hilscher-final-gate-a88d`).
 
@@ -19,7 +17,7 @@
 | Same product family / driver / license? | **Yes** — netX 100, **NXDRV-WIN/LINUX**, **NXLIC-MASTER 8211.000**, **SYCON.net / Communication Studio**, **cifX API** |
 | Run PN + PB simultaneously on one host? | **Yes** — **two cards** (e.g. **50E-RE** + **50E-DP**) or dedicated dual-channel PB card (**50E-2DP**) for two PB segments — **not** one RE card for both |
 | Software-only master on std NIC? | **No** for credible production ICP — PROFIBUS requires **RS-485** and strict bus timing |
-| Recommendation | **F — support BOTH native + gateway**; native primary = **Hilscher** (align with PN platform); Softing alternate |
+| Recommendation | **F — support BOTH native + gateway**; native primary = **Hilscher**; Softing is a future alternative (not implemented) |
 
 ---
 

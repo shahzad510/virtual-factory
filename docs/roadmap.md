@@ -26,13 +26,13 @@ Retired numbering (do not revive): Stage 0–25, old Phase 0–10, sensor-first 
 | 10 | Real Factory Integration | **PLANNED** |
 | 11 | Commercial Hardening & Enterprise Integration | **PLANNED** |
 
-Nothing else is IN PROGRESS beyond **ICP-1A**. Phase 6 is **COMPLETE**. **ICP-1B–1F NOT STARTED.** Phase 7 MES Core **NOT STARTED**. Do not implement without explicit slice approval.
+Nothing else is IN PROGRESS beyond **ICP-1B**. Phase 6 is **COMPLETE**. **ICP-1A IMPLEMENTED / TESTED.** **ICP-1B IMPLEMENTED / TESTED.** **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** Phase 7 MES Core **NOT STARTED**. Do not implement without explicit slice approval.
 
 ---
 
 ## Product 1 — Industrial Connectivity Platform (ICP)
 
-- **Status:** **IN PROGRESS** — adapter foundation **COMPLETE** (Phase 6); **ICP-1A IMPLEMENTED / TESTED**; ICP-1B–1F **NOT STARTED** (ADR-042, ADR-044).
+- **Status:** **IN PROGRESS** — adapter foundation **COMPLETE** (Phase 6); **ICP-1A IMPLEMENTED / TESTED**; **ICP-1B IMPLEMENTED / TESTED**; ICP-1C–1F **NOT STARTED** (ADR-042, ADR-044, ADR-047).
 - **Objective:** Standalone industrial connectivity product: adapters, runtime, config, northbound CIC API, **ICP Designer GUI**.
 - **Must work without MES.**
 - **Implementation slices (not official SoT phase numbers):**
@@ -40,15 +40,15 @@ Nothing else is IN PROGRESS beyond **ICP-1A**. Phase 6 is **COMPLETE**. **ICP-1B
 | Slice | Scope | Status |
 | --- | --- | --- |
 | **ICP-1A** | AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** |
-| **ICP-1B** | Persistent configuration storage | **NOT STARTED** |
+| **ICP-1B** | Persistent configuration storage | **IMPLEMENTED** / **TESTED** |
 | **ICP-1C** | CIC v1 northbound API (gRPC/REST/stream) | **NOT STARTED** |
 | **ICP-1D** | Command gateway, industrial events | **NOT STARTED** |
 | **ICP-1E** | Standalone deployable package | **NOT STARTED** |
 | **ICP-1F** | **ICP Designer** GUI (drag/drop/configure/connect/deploy) | **NOT STARTED** |
 
 - **Detail:** `docs/icp-product-architecture.md`, `docs/connectivity-integration-contract.md`
-- **PROFINET:** gateway-supported (6H); native Hilscher scaffolding **PARTIALLY IMPLEMENTED** — production **BLOCKED BY SDK/HARDWARE**.
-- **PROFIBUS:** gateway-supported; native Hilscher scaffolding **PARTIALLY IMPLEMENTED** — production **BLOCKED BY SDK/HARDWARE**.
+- **PROFINET:** gateway-supported (6H); native Hilscher **IMPLEMENTED TO SOFTWARE BOUNDARY** (isolated branch) — **HARDWARE VALIDATION PENDING**.
+- **PROFIBUS:** gateway-supported; native Hilscher **IMPLEMENTED TO SOFTWARE BOUNDARY** — **HARDWARE VALIDATION PENDING**.
 
 ---
 
