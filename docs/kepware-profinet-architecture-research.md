@@ -33,11 +33,18 @@
 - Requires **SyCon** (Hilscher configuration software) on the same machine as the OPC server.
 - **Does not claim PROFINET** in that manual.
 
-**CONFIRMED — Kepware Edge (official PTC product page, 2026):**
+**CONFIRMED — Kepware Edge (official PTC product page + help, 2025–2026):**
 
 - Linux/container connectivity product.
-- Documented device protocols include: EtherNet/IP, Modbus Ethernet, Siemens Industrial Ethernet / S7 Plus, OPC UA Client, Mitsubishi Ethernet.
-- **PROFINET is not listed** among Kepware Edge protocols.
+- Documented device protocols include: EtherNet/IP, Modbus Ethernet, Siemens Industrial Ethernet, Siemens S7 Plus, OPC UA Client, Mitsubishi Ethernet.
+- **PROFINET is not listed** among Kepware Edge protocols or supported drivers.
+- Individual drivers are **not** sold separately for Edge — platform bundle only.
+
+**CONFIRMED — Kepware Server system requirements (KEPServerEX / Kepware Server manual, PTC, retrieved 2025):**
+
+- Supported host OS includes **Windows 10/11**, **Windows Server 2016/2019/2022/2025** (x64).
+- **Windows Server Core deployments are not supported** (manual note).
+- This confirms Kepware **Server** runs on Windows Server; it does **not** by itself confirm a PROFINET IO-Controller driver exists or works on Server without special hardware.
 
 **CONFIRMED — Siemens connectivity (official PTC Help / product materials):**
 
@@ -295,11 +302,52 @@ Designer must eventually offer **protocol choice**: Gateway vs Softing vs Hilsch
 1. PTC **Driver Options for KEPServerEX**, document **J7845** (retrieved ATS Global PDF mirror, ©2017/2018 listing) — driver catalog including Hilscher Universal; **no PROFINET driver name**.  
 2. Kepware **Hilscher Universal Driver Help** PDF (Logic Control / Software Toolbox mirrors of Kepware help) — CIF + DeviceNet/PROFIBUS + SyCon.  
 3. PTC Help — **Siemens TCP/IP Ethernet Driver Overview** — standard Ethernet NIC; S7 messaging.  
-4. PTC **Kepware Edge** product page — Linux/container drivers; **no PROFINET**.  
-5. PTC KEPServerEX / Kepware Server system requirements manuals — Windows platform.  
-6. Prior ICP docs: `profinet-native-evaluation.md`, `profinet-hilscher-evaluation.md`, Softing Controller Stack public datasheets (for Option B technical existence outside Kepware).
+4. PTC Help — **Siemens S7 Plus Ethernet Driver** manual (Software Toolbox mirror, ©2025 PTC) — standard Ethernet NIC; symbolic S7 access; explicitly **not** PROFINET IO-Controller.  
+5. PTC **Kepware Edge** product page + Edge help (Welcome, What's New 1.0/1.1) — Linux/container drivers; **no PROFINET**.  
+6. PTC **Kepware Server / KEPServerEX** manual — Windows 10/11 + Windows Server 2016–2025 system requirements; Server Core not supported.  
+7. PTC **Manufacturing Suite** store page — 100+ drivers; **does not enumerate PROFINET** on the public page body.  
+8. Prior ICP docs: `profinet-native-evaluation.md`, `profinet-hilscher-evaluation.md`, `profinet-hilscher-final-gate.md`, Softing Controller Stack public datasheets (for Option B technical existence outside Kepware).
 
-**THIRD-PARTY (not authoritative for claims):** TTPSC Kepware driver blog; Allied Solutions driver list articles.
+**THIRD-PARTY (not authoritative for claims):** TTPSC Kepware driver blog (lists **PROFINET IO Controller** in Manufacturing Suite with GSDML/RT claims); Allied Solutions driver list articles; Software Toolbox educational article on PROFIBUS/PROFINET vs S7 drivers.
+
+---
+
+## 21. Final output checklist (items 1–32)
+
+| # | Topic | Summary |
+| --- | --- | --- |
+| 1 | Kepware PROFINET product/driver | **CONFIRMED:** Hilscher Universal (CIF, Profibus/DN). **THIRD-PARTY/UNKNOWN:** “PROFINET IO Controller” in Manufacturing Suite — not in J7845 retrieved here |
+| 2 | PROFINET role | **CONFIRMED:** S7 client / gateway patterns; **not** confirmed soft-NIC PN IO-Controller in official catalogs |
+| 3 | Hardware | **CONFIRMED:** std NIC for Siemens S7; **CONFIRMED:** Hilscher CIF for Universal master |
+| 4 | Software stack | Driver → OS NIC or CIF+SyCon; internal PN stack **UNKNOWN** |
+| 5 | Controller architecture | Often **not** the PN controller for Siemens data; fieldbus master = hardware card pattern |
+| 6 | Cyclic IO | CIF I/O tags **CONFIRMED**; soft PN cyclic **UNKNOWN** |
+| 7 | DCP | SyCon for CIF **CONFIRMED**; soft PN **UNKNOWN** |
+| 8 | AR | **UNKNOWN** for soft PN |
+| 9 | Slots/subslots | SyCon DB **CONFIRMED** for CIF; GSDML claims **THIRD-PARTY** only |
+| 10 | Diagnostics | Platform diagnostics **CONFIRMED**; PN-specific **UNKNOWN** |
+| 11 | GSDML | Blog claims import **THIRD-PARTY**; not confirmed in official driver help retrieved |
+| 12 | Device configuration | Channel/device tree + driver-specific tools **CONFIRMED** (platform) |
+| 13 | Multi-device | Channel/device model **CONFIRMED**; PN IO-Device limits **UNKNOWN** |
+| 14 | Multi-network | NIC per channel common **INFERRED** |
+| 15 | Windows 10 | **CONFIRMED** (Kepware Server) |
+| 16 | Windows 11 | **CONFIRMED** (Kepware Server manual) |
+| 17 | Windows Server | **CONFIRMED** for Kepware Server host OS; PN driver on Server **UNKNOWN** |
+| 18 | Linux | **CONFIRMED** Kepware Edge — **no PROFINET listed** |
+| 19 | Docker | **CONFIRMED** Edge container for listed TCP drivers; native PN **UNKNOWN** / likely unsupported |
+| 20 | Licensing | Per-driver or suite; Edge subscription bundle **CONFIRMED**; PN SKU **UNKNOWN** |
+| 21 | Commercial model | À la carte drivers + suites; Manufacturing Suite subscription **CONFIRMED** |
+| 22 | Comparison with ICP | See §14 table |
+| 23 | Architectural lessons | See §16 |
+| 24 | Hilscher comparison | Kepware uses Hilscher CIF for **Profibus/DN**, not documented for PN IO-Controller |
+| 25 | Softing comparison | No evidence Kepware embeds Softing; Option B remains separate ICP path |
+| 26 | Recommended native PN architecture | **Option C:** Softing + Hilscher + gateway |
+| 27 | Recommended product model | ICP Standard (gateway) + optional native SKUs |
+| 28 | ICP Designer impact | Protocol choice badges; GSDML via vendor tooling first |
+| 29 | Win/Linux/Docker strategy | Gateway everywhere; native PN host/service; no Docker Desktop PN |
+| 30 | Final recommendation | **C — SUPPORT BOTH** (+ gateway always) |
+| 31 | Evidence references | §20 |
+| 32 | Git | Branch `cursor/kepware-profinet-research-a88d`; see commit after doc update |
 
 ---
 
