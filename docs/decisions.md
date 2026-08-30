@@ -976,7 +976,7 @@ See `docs/connectivity-integration-contract.md`. **PLANNED. NOT IMPLEMENTED.**
 
 **Context:** ICP must be commercially complete without MES. Visual industrial topology configuration is primary product value.
 
-**Decision:** **ICP Designer** is a **major ICP component**. UX: **DRAG → DROP → CONFIGURE → CONNECT → DEPLOY**. Configures sources, equipment, gateways (incl. PROFINET-via-gateway), and northbound CIC targets (MES, SCADA, ERP). Separate from MES GUI. **PLANNED** — slice **ICP-1F**. See `docs/icp-product-architecture.md`.
+**Decision:** **ICP Designer** is a **major ICP component**. UX: **DRAG → DROP → CONFIGURE → CONNECT → DEPLOY**. Configures sources, equipment, gateways (incl. PROFINET-via-gateway), and northbound CIC targets (MES, SCADA, ERP). Separate from MES GUI. **PLANNED** — slice **ICP-1F**. Configuration **backend** for that GUI is ICP-1B (`docs/icp-configuration.md`). See `docs/icp-product-architecture.md`.
 
 **Alternatives:** YAML-only (insufficient for commercial ICP); merged with MES GUI (rejected).
 
@@ -992,4 +992,18 @@ See `docs/connectivity-integration-contract.md`. **PLANNED. NOT IMPLEMENTED.**
 **Decision:** MES Core owns MES domain + **MES GUI** + MES API. Industrial data via **CIC** only (`IIndustrialDataProvider`). Official **Phase 7** = MES Core. **NOT IMPLEMENTED.** See `docs/mes-core-product-architecture.md`.
 
 **Alternatives:** MES reads fieldbuses directly (rejected); monolith with ICP (rejected: ADR-042).
+
+---
+
+## ADR-047 — ICP configuration is versioned JSON behind a replaceable repository
+
+- **Status:** Accepted
+- **Date:** 2026-08-30
+
+**Context:** ICP-1A configuration was in-memory only. ICP Designer (ICP-1F) needs a durable, human-readable configuration API. A database is not required at this stage.
+
+**Decision:** Persist ICP adapter/equipment configuration as a versioned JSON document (`schema=virtual-factory.icp.config`, `version=1`) via `ConfigurationRepository`. Default backend: `JsonFileConfigurationRepository` (atomic temp+rename). No MES types. Credential **references** only (`env:`, `file:`, `secret:`) — not a secret-management product. Native PROFINET/PROFIBUS appear as configuration fields only; parsing does not require Hilscher. See `docs/icp-configuration.md`.
+
+**Alternatives:** SQLite (rejected until a requirement is demonstrated); YAML (JSON already used in industrial adapters); embedding secrets in the file (rejected).
+
 

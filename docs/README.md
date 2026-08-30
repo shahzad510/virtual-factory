@@ -24,6 +24,7 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 | — | [opcua-scalability-test.md](opcua-scalability-test.md) | OPC UA multi-PLC **validation record** (measured scale ≠ production proof). |
 | — | [mqtt-scalability-test.md](mqtt-scalability-test.md) | MQTT multi-equipment **validation record** (measured scale ≠ production proof). |
 | — | [icp-product-architecture.md](icp-product-architecture.md) | **ICP** product architecture (ADR-042, ADR-044). |
+| — | [icp-configuration.md](icp-configuration.md) | **ICP-1B** persistent configuration format and API. |
 | — | [mes-core-product-architecture.md](mes-core-product-architecture.md) | **MES Core** product architecture (ADR-045). |
 | — | [connectivity-integration-contract.md](connectivity-integration-contract.md) | **CIC** boundary between ICP and MES (ADR-043). |
 | — | [profinet-gateway-integration.md](profinet-gateway-integration.md) | Phase 6H PROFINET **supported via gateway** (ADR-040). |
@@ -60,7 +61,7 @@ Do not create a second source of truth. If architecture must change, update `dec
 9. Verify build and tests before modifying code (commands below).
 10. Never infer implementation from the roadmap alone.
 
-Continue from **Next phase** in `implementation-status.md`. **ICP product (ICP-1) and Phase 7 MES Core are NOT STARTED.** Do not implement without explicit slice approval. Products integrate via **CIC** only (ADR-043).
+Continue from **Next phase** in `implementation-status.md`. **ICP-1A and ICP-1B IMPLEMENTED / TESTED.** **ICP-1C, ICP Designer, and Phase 7 MES Core are NOT STARTED.** Do not implement without explicit slice approval. Products integrate via **CIC** only (ADR-043).
 
 Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discipline, architecture invariants, plan-then-approve workflow). Those rules do not replace the SoT.
 
@@ -76,7 +77,7 @@ Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discip
 | Phase 6F MQTT | **IMPLEMENTED** / **TESTED** (localhost Mosquitto; not vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; not production capacity) |
 | Phase 6G EtherNet/IP | **IMPLEMENTED** / **TESTED** (libplctag explicit messaging; local `ab_server`; not hardware certification). Two-device isolation **VALIDATED** under test conditions |
 | Phase 6H PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040); native **IMPLEMENTED TO SOFTWARE BOUNDARY** (isolated Hilscher branch; **HARDWARE VALIDATION PENDING**) |
-| ICP product | **ICP-1A IMPLEMENTED / TESTED**; ICP-1B–1F **NOT STARTED** on this branch |
+| ICP product | **ICP-1A IMPLEMENTED / TESTED**; **ICP-1B IMPLEMENTED / TESTED** (on this isolated branch); **ICP-1C NOT STARTED**; **ICP Designer NOT STARTED** |
 | Phase 7 MES Core | **NOT STARTED** (ADR-045; consumes CIC only) |
 | SCADA, API, database, auth, Blazor, real PLC | **NOT IMPLEMENTED** |
 
