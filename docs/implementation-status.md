@@ -52,7 +52,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native IO-Controller scaffolding **PARTIALLY IMPLEMENTED** — **BLOCKED BY SDK/HARDWARE**. See `docs/profinet-gateway-integration.md`, `docs/native-fieldbus-implementation-status.md` |
 | **6I** PROFIBUS (native) | Gateway **SUPPORTED** (ADR-046). Native DP Master scaffolding **PARTIALLY IMPLEMENTED** — **BLOCKED BY SDK/HARDWARE**. See `docs/profibus-native-evaluation.md` |
 | **ICP-1A** AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** (`icp/`, `icp_runtime_test`) |
-| **Native fieldbus (Hilscher)** Stage A | **IMPLEMENTED** / **TESTED** (stub backends; `native_fieldbus_scaffolding_test`). Stage B/C **BLOCKED BY SDK/HARDWARE** |
+| **Native fieldbus (Hilscher)** Stage A | **IMPLEMENTED** / **TESTED** (stub backends; `native_fieldbus_scaffolding_test`). **TESTED** here means scaffolding construction, integration, and honest SDK/hardware-blocked failure handling only — **not** native PROFINET/PROFIBUS connectivity, Hilscher hardware, cyclic IO, or DP Master operation. Stage B/C **BLOCKED BY SDK/HARDWARE** |
 
 ---
 
@@ -250,8 +250,9 @@ ctest --test-dir build --output-on-failure
 | `mqtt_multi_equipment_scalability_test` | **VALIDATED** (2026-08-29). See `docs/mqtt-scalability-test.md`. **Not** production capacity |
 | `eip_adapter_test` | **PASSED** (2026-08-29). Local `ab_server`; **not** hardware certification |
 | `icp_runtime_test` | **PASSED** (2026-08-29). Multi-adapter manager, scheduler, cache, fault isolation, collisions |
+| `native_fieldbus_scaffolding_test` | **PASSED** (2026-08-30). Stage-A scaffolding: adapter construction, configuration, `AdapterManager` integration, honest SDK/hardware-blocked `connect()` → `Faulted`. **Not** real PROFINET or PROFIBUS communication; **not** Hilscher hardware validation |
 
-Full suite: **10/10 passed**. Gateway-backed PROFINET path validated by existing multi-equipment adapter tests. No native `profinet_adapter_test`. **Native PROFINET gateway hardware not tested in CI.**
+Full suite: **11/11 passed**. Gateway-backed PROFINET path validated by existing multi-equipment adapter tests. No native `profinet_adapter_test` or `profibus_adapter_test`. **Native PROFINET/PROFIBUS fieldbus and gateway PROFINET hardware not tested in CI.**
 
 ---
 
@@ -298,7 +299,7 @@ Kinematic result: −1.5 m → 0.5 m at 0.5 m/s (same as Phase 4). Development S
 
 Label: **NOT IMPLEMENTED** / **PLANNED**.
 
-- Native PROFINET IO-Controller in MES (**deferred**; gateway path is supported)
+- Native PROFINET/PROFIBUS IO-Controller — **NOT IMPLEMENTED**; Stage-A ICP scaffolding exists (`ProfinetIndustrialAdapter`, `ProfibusIndustrialAdapter`); production native connectivity is **BLOCKED BY Hilscher SDK/HARDWARE**. Native fieldbus belongs to **ICP**, not MES Core. Gateway paths remain supported
 - Class 1 implicit/cyclic EtherNet/IP I/O (UDP 2222); EtherNet/IP hardware certification beyond `ab_server` fixture
 - REST DELETE, background reconnect, production vendor HTTPS certification
 - Modbus RTU, TLS, FC 15/16 batch writes, background reconnect
