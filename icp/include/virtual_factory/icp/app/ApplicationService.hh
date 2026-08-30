@@ -1,0 +1,162 @@
+#ifndef VIRTUAL_FACTORY_ICP_APPLICATION_SERVICE_HH_
+#define VIRTUAL_FACTORY_ICP_APPLICATION_SERVICE_HH_
+
+#include <chrono>
+#include <cstddef>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include <virtual_factory/icp/AdapterManager.hh>
+#include <virtual_factory/icp/LiveStateCache.hh>
+#include <virtual_factory/icp/PollScheduler.hh>
+#include <virtual_factory/icp/config/ConfigurationCatalog.hh>
+#include <virtual_factory/icp/config/ConfigurationModel.hh>
+
+namespace virtual_factory
+{
+namespace icp
+{
+
+struct ProtocolCapability
+{
+  std::string id;
+  std::string label;
+  bool configurableWithoutHardware{true};
+  bool requiresHilscherHardware{false};
+};
+
+struct ApplicationEvent
+{
+  std::chrono::system_clock::time_point atUtc{};
+  std::string level;
+  std::string category;
+  std::string message;
+  std::string adapterId;
+  std::string equipmentId;
+};
+
+struct ApplicationStatus
+{
+  std::string product{"ICP"};
+  std::string version{"0.1.0-gui"};
+  std::string apiVersion{"v1"};
+  bool mesDependency{false};
+  bool cicDependency{false};
+  bool schedulerRunning{false};
+  std::size_t configuredAdapterCount{0};
+  std::size_t runtimeAdapterCount{0};
+  std::size_t connectedAdapters{0};
+  std::size_t disconnectedAdapters{0};
+  std::size_t faultedAdapters{0};
+  std::size_t equipmentCount{0};
+  std::size_t staleEquipment{0};
+  std::size_t machineFaultEquipment{0};
+  std::string configurationPath;
+  std::string configurationName;
+};
+
+struct RuntimeAdapterView
+{
+  std::string adapterId;
+  std::string protocol;
+  bool configured{false};
+  bool enabled{true};
+  bool runtimePresent{false};
+  std::string connectionState;
+  std::string lastError;
+  std::string description;
+  std::size_t equipmentCount{0};
+};
+
+struct HilscherDiagnosticsView
+{
+  bool compiledIn{false};
+  std::string readinessState;
+  std::string summary;
+  std::string driverVersion;
+  std::size_t boardCount{0};
+  std::string selectedBoard;
+  std::string selectedFirmware;
+  std::uint32_t serialNumber{0};
+  std::vector<std::string> notes;
+  std::vector<std::string> manualChecks;
+};
+
+/// Standalone ICP application facade for the ICP GUI / Application API.
+/// Not CIC. Not MES. Owns catalog + runtime (manager/cache/scheduler).
+class ApplicationService
+{
+public:
+  explicit ApplicationService(std::string configurationPath = "icp-config.json");
+  ~ApplicationService();
+
+  ApplicationService(const ApplicationService &) = delete;
+  ApplicationService &operator=(const ApplicationService &) = delete;
+
+  void start();
+  void stop();
+  bool running() const;
+
+  ApplicationStatus status() const;
+  std::vector<ProtocolCapability> protocols() const;
+
+  const IcpConfigurationDocument &configuration() const;
+  ConfigResult setConfiguration(IcpConfigurationDocument document);
+  ConfigResult validateConfiguration() const;
+  ConfigResult saveConfiguration();
+  ConfigResult loadConfiguration();
+  ConfigResult importConfigurationJson(const std::string &jsonText);
+  std::string exportConfigurationJson() const;
+
+  ConfigResult upsertAdapterConfig(AdapterConfigRecord adapter);
+  ConfigResult removeAdapterConfig(const std::string &adapterId);
+
+  std::vector<RuntimeAdapterView> adapters() const;
+  std::optional<RuntimeAdapterView> adapter(const std::string &adapterId) const;
+
+  AdapterManagerResult connectAdapter(const std::string &adapterId);
+  AdapterManagerResult disconnectAdapter(const std::string &adapterId);
+
+  std::vector<EquipmentSnapshot> equipment() const;
+  std::optional<EquipmentSnapshot> equipmentById(const std::string &id) const;
+
+  HilscherDiagnosticsView hilscherDiagnostics() const;
+  std::vector<ApplicationEvent> events(std::size_t limit = 100) const;
+
+  ConfigurationCatalog &catalog();
+  const ConfigurationCatalog &catalog() const;
+  AdapterManager &manager();
+  LiveStateCache &cache();
+
+  void recordEvent(
+      const std::string &level,
+      const std::string &category,
+      const std::string &message,
+      const std::string &adapterId = {},
+      const std::string &equipmentId = {});
+
+private:
+  AdapterManagerResult ensureRuntimeAdapter(const AdapterConfigRecord &record);
+  std::unique_ptr<IndustrialAdapter> createRuntimeAdapter(
+      const AdapterConfigRecord &record, std::string *error) const;
+  static std::string connectionStateName(ConnectionState state);
+
+  mutable std::mutex mutex_;
+  std::string configuration_path_;
+  ConfigurationCatalog catalog_;
+  AdapterManager manager_;
+  LiveStateCache cache_;
+  std::unique_ptr<PollScheduler> scheduler_;
+  bool running_{false};
+  std::deque<ApplicationEvent> events_;
+  static constexpr std::size_t kMaxEvents = 500;
+};
+
+}  // namespace icp
+}  // namespace virtual_factory
+
+#endif

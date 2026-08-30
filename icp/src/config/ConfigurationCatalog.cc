@@ -82,6 +82,25 @@ ConfigResult ConfigurationCatalog::upsertAdapter(AdapterConfigRecord adapter)
   return validated;
 }
 
+ConfigResult ConfigurationCatalog::replaceDocument(IcpConfigurationDocument document)
+{
+  if (document.schema.empty())
+  {
+    document.schema = IcpConfigurationDocument::kSchemaId;
+  }
+  if (document.version == 0)
+  {
+    document.version = IcpConfigurationDocument::kCurrentVersion;
+  }
+  const ConfigResult validated = ConfigurationValidator::validate(document);
+  if (!validated.ok)
+  {
+    return validated;
+  }
+  document_ = std::move(document);
+  return validated;
+}
+
 ConfigResult ConfigurationCatalog::removeAdapter(const std::string &adapterId)
 {
   if (adapterId.empty())

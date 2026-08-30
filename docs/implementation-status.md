@@ -12,7 +12,7 @@
 
 MES + SCADA + **modular manufacturing platform** (ICP + MES Core). Gazebo Sim 8 is a **simulation plant** used to develop and test the normalized equipment model.
 
-**Products (ADR-042):** **Industrial Connectivity Platform (ICP)** and **MES Core** — independently sellable; integrate via **CIC** (ADR-043). **ICP-1A IMPLEMENTED / TESTED.** **ICP-1B IMPLEMENTED / TESTED.** **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** **MES NOT STARTED.**
+**Products (ADR-042):** **Industrial Connectivity Platform (ICP)** and **MES Core** — independently sellable; integrate via **CIC** (ADR-043). **ICP-1A IMPLEMENTED / TESTED.** **ICP-1B IMPLEMENTED / TESTED.** **ICP standalone GUI / Application API IMPLEMENTED / TESTED** (isolated branch). **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** **MES NOT STARTED.**
 
 Gazebo is not MES. `ConveyorSystem` is not SCADA. The mock adapter is not a production protocol.
 
@@ -22,11 +22,11 @@ Gazebo is not MES. `ConveyorSystem` is not SCADA. The mock adapter is not a prod
 
 | Item | Value |
 | --- | --- |
-| Branch | `cursor/icp-hilscher-native-development-a88d` (isolated). `master` @ `d3e557b` must stay untouched. |
+| Branch | `cursor/icp-standalone-gui-a88d` (isolated; from Hilscher tip). `master` @ `d3e557b` must stay untouched. |
 | HEAD commit | see `git log -1` on active branch |
 | Working tree | Use `git status`. |
 | Remote | `origin/master` |
-| Audit date | 2026-08-30 (native Hilscher software boundary + ICP-1B catalog on isolated branch) |
+| Audit date | 2026-08-30 (standalone ICP GUI + Application API on isolated branch) |
 
 Use `git status` and `git log -1` when resuming; this file is not a substitute for Git.
 
@@ -36,7 +36,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 
 **Phase 6 — Industrial Adapter Layer — COMPLETE** (final audit 2026-08-28)
 
-**ICP product:** **ICP-1A IMPLEMENTED / TESTED**. **ICP-1B IMPLEMENTED / TESTED**. **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.**
+**ICP product:** **ICP-1A IMPLEMENTED / TESTED**. **ICP-1B IMPLEMENTED / TESTED**. **ICP standalone GUI / Application API IMPLEMENTED / TESTED** (isolated branch; see `docs/icp-gui-architecture.md`). **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.**
 
 **Phase 7 MES Core:** **NOT STARTED**.
 
@@ -53,7 +53,8 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6I** PROFIBUS (native) | Gateway **SUPPORTED** (ADR-046). Native DP Master **IMPLEMENTED TO SOFTWARE BOUNDARY** on isolated Hilscher branch — **HARDWARE VALIDATION PENDING**. |
 | **ICP-1A** AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** (`icp/`, `icp_runtime_test`) |
 | **ICP-1B** Persistent configuration | **IMPLEMENTED** / **TESTED** (`icp/config/`, `icp_configuration_test`) on this isolated branch. **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** |
-| **Native fieldbus (Hilscher)** | **SOFTWARE-INTEGRATION** on `cursor/icp-hilscher-native-development-a88d`. Stage A remains on `master`. **Not** a REAL PROFINET/PROFIBUS or hardware validation. |
+| **ICP GUI** | **IMPLEMENTED** / **TESTED** — standalone browser GUI + `/api/v1` Application API (`icp_server`, `icp/gui/`, `icp_application_api_test`). No MES/CIC dependency. Designer nav disabled. |
+| **Native fieldbus (Hilscher)** | **SOFTWARE-INTEGRATION** on Hilscher line; GUI branch continues from that tip. Stage A remains on `master`. **Not** a REAL PROFINET/PROFIBUS or hardware validation. |
 
 ---
 

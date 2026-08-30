@@ -26,14 +26,15 @@ Retired numbering (do not revive): Stage 0–25, old Phase 0–10, sensor-first 
 | 10 | Real Factory Integration | **PLANNED** |
 | 11 | Commercial Hardening & Enterprise Integration | **PLANNED** |
 
-Nothing else is IN PROGRESS beyond **ICP-1B**. Phase 6 is **COMPLETE**. **ICP-1A IMPLEMENTED / TESTED.** **ICP-1B IMPLEMENTED / TESTED.** **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** Phase 7 MES Core **NOT STARTED**. Do not implement without explicit slice approval.
+Nothing else is IN PROGRESS beyond **ICP standalone GUI** (this isolated branch). Phase 6 is **COMPLETE**. **ICP-1A IMPLEMENTED / TESTED.** **ICP-1B IMPLEMENTED / TESTED.** **ICP GUI IMPLEMENTED / TESTED** (isolated). **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** Phase 7 MES Core **NOT STARTED**. Do not implement without explicit slice approval.
 
 ---
 
 ## Product 1 — Industrial Connectivity Platform (ICP)
 
-- **Status:** **IN PROGRESS** — adapter foundation **COMPLETE** (Phase 6); **ICP-1A IMPLEMENTED / TESTED**; **ICP-1B IMPLEMENTED / TESTED**; ICP-1C–1F **NOT STARTED** (ADR-042, ADR-044, ADR-047).
+- **Status:** **IN PROGRESS** — adapter foundation **COMPLETE** (Phase 6); **ICP-1A IMPLEMENTED / TESTED**; **ICP-1B IMPLEMENTED / TESTED**; **ICP Application GUI IMPLEMENTED / TESTED** (isolated; not Designer); ICP-1C–1F **NOT STARTED** except GUI foundation above (ADR-042, ADR-044, ADR-047).
 - **Objective:** Standalone industrial connectivity product: adapters, runtime, config, northbound CIC API, **ICP Designer GUI**.
+- **Next approved work:** user-directed; recommended next is **Hilscher hardware validation** when CIFX arrives, or **ICP-1C (CIC)** only after explicit approval.
 - **Must work without MES.**
 - **Implementation slices (not official SoT phase numbers):**
 
@@ -41,6 +42,7 @@ Nothing else is IN PROGRESS beyond **ICP-1B**. Phase 6 is **COMPLETE**. **ICP-1A
 | --- | --- | --- |
 | **ICP-1A** | AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** |
 | **ICP-1B** | Persistent configuration storage | **IMPLEMENTED** / **TESTED** |
+| **ICP GUI** | Standalone browser GUI + Application API (`/api/v1`) | **IMPLEMENTED** / **TESTED** (isolated; see `docs/icp-gui-architecture.md`) |
 | **ICP-1C** | CIC v1 northbound API (gRPC/REST/stream) | **NOT STARTED** |
 | **ICP-1D** | Command gateway, industrial events | **NOT STARTED** |
 | **ICP-1E** | Standalone deployable package | **NOT STARTED** |

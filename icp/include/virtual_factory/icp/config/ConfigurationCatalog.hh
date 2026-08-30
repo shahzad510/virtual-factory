@@ -30,6 +30,9 @@ public:
   ConfigResult upsertAdapter(AdapterConfigRecord adapter);
   ConfigResult removeAdapter(const std::string &adapterId);
 
+  /// Replace the entire in-memory document after validation (import / GUI save).
+  ConfigResult replaceDocument(IcpConfigurationDocument document);
+
   const AdapterConfigRecord *adapter(const std::string &adapterId) const;
   std::vector<std::string> adapterIds() const;
   std::vector<std::string> equipmentIds() const;

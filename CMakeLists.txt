@@ -257,6 +257,27 @@ target_link_libraries(icp_configuration_test PRIVATE virtual_factory_icp)
 add_test(NAME icp_configuration_test COMMAND icp_configuration_test)
 set_tests_properties(icp_configuration_test PROPERTIES TIMEOUT 60)
 
+add_executable(icp_application_api_test
+    tests/icp_application_api_test.cc
+)
+target_include_directories(icp_application_api_test
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/cpp-httplib
+)
+find_path(_VF_NLOHMANN_FOR_ICP_API nlohmann/json.hpp
+    PATHS
+        /usr/include
+        "${CMAKE_SOURCE_DIR}/.deps/nlohmann-json/usr/include"
+)
+if (_VF_NLOHMANN_FOR_ICP_API)
+  target_include_directories(icp_application_api_test PRIVATE ${_VF_NLOHMANN_FOR_ICP_API})
+endif()
+target_compile_definitions(icp_application_api_test
+    PRIVATE VF_ICP_GUI_ROOT="${CMAKE_SOURCE_DIR}/icp/gui")
+target_link_libraries(icp_application_api_test PRIVATE virtual_factory_icp pthread)
+add_test(NAME icp_application_api_test COMMAND icp_application_api_test)
+set_tests_properties(icp_application_api_test PROPERTIES TIMEOUT 120)
+
 add_executable(hilscher_hardware_readiness_test
     tests/hilscher_hardware_readiness_test.cc
 )

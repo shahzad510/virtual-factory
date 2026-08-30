@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Standalone ICP GUI / Application API (2026-08-30, isolated branch `cursor/icp-standalone-gui-a88d`): browser SPA (`icp/gui`) + C++ `/api/v1` (`ApplicationService`, `HttpApiServer`, `icp_server`) on ICP Core. Mock E2E configure/connect/equipment/live data/persist. PROFINET/PROFIBUS configure/validate/save without hardware; connect reports Hilscher hardware not detected. No MES/CIC. Hilscher remains optional. **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** **Do not merge to master.**
+
 Native Hilscher hardware readiness (2026-08-30, isolated branch): cifX discovery enrichment (serial/firmware/IO/host-bus), `HilscherHardwareReadiness` preflight, PN/PB hardware test plans with honest `BLOCKED_PROTOCOL_API` boundaries, ICP-1B example configs, platform/Docker/test-peer docs, hardware procedure + report template. **Still HARDWARE VALIDATION PENDING.** Softing not implemented. **Do not merge to master.**
 
 Native Hilscher software boundary (2026-08-30, **isolated branch** `cursor/icp-hilscher-native-development-a88d`): real libcifx host API (`cifx_runtime`), process-image mapping, optional flags default OFF. Native PROFINET/PROFIBUS **IMPLEMENTED TO SOFTWARE BOUNDARY**. **HARDWARE VALIDATION PENDING**. Gateway unchanged. ICP-1B catalog merged onto this branch only (not master). Softing remains a documented future alternative — **not implemented**. **Do not merge to master** until explicit approval.
@@ -20,6 +22,10 @@ ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManage
 
 ### Added
 
+- Standalone ICP GUI (`icp/gui`) and Application API (`/api/v1`, `icp_server`)
+- `tests/icp_application_api_test.cc` (Mock E2E + PN/PB configure-without-hardware)
+- `docs/icp-gui-architecture.md`
+- `third_party/cpp-httplib` (MIT) for HTTP API hosting
 - Isolated-branch SOFTWARE-INTEGRATION tests: `process_image_codec_test`, `native_fieldbus_software_integration_test`, `hilscher_hardware_readiness_test`
 - ICP-1B catalog → native AdapterConfig mapper (`NativeFieldbusConfigMapper`)
 - ICP-1B example configs under `icp/examples/native-fieldbus/`

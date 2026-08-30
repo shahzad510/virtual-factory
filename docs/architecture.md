@@ -40,7 +40,7 @@ PHYSICAL FACTORY
               .NET / Blazor
 ```
 
-**Phase 6 / ICP today:** ICP **adapter foundation** COMPLETE. **ICP-1A** runtime **IMPLEMENTED** / **TESTED**. **ICP-1B** persistent configuration **IMPLEMENTED** / **TESTED**. **ICP-1C CIC NOT STARTED.** **ICP Designer NOT STARTED.** **MES Core NOT STARTED.**
+**Phase 6 / ICP today:** ICP **adapter foundation** COMPLETE. **ICP-1A** runtime **IMPLEMENTED** / **TESTED**. **ICP-1B** persistent configuration **IMPLEMENTED** / **TESTED**. **ICP standalone GUI / Application API IMPLEMENTED** / **TESTED** (isolated branch; `docs/icp-gui-architecture.md`). **ICP-1C CIC NOT STARTED.** **ICP Designer NOT STARTED.** **MES Core NOT STARTED.**
 
 Legacy layer view (still valid inside ICP):
 
@@ -656,6 +656,8 @@ Enterprise services, API, orchestration. C++ remains for simulation and industri
 ---
 
 ## 14. Blazor GUI — PLANNED
+
+Long-term ADR-011 hint for product GUIs. **ICP standalone browser GUI** (vanilla SPA + `/api/v1`) is **IMPLEMENTED** / **TESTED** on the isolated GUI branch — see `docs/icp-gui-architecture.md`. That GUI is not Blazor and not ICP Designer.
 
 Preferred web UI (SoT §12, ADR-011). **NOT IMPLEMENTED.**
 

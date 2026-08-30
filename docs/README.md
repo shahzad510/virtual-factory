@@ -25,6 +25,7 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 | — | [mqtt-scalability-test.md](mqtt-scalability-test.md) | MQTT multi-equipment **validation record** (measured scale ≠ production proof). |
 | — | [icp-product-architecture.md](icp-product-architecture.md) | **ICP** product architecture (ADR-042, ADR-044). |
 | — | [icp-configuration.md](icp-configuration.md) | **ICP-1B** persistent configuration format and API. |
+| — | [icp-gui-architecture.md](icp-gui-architecture.md) | **ICP standalone GUI** + Application API architecture. |
 | — | [mes-core-product-architecture.md](mes-core-product-architecture.md) | **MES Core** product architecture (ADR-045). |
 | — | [connectivity-integration-contract.md](connectivity-integration-contract.md) | **CIC** boundary between ICP and MES (ADR-043). |
 | — | [profinet-gateway-integration.md](profinet-gateway-integration.md) | Phase 6H PROFINET **supported via gateway** (ADR-040). |
@@ -65,7 +66,7 @@ Do not create a second source of truth. If architecture must change, update `dec
 9. Verify build and tests before modifying code (commands below).
 10. Never infer implementation from the roadmap alone.
 
-Continue from **Next phase** in `implementation-status.md`. **ICP-1A and ICP-1B IMPLEMENTED / TESTED.** **ICP-1C, ICP Designer, and Phase 7 MES Core are NOT STARTED.** Do not implement without explicit slice approval. Products integrate via **CIC** only (ADR-043).
+Continue from **Next phase** in `implementation-status.md`. **ICP-1A, ICP-1B, and ICP standalone GUI IMPLEMENTED / TESTED** (GUI on isolated branch). **ICP-1C, ICP Designer, and Phase 7 MES Core are NOT STARTED.** Do not implement without explicit slice approval. Products integrate via **CIC** only (ADR-043).
 
 Implementation governance for agents lives in `.cursor/rules/` (SoT/phase discipline, architecture invariants, plan-then-approve workflow). Those rules do not replace the SoT.
 
