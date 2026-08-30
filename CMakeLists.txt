@@ -228,3 +228,24 @@ target_link_libraries(native_fieldbus_scaffolding_test
 add_test(NAME native_fieldbus_scaffolding_test
     COMMAND native_fieldbus_scaffolding_test)
 set_tests_properties(native_fieldbus_scaffolding_test PROPERTIES TIMEOUT 60)
+
+add_executable(process_image_codec_test
+    tests/process_image_codec_test.cc
+)
+target_include_directories(process_image_codec_test
+    PRIVATE ${CMAKE_SOURCE_DIR}/industrial/src)
+target_link_libraries(process_image_codec_test
+    PRIVATE virtual_factory_equipment)
+add_test(NAME process_image_codec_test COMMAND process_image_codec_test)
+set_tests_properties(process_image_codec_test PROPERTIES TIMEOUT 30)
+
+add_executable(native_fieldbus_software_integration_test
+    tests/native_fieldbus_software_integration_test.cc
+)
+target_include_directories(native_fieldbus_software_integration_test
+    PRIVATE ${CMAKE_SOURCE_DIR}/industrial/src)
+target_link_libraries(native_fieldbus_software_integration_test
+    PRIVATE virtual_factory_industrial virtual_factory_icp pthread)
+add_test(NAME native_fieldbus_software_integration_test
+    COMMAND native_fieldbus_software_integration_test)
+set_tests_properties(native_fieldbus_software_integration_test PROPERTIES TIMEOUT 60)

@@ -22,11 +22,11 @@ Gazebo is not MES. `ConveyorSystem` is not SCADA. The mock adapter is not a prod
 
 | Item | Value |
 | --- | --- |
-| Branch | `cursor/icp-native-fieldbus-hilscher-a88d` (implementation); `master` @ `0dffad9` base |
+| Branch | `cursor/icp-hilscher-native-development-a88d` (isolated). `master` @ `d3e557b` must stay untouched. |
 | HEAD commit | see `git log -1` on active branch |
 | Working tree | Use `git status`. |
 | Remote | `origin/master` |
-| Audit date | 2026-08-30 (native fieldbus Stage A) |
+| Audit date | 2026-08-30 (native Hilscher software boundary on isolated branch) |
 
 Use `git status` and `git log -1` when resuming; this file is not a substitute for Git.
 
@@ -49,10 +49,10 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6E** REST industrial gateway adapter (`RestIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** MQTT industrial adapter (`MqttIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; see `docs/mqtt-scalability-test.md`) |
 | **6G** EtherNet/IP industrial adapter (`EtherNetIpIndustrialAdapter`) | **COMPLETE** / **TESTED** (libplctag explicit messaging; local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native IO-Controller scaffolding **PARTIALLY IMPLEMENTED** — **BLOCKED BY SDK/HARDWARE**. See `docs/profinet-gateway-integration.md`, `docs/native-fieldbus-implementation-status.md` |
-| **6I** PROFIBUS (native) | Gateway **SUPPORTED** (ADR-046). Native DP Master scaffolding **PARTIALLY IMPLEMENTED** — **BLOCKED BY SDK/HARDWARE**. See `docs/profibus-native-evaluation.md` |
+| **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native IO-Controller **IMPLEMENTED TO SOFTWARE BOUNDARY** on isolated Hilscher branch — **HARDWARE VALIDATION PENDING**. See `docs/native-fieldbus-implementation-status.md` |
+| **6I** PROFIBUS (native) | Gateway **SUPPORTED** (ADR-046). Native DP Master **IMPLEMENTED TO SOFTWARE BOUNDARY** on isolated Hilscher branch — **HARDWARE VALIDATION PENDING**. |
 | **ICP-1A** AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** (`icp/`, `icp_runtime_test`) |
-| **Native fieldbus (Hilscher)** Stage A | **IMPLEMENTED** / **TESTED** (stub backends; `native_fieldbus_scaffolding_test`). **TESTED** here means scaffolding construction, integration, and honest SDK/hardware-blocked failure handling only — **not** native PROFINET/PROFIBUS connectivity, Hilscher hardware, cyclic IO, or DP Master operation. Stage B/C **BLOCKED BY SDK/HARDWARE** |
+| **Native fieldbus (Hilscher)** | **SOFTWARE-INTEGRATION** on `cursor/icp-hilscher-native-development-a88d`. Stage A remains on `master`. **Not** a REAL PROFINET/PROFIBUS or hardware validation. |
 
 ---
 
@@ -169,9 +169,13 @@ tests/mqtt_test_broker.hh/.cc           TEST ONLY: Mosquitto process, localhost
 tests/mqtt_multi_equipment_scalability_test.cc  VALIDATION ONLY; not a production component
 tests/eip_adapter_test.cc
 tests/eip_test_server.hh/.cc            TEST ONLY: libplctag ab_server, localhost
-tests/native_fieldbus_scaffolding_test.cc  Stage A: blocked connect, dual adapter manager
-docs/hilscher-environment-audit.md    SDK/hardware audit (2026-08-30)
-docs/native-fieldbus-implementation-status.md  Stage A/B/C status
+tests/native_fieldbus_scaffolding_test.cc  SOFTWARE-INTEGRATION: construction, blocked connect
+tests/process_image_codec_test.cc          SOFTWARE-INTEGRATION: process-image codec/mapping
+tests/native_fieldbus_software_integration_test.cc  SOFTWARE-INTEGRATION: factory/manager/cache/config
+docs/hilscher-environment-audit.md    SDK/hardware audit
+docs/native-fieldbus-implementation-status.md  software boundary vs hardware pending
+docs/hilscher-sdk-license.md           runtime/license boundary
+docs/hilscher-hardware-smoke-test.md  hardware validation plan (not run)
 ```
 
 ### Simulation (Gazebo)

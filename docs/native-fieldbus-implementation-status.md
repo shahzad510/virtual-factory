@@ -1,10 +1,12 @@
 # Native fieldbus implementation status — Hilscher track (ICP)
 
 **Date:** 2026-08-30  
-**Branch:** `cursor/icp-native-fieldbus-hilscher-a88d`  
-**Base:** `master` @ `0dffad9`
+**Branch:** `cursor/icp-hilscher-native-development-a88d` (isolated from `master`)  
+**Master baseline:** `d3e557b` — Stage A scaffolding only. **Do not merge this branch until explicitly approved.**
 
 This document tracks **what is actually in the repository** for native PROFINET and PROFIBUS via Hilscher cifX. Gateway paths remain supported and unchanged.
+
+**Tests in this document are SOFTWARE-INTEGRATION TESTS.** They are **not** a REAL PROFINET TEST, REAL PROFIBUS TEST, or HARDWARE VALIDATION.
 
 ---
 
@@ -15,131 +17,159 @@ This document tracks **what is actually in the repository** for native PROFINET 
 | **ICP Standard** | Gateway PROFINET/PROFIBUS + software protocols (OPC UA, Modbus, REST, MQTT, EtherNet/IP) — **no Hilscher dependency** |
 | **ICP Industrial** | ICP Standard + optional native PROFINET + optional native PROFIBUS (Hilscher backend when SDK/hardware present) |
 
+ICP and MES remain independently deployable. Native fieldbus is **ICP-only**. Hilscher types do not appear in `Equipment.hh`, `IndustrialAdapter.hh`, GenericEquipment, CIC, or MES.
+
+---
+
+## A vs B — what was already on master vs this branch
+
+### A. Already on `master` (Stage A, commit `48b9328` / merge `d3e557b`)
+
+- `ProfinetIndustrialAdapter` / `ProfibusIndustrialAdapter` public scaffolding
+- Private `industrial/src/hilscher/` **stubs** (`open()` fails; no cifX calls)
+- `FindHilscherCifX.cmake` looking for `cifXAPI.h` (incorrect header name)
+- Flags `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS` default **OFF**
+- `AdapterFactory::createProfinet` / `createProfibus`
+- `tests/native_fieldbus_scaffolding_test.cc`
+- Docs: environment audit, native status, PN/PB eval, ADR-040/046
+
+### B. Added on this branch (native software integration)
+
+- Private `cifx_runtime` wrapping official libcifx APIs
+- Real session lifecycle (driver init, enumeration, channel, host/bus state, config download, IO, watchdog)
+- Process-image codec + GenericEquipment mapping
+- Extended in-memory ICP-1B-compatible AdapterConfig (slots/subslots, modules, mappings)
+- SOFTWARE-INTEGRATION tests (`process_image_codec_test`, `native_fieldbus_software_integration_test`)
+- CMake: find `cifXUser.h`; SDK found does **not** enable the backend unless a flag is ON
+
 ---
 
 ## Staged implementation
 
 | Stage | Scope | Status |
 | --- | --- | --- |
-| **A — Vendor foundation** | Private sessions, CMake flags, adapter scaffolding, ICP factory hooks, tests | **IMPLEMENTED** / **TESTED** (SDK-absent stubs) |
-| **B — Native PROFINET** | Real cifX PN IO-Controller, cyclic RT1, DCP, AR, diagnostics | **BLOCKED BY SDK/HARDWARE** |
-| **C — Native PROFIBUS** | Real cifX DP Master, cyclic IO, slave timeout/recovery | **BLOCKED BY SDK/HARDWARE** |
-| **Combined PN+PB** | Simultaneous RE + DP cards, failure isolation | **NOT IMPLEMENTED** — requires hardware |
+| **A — Vendor foundation** | Private sessions, CMake flags, adapter scaffolding, ICP factory hooks | **IMPLEMENTED** / **TESTED** on master (stubs) |
+| **B — Native PROFINET software boundary** | Real cifX host API: init, discovery, lifecycle, process image mapping | **IMPLEMENTED TO SOFTWARE BOUNDARY**. **HARDWARE VALIDATION PENDING** |
+| **C — Native PROFIBUS software boundary** | Same host API for DP Master | **IMPLEMENTED TO SOFTWARE BOUNDARY**. **HARDWARE VALIDATION PENDING** |
+| **Combined PN+PB hardware** | Simultaneous RE + DP cards | **NOT IMPLEMENTED** — requires hardware |
 
 ---
 
-## What exists in code (Stage A)
-
-### CMake
-
-- `industrial/cmake/FindHilscherCifX.cmake`
-- Options: `VF_ENABLE_HILSCHER_PROFINET`, `VF_ENABLE_HILSCHER_PROFIBUS` (default **OFF**)
-- Compile define: `VF_HILSCHER_CIFX_AVAILABLE=0` when SDK not found
-
-### Private Hilscher layer (`industrial/src/hilscher/`)
-
-| File | Role |
-| --- | --- |
-| `hilscher_availability.hh/.cc` | Runtime SDK availability check |
-| `profinet_session.hh/.cc` | Private PROFINET session — stub; `open()` fails without SDK |
-| `profibus_session.hh/.cc` | Private PROFIBUS session — stub; `open()` fails without SDK |
-
-No Hilscher types in public headers.
-
-### Public adapters
-
-| Adapter | Protocol ID | Connect without SDK | Cyclic IO |
-| --- | --- | --- | --- |
-| `ProfinetIndustrialAdapter` | `"profinet"` | **Faulted** — BLOCKED message | **NOT IMPLEMENTED** |
-| `ProfibusIndustrialAdapter` | `"profibus"` | **Faulted** — BLOCKED message | **NOT IMPLEMENTED** |
-
-Configuration structs support future ICP Designer fields (board ID, channel, config artifact path, equipment mappings, process offsets). No GUI in this slice.
-
-### ICP integration
-
-- `AdapterFactory::createProfinet()` / `createProfibus()` added
-- `AdapterManager` accepts both adapter types (isolation at manager level unchanged)
-
-### Protected interfaces
-
-**Not modified:** `Equipment.hh`, `IndustrialAdapter.hh`, existing OPC UA/Modbus/REST/MQTT/EIP adapters, Gazebo production code.
-
----
-
-## Tests
-
-| Test | Status | Notes |
-| --- | --- | --- |
-| `native_fieldbus_scaffolding_test` | **PASSED** | Construction, blocked connect, equipment exposure, dual adapters in manager |
-| Full `ctest` suite (11 tests) | **PASSED** | Includes existing adapter + ICP regression |
-
-Tests explicitly assert `hilscherSdkPresent() == false` in CI. No fake protocol servers.
-
----
-
-## What is explicitly NOT implemented
-
-- Real Hilscher cifX API calls
-- DCP, AR establishment, RT Class 1 cyclic IO (PROFINET)
-- DP Master cyclic IO, GSD loading, slave recovery (PROFIBUS)
-- Custom GSDML/GSD parsers
-- IRT, MRP, PROFIsafe, certification
-- Simultaneous PN+PB hardware validation
-- ICP Designer GUI
-- Docker-native fieldbus passthrough product profile
-
----
-
-## Smoke-test checklist (when SDK/hardware available)
-
-### PROFINET
-
-1. Initialize controller / load NXLFW-PNM firmware  
-2. Configure interface (SYCON.net artifact)  
-3. DCP / device identification  
-4. AR establishment  
-5. RT Class 1 cyclic input/output  
-6. Process image read/write  
-7. Basic diagnostics  
-8. Shutdown / restart behavior  
-
-### PROFIBUS
-
-1. Initialize DP Master / load DPM firmware  
-2. Configure bus (baud, master address)  
-3. Load GSD-derived slave configuration  
-4. Cyclic input/output  
-5. Diagnostics  
-6. Slave timeout and recovery  
-
-### Combined
-
-1. CIFX 50E-RE + CIFX 50E-DP on same host  
-2. Independent adapter instances  
-3. PN failure does not fault PB equipment (and vice versa)  
-
----
-
-## Documentation cross-reference
-
-| Document | Role |
-| --- | --- |
-| [`hilscher-environment-audit.md`](hilscher-environment-audit.md) | SDK/hardware audit on this host |
-| [`profinet-native-evaluation.md`](profinet-native-evaluation.md) | Native PN evaluation; Hilscher alternate |
-| [`profinet-hilscher-final-gate.md`](profinet-hilscher-final-gate.md) | Hilscher SKU / platform gate |
-| [`profibus-native-evaluation.md`](profibus-native-evaluation.md) | Native PB evaluation |
-| [`profinet-native-implementation-plan.md`](profinet-native-implementation-plan.md) | PN implementation plan (pre-code) |
-| [`profinet-gateway-integration.md`](profinet-gateway-integration.md) | Gateway path (supported) |
-| ADR-040, ADR-046 in [`decisions.md`](decisions.md) | Architectural decisions |
-
----
-
-## Honest status summary
+## Honest capability labels
 
 | Capability | Status |
 | --- | --- |
-| Gateway PROFINET | **SUPPORTED VIA GATEWAY** |
-| Gateway PROFIBUS | **SUPPORTED** (same gateway pattern) |
-| Native PROFINET (Hilscher) | **PARTIALLY IMPLEMENTED** — scaffolding only; **BLOCKED BY SDK/HARDWARE** |
-| Native PROFIBUS (Hilscher) | **PARTIALLY IMPLEMENTED** — scaffolding only; **BLOCKED BY SDK/HARDWARE** |
-| Production native fieldbus claim | **NOT VALID** until smoke tests on real SDK + hardware |
+| Gateway PROFINET | **SUPPORTED** |
+| Gateway PROFIBUS | **SUPPORTED** |
+| Native PROFINET | **IMPLEMENTED TO SOFTWARE BOUNDARY** / **HARDWARE VALIDATION PENDING** |
+| Native PROFIBUS | **IMPLEMENTED TO SOFTWARE BOUNDARY** / **HARDWARE VALIDATION PENDING** |
+| Production native fieldbus claim | **NOT VALID** until hardware smoke tests |
+
+---
+
+## Exact cifX APIs used (from `cifXUser.h` / `cifxlinux.h`)
+
+| API | Use |
+| --- | --- |
+| `cifXDriverInit` / `cifXDriverDeinit` | Linux driver lifetime (`CIFX_DRIVER_INIT_AUTOSCAN`) |
+| `xDriverOpen` / `xDriverClose` | Driver handle |
+| `xDriverGetInformation` | Driver version + board count |
+| `xDriverGetErrorDescription` | Error text |
+| `xDriverEnumBoards` / `xDriverEnumChannels` | Discovery |
+| `xChannelOpen` / `xChannelClose` | Channel lifetime |
+| `xChannelInfo` | Firmware / mailbox / IO area counts |
+| `xChannelIOInfo` | Separate `CIFX_IO_INPUT_AREA` / `CIFX_IO_OUTPUT_AREA` sizes |
+| `xChannelHostState` | Host ready / not ready |
+| `xChannelBusState` | Bus on / off / get state |
+| `xChannelDownload` (`DOWNLOAD_MODE_CONFIG`) | Load SYCON `config.nxd` |
+| `xChannelWatchdog` | Start / stop / trigger |
+| `xChannelCommonStatusBlock` (`CIFX_CMD_READ_DATA`) | DPM common status bytes (not protocol packets) |
+| `xChannelIORead` / `xChannelIOWrite` | Cyclic process image (area 0) |
+
+**Not invented / not called:** homemade DCP, AR, RT Class 1 packets, DP-V1 mailbox IDs, GSD/GSDML parsers, `xChannelPutPacket` with fabricated protocol commands.
+
+When those are required:
+
+> Requires Hilscher Protocol API / firmware / hardware.
+
+---
+
+## Functionality blocked by hardware
+
+- CIFX 50E-RE / CIFX 50E-DP presence
+- `uio_netx` / NXDRV kernel driver attaching to a card
+- Non-empty `xDriverEnumBoards` result
+- `xChannelOpen` against a real channel
+- Cyclic IO that actually moves on the wire
+- Device/slave loss and recovery on a real bus
+
+## Functionality blocked by unavailable protocol API / firmware
+
+- NXLFW-PNM (PROFINET IO-Controller) / NXLIC-MASTER
+- CIFXDPM / NXLFW-DPM (PROFIBUS DP Master)
+- DCP Identify/Set, station naming as a host-issued mailbox sequence
+- AR establishment as an explicit host command
+- Slot/subslot engineering beyond offsets stored in ICP config + SYCON artifact
+- DP slave GSD interpretation
+- Extended / protocol-specific diagnostics IDs
+
+Controller/master **station name**, baud rate, and slave lists in `AdapterConfig` are **ICP mapping metadata**. The live bus uses the SYCON artifact downloaded via `xChannelDownload`.
+
+---
+
+## ICP integration
+
+- `AdapterFactory::createProfinet` / `createProfibus`
+- `AdapterManager` owns instances; PN fault does not remove PB (separate adapters)
+- `poll()` maps input image → `GenericEquipment` telemetry/state/fault
+- `execute()` maps commands → output image
+- `LiveStateCache` consumes normalized Equipment (software-integration covered)
+- Explicit `connect()` after Faulted (no auto-reconnect), consistent with ICP-1A
+
+### ICP-1B configuration
+
+This branch **reuses in-memory `AdapterConfig` structs** (the ICP-1A/Stage A configuration objects). It does **not** create a second persistence system.
+
+JSON catalog persistence (`schema=virtual-factory.icp.config`) lives on the **unmerged** branch `cursor/icp-1b-persistent-config-a88d` and is **not** on `master`. Native AdapterConfig fields (controller/interface, station name, device identity, slots/subslots, modules, process/telemetry/command/state/fault mapping) are loadable **without Hilscher hardware**. Wiring those structs from the JSON catalog is deferred until ICP-1B is merged by explicit approval.
+
+---
+
+## CMake / feature flags
+
+| Option | Default |
+| --- | --- |
+| `VF_ENABLE_HILSCHER_PROFINET` | **OFF** |
+| `VF_ENABLE_HILSCHER_PROFIBUS` | **OFF** |
+
+`VF_HILSCHER_CIFX_AVAILABLE=1` only when a flag is **ON** **and** `cifXUser.h` + `libcifx` are found. Finding SDK with flags OFF keeps the stub backend so the rest of ICP builds and tests without Hilscher.
+
+```bash
+cmake -S . -B build \
+  -DVF_ENABLE_HILSCHER_PROFINET=ON \
+  -DVF_ENABLE_HILSCHER_PROFIBUS=ON \
+  -DHILSCHER_CIFX_ROOT=/path/to/libcifx
+```
+
+---
+
+## Tests (SOFTWARE-INTEGRATION)
+
+| Test | What it proves |
+| --- | --- |
+| `native_fieldbus_scaffolding_test` | Construction, blocked connect, equipment, AdapterManager |
+| `process_image_codec_test` | Encode/decode + GenericEquipment mapping (no hardware) |
+| `native_fieldbus_software_integration_test` | Config (slots/modules), factory, manager, cache, missing artifact, missing hardware, explicit reconnect, enumerate |
+
+**Not claimed:** REAL PROFINET, REAL PROFIBUS, HARDWARE VALIDATION.
+
+---
+
+## Protected interfaces
+
+**Not modified:** `Equipment.hh`, `IndustrialAdapter.hh`, existing OPC UA/Modbus/REST/MQTT/EIP adapters, Gazebo, MES.
+
+---
+
+## Rollback
+
+Abandon this branch and continue from `master` @ Stage A. Native Hilscher is optional and not a mandatory ICP dependency. Do not merge until explicit approval.

@@ -49,11 +49,21 @@ struct ProfinetSignalMapping
   bool mapped{false};
 };
 
+/// Slot/subslot layout is ICP mapping metadata. GSDML interpretation and
+/// DCP/AR addressing are applied by NXLFW-PNM from the SYCON artifact.
+struct ProfinetSubslotMapping
+{
+  std::uint16_t slot{0};
+  std::uint16_t subslot{1};
+  std::string moduleType;
+};
+
 struct ProfinetIoDeviceMapping
 {
   std::string stationName;
   std::uint16_t vendorId{0};
   std::uint16_t deviceId{0};
+  std::vector<ProfinetSubslotMapping> subslots;
 };
 
 struct ProfinetEquipmentMapping
@@ -68,13 +78,16 @@ struct ProfinetEquipmentMapping
   ProfinetSignalMapping fault;
 };
 
-/// Native PROFINET IO-Controller adapter (Hilscher cifX target).
+/// Native PROFINET IO-Controller adapter (Hilscher cifX).
 ///
 /// One adapter instance = one PROFINET controller / network segment → many
 /// IO-Devices mapped to GenericEquipment.
 ///
-/// **Status:** SCAFFOLDING — BLOCKED BY SDK/HARDWARE until cifX integration
-/// and smoke test complete. Gateway PROFINET remains the supported path.
+/// **Status:** IMPLEMENTED TO SOFTWARE BOUNDARY. Cyclic IO, DCP, AR, and
+/// device diagnostics require CIFX 50E-RE + NXLFW-PNM + NXLIC-MASTER +
+/// real/software IO-Device. HARDWARE VALIDATION PENDING.
+///
+/// Gateway PROFINET remains SUPPORTED.
 class ProfinetIndustrialAdapter : public IndustrialAdapter
 {
 public:
@@ -82,6 +95,8 @@ public:
   {
     std::string boardId;
     unsigned channel{0};
+    /// Controller/interface station name (ICP metadata; encoded in SYCON).
+    std::string stationName;
     std::string configArtifactPath;
     int pollTimeoutMs{0};
     std::vector<ProfinetEquipmentMapping> equipment;
@@ -106,8 +121,10 @@ public:
 
   void poll() override;
 
-  /// True when this build linked Hilscher cifX SDK (not yet full PN stack).
+  /// True when this build compiled the real cifX backend (flags ON + SDK).
   bool hilscherSdkPresent() const;
+
+  const AdapterConfig &config() const;
 
 private:
   class BoundEquipment;
@@ -118,6 +135,10 @@ private:
   void bindEquipment();
   void enterFault(const std::string &reason);
   int operationTimeoutMs() const;
+  bool writeMappedCommand(
+      const ProfinetCommandMapping &mapped, double parameter, std::string *error);
+  std::size_t requiredInputBytes() const;
+  std::size_t requiredOutputBytes() const;
 
   std::string id_;
   AdapterConfig config_;
@@ -125,6 +146,7 @@ private:
   std::string last_error_;
   std::unique_ptr<SessionHandle> session_;
   std::vector<std::unique_ptr<BoundEquipment>> bound_;
+  std::vector<std::uint8_t> output_image_;
 };
 
 }  // namespace virtual_factory

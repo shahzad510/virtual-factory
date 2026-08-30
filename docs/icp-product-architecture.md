@@ -29,7 +29,7 @@ ICP must be **commercially complete and useful without MES Core**.
 | --- | --- | --- |
 | Protocol adapters (OPC UA, Modbus, MQTT, REST, EtherNet/IP) | ICP | **IMPLEMENTED** |
 | PROFINET via gateway | ICP | **SUPPORTED VIA GATEWAY** (ADR-040) |
-| Native PROFINET IO-Controller | ICP (future) | **DEFERRED** |
+| Native PROFINET IO-Controller | ICP (optional Industrial SKU) | **IMPLEMENTED TO SOFTWARE BOUNDARY** / **HARDWARE VALIDATION PENDING** |
 | `Equipment` / normalized live state | ICP | **IMPLEMENTED** (contract lib) |
 | Adapter lifecycle (`AdapterManager`) | ICP | **IMPLEMENTED** (ICP-1A) |
 | Poll scheduling (`PollScheduler`) | ICP | **IMPLEMENTED** (ICP-1A) |

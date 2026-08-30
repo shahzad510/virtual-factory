@@ -47,8 +47,8 @@ Nothing else is IN PROGRESS beyond **ICP-1A**. Phase 6 is **COMPLETE**. **ICP-1B
 | **ICP-1F** | **ICP Designer** GUI (drag/drop/configure/connect/deploy) | **NOT STARTED** |
 
 - **Detail:** `docs/icp-product-architecture.md`, `docs/connectivity-integration-contract.md`
-- **PROFINET:** gateway-supported (6H); native Hilscher scaffolding **PARTIALLY IMPLEMENTED** — production **BLOCKED BY SDK/HARDWARE**.
-- **PROFIBUS:** gateway-supported; native Hilscher scaffolding **PARTIALLY IMPLEMENTED** — production **BLOCKED BY SDK/HARDWARE**.
+- **PROFINET:** gateway-supported (6H); native Hilscher **IMPLEMENTED TO SOFTWARE BOUNDARY** (isolated branch) — **HARDWARE VALIDATION PENDING**.
+- **PROFIBUS:** gateway-supported; native Hilscher **IMPLEMENTED TO SOFTWARE BOUNDARY** — **HARDWARE VALIDATION PENDING**.
 
 ---
 

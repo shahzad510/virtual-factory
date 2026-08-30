@@ -836,8 +836,15 @@ Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/pri
 
 - `ProfinetIndustrialAdapter` **scaffolding IMPLEMENTED** with private `profinet_session` stub; **no production cyclic IO** until cifX smoke test.
 - `VF_ENABLE_HILSCHER_PROFINET` / `VF_HILSCHER_CIFX_AVAILABLE` CMake flags; default OFF when SDK absent.
-- Status: **PARTIALLY IMPLEMENTED** / **BLOCKED BY SDK/HARDWARE** — not **TESTED** for plant connectivity.
-- See [`native-fieldbus-implementation-status.md`](../native-fieldbus-implementation-status.md), [`hilscher-environment-audit.md`](../hilscher-environment-audit.md).
+- Status: **PARTIALLY IMPLEMENTED** / **BLOCKED BY SDK/HARDWARE** on master (stubs).
+- See [`native-fieldbus-implementation-status.md`](native-fieldbus-implementation-status.md), [`hilscher-environment-audit.md`](hilscher-environment-audit.md).
+
+### Amendment 2026-08-30 — Isolated native software boundary (Hilscher track)
+
+- Isolated branch `cursor/icp-hilscher-native-development-a88d` (not merged to master).
+- Private `cifx_runtime` uses official cifX host APIs only. Native PROFINET: **IMPLEMENTED TO SOFTWARE BOUNDARY**. **HARDWARE VALIDATION PENDING**.
+- DCP/AR/RT1 remain firmware/Protocol API — not invented. Gateway remains **SUPPORTED**.
+- See [`native-fieldbus-implementation-status.md`](native-fieldbus-implementation-status.md), [`hilscher-sdk-license.md`](hilscher-sdk-license.md), [`hilscher-hardware-smoke-test.md`](hilscher-hardware-smoke-test.md).
 
 ---
 
@@ -872,8 +879,13 @@ One ICP host may run **CIFX 50E-RE** (PROFINET) and **CIFX 50E-DP** (PROFIBUS) s
 
 ### Stage A scaffolding (2026-08-30)
 
-- `ProfibusIndustrialAdapter` + private `profibus_session` stub compile without SDK.
-- Production cyclic IO **BLOCKED BY SDK/HARDWARE**.
+- `ProfibusIndustrialAdapter` + private `profibus_session` stub compile without SDK (on master).
+- Production cyclic IO **HARDWARE VALIDATION PENDING**.
+
+### Isolated branch software boundary (2026-08-30)
+
+- `cursor/icp-hilscher-native-development-a88d`: real cifX host API for DP Master lifecycle + process-image mapping.
+- Native PROFIBUS: **IMPLEMENTED TO SOFTWARE BOUNDARY**. DCP-equivalent DP mailbox commands are **not invented**.
 - Gateway path unchanged.
 
 **Consequences:** ICP Industrial SKU can add native PB without MES changes. ICP Standard remains gateway-only.
