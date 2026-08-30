@@ -8,7 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Native fieldbus Stage A scaffolding (2026-08-30): Hilscher-target `ProfinetIndustrialAdapter` and `ProfibusIndustrialAdapter` with private session stubs, CMake `FindHilscherCifX`, feature flags `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS` (default OFF). **No real cifX integration** — connect fails with **BLOCKED BY SDK/HARDWARE**. Gateway PROFINET/PROFIBUS unchanged. `native_fieldbus_scaffolding_test` + full suite **11/11 passed**. See `docs/hilscher-environment-audit.md`, `docs/native-fieldbus-implementation-status.md`.
+Hilscher cifX software integration (2026-08-30): official NXDRV-LINUX libcifx used as an **external** dependency (not committed). Real `cifXDriverInit` / `xChannelOpen` / process-image IO / bus state / config download behind `VF_ENABLE_HILSCHER_PROFINET` and `VF_ENABLE_HILSCHER_PROFIBUS` (default **OFF**). Plant cyclic IO **HARDWARE VALIDATION PENDING**. DCP/AR/DP-V1 mailbox packets **NOT IMPLEMENTED** (no PNM/DPM protocol headers in NXDRV-LINUX). Gateway paths unchanged. `native_fieldbus_scaffolding_test` covers stub **and** real-backend-without-hardware.
+
+Native fieldbus Stage A scaffolding (2026-08-30): Hilscher-target `ProfinetIndustrialAdapter` and `ProfibusIndustrialAdapter` with private session stubs, CMake `FindHilscherCifX`, feature flags `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS` (default OFF). Gateway PROFINET/PROFIBUS unchanged.
 
 ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES, or persistent config. `icp_runtime_test` + full suite **10/10 passed**. Phase 7 **NOT STARTED**. Native PROFINET production **BLOCKED BY SDK/HARDWARE**.
 
