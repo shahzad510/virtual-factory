@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Native Hilscher hardware readiness (2026-08-30, isolated branch): cifX discovery enrichment (serial/firmware/IO/host-bus), `HilscherHardwareReadiness` preflight, PN/PB hardware test plans with honest `BLOCKED_PROTOCOL_API` boundaries, ICP-1B example configs, platform/Docker/test-peer docs, hardware procedure + report template. **Still HARDWARE VALIDATION PENDING.** Softing not implemented. **Do not merge to master.**
+
 Native Hilscher software boundary (2026-08-30, **isolated branch** `cursor/icp-hilscher-native-development-a88d`): real libcifx host API (`cifx_runtime`), process-image mapping, optional flags default OFF. Native PROFINET/PROFIBUS **IMPLEMENTED TO SOFTWARE BOUNDARY**. **HARDWARE VALIDATION PENDING**. Gateway unchanged. ICP-1B catalog merged onto this branch only (not master). Softing remains a documented future alternative — **not implemented**. **Do not merge to master** until explicit approval.
 
 ICP-1B persistent configuration (2026-08-30): versioned JSON configuration subsystem (`ConfigurationCatalog`, `ConfigurationValidator`, `JsonFileConfigurationRepository`). Create/modify/remove/validate/save/load/enumerate adapters and equipment mappings. No database. Credential references only. **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** **MES NOT STARTED.** ADR-047. See `docs/icp-configuration.md`.
@@ -18,8 +20,10 @@ ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManage
 
 ### Added
 
-- Isolated-branch SOFTWARE-INTEGRATION tests: `process_image_codec_test`, `native_fieldbus_software_integration_test`
+- Isolated-branch SOFTWARE-INTEGRATION tests: `process_image_codec_test`, `native_fieldbus_software_integration_test`, `hilscher_hardware_readiness_test`
 - ICP-1B catalog → native AdapterConfig mapper (`NativeFieldbusConfigMapper`)
+- ICP-1B example configs under `icp/examples/native-fieldbus/`
+- Hardware readiness / procedure docs: `hilscher-hardware-validation-procedure.md`, `hilscher-platform-and-docker.md`, `hilscher-test-peer-options.md`, `templates/hilscher-hardware-test-report.md`
 - `docs/hilscher-sdk-license.md`, `docs/hilscher-hardware-smoke-test.md`
 - ICP-1B configuration API under `icp/include/virtual_factory/icp/config/`
 - `tests/icp_configuration_test.cc`

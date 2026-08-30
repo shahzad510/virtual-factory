@@ -40,8 +40,21 @@ ICP and MES remain independently deployable. Native fieldbus is **ICP-only**. Hi
 - Process-image codec + GenericEquipment mapping
 - Extended in-memory ICP-1B-compatible AdapterConfig (slots/subslots, modules, mappings)
 - ICP-1B catalog merged onto this branch only; `NativeFieldbusConfigMapper` + `AdapterFactory::create*FromRecord`
-- SOFTWARE-INTEGRATION tests (`process_image_codec_test`, `native_fieldbus_software_integration_test`, ICP-1B JSON + PollScheduler)
+- **Hardware readiness:** `assessHilscherHardwareReadiness`, PN/PB hardware test plans, example ICP-1B JSON, validation procedure docs
+- SOFTWARE-INTEGRATION tests (`process_image_codec_test`, `native_fieldbus_software_integration_test`, `hilscher_hardware_readiness_test`, ICP-1B JSON + PollScheduler)
 - CMake: find `cifXUser.h`; SDK found does **not** enable the backend unless a flag is ON
+
+---
+
+## Hardware readiness (this increment)
+
+| Item | Status |
+| --- | --- |
+| cifX discovery (driver/boards/channels/serial/firmware/IO sizes) | **IMPLEMENTED** (official APIs) |
+| Preflight readiness states | **IMPLEMENTED** (`SDK_MISSING` … `READY_FOR_TEST`) |
+| PN/PB hardware test harness plans | **IMPLEMENTED** (structure + honest BLOCKED_PROTOCOL_API steps) |
+| Example ICP-1B configs | **IMPLEMENTED** (`icp/examples/native-fieldbus/`) |
+| REAL PROFINET / PROFIBUS on the wire | **HARDWARE VALIDATION PENDING** |
 
 ---
 
@@ -175,6 +188,7 @@ cmake -S . -B build \
 | `native_fieldbus_scaffolding_test` | Construction, blocked connect, equipment, AdapterManager |
 | `process_image_codec_test` | Encode/decode + GenericEquipment mapping (no hardware) |
 | `native_fieldbus_software_integration_test` | Config (slots/modules), factory, manager, cache, ICP-1B JSON persistence, PollScheduler, missing artifact, missing hardware, explicit reconnect, enumerate |
+| `hilscher_hardware_readiness_test` | Readiness classification, PN/PB harness plans, example JSON load/map, honest BLOCKED_PROTOCOL_API steps |
 
 **Not claimed:** REAL PROFINET, REAL PROFIBUS, HARDWARE VALIDATION.
 

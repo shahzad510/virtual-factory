@@ -1,8 +1,8 @@
 # Hilscher hardware smoke-test plan
 
-**Status:** PLAN ONLY. Physical Hilscher hardware is **not available**. Do not run these tests until the cards exist.
+**Status:** PLAN ONLY for plant execution. Physical Hilscher hardware may be absent. Repository readiness tooling lives in `hilscher_hardware_readiness_test` and [`hilscher-hardware-validation-procedure.md`](hilscher-hardware-validation-procedure.md).
 
-These tests are **HARDWARE VALIDATION**. They are distinct from SOFTWARE-INTEGRATION TESTS in `docs/native-fieldbus-implementation-status.md`.
+These tests are **HARDWARE VALIDATION** when run against real cards. They are distinct from SOFTWARE-INTEGRATION TESTS.
 
 Do not claim Docker Desktop Windows = plant-grade native PROFINET.
 

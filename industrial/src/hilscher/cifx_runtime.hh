@@ -19,6 +19,17 @@ struct CifxEnumeratedChannel
   unsigned firmwareMajor{0};
   unsigned firmwareMinor{0};
   unsigned firmwareBuild{0};
+  unsigned firmwareRevision{0};
+  unsigned firmwareYear{0};
+  unsigned firmwareMonth{0};
+  unsigned firmwareDay{0};
+  std::uint32_t deviceNumber{0};
+  std::uint32_t serialNumber{0};
+  std::uint32_t channelError{0};
+  std::uint32_t openCount{0};
+  std::size_t mailboxSize{0};
+  unsigned inputAreaCount{0};
+  unsigned outputAreaCount{0};
 };
 
 struct CifxEnumeratedBoard
@@ -27,6 +38,15 @@ struct CifxEnumeratedBoard
   std::string boardAlias;
   unsigned boardId{0};
   unsigned channelCount{0};
+  std::int32_t boardError{0};
+  std::uint32_t systemError{0};
+  std::uint32_t deviceNumber{0};
+  std::uint32_t serialNumber{0};
+  std::uint32_t dpmTotalSize{0};
+  std::uint32_t licenseFlags1{0};
+  std::uint32_t licenseFlags2{0};
+  std::uint16_t netxLicenseId{0};
+  std::uint16_t netxLicenseFlags{0};
   std::vector<CifxEnumeratedChannel> channels;
 };
 
@@ -34,21 +54,33 @@ struct CifxInventory
 {
   std::string driverVersion;
   unsigned boardCount{0};
+  std::string lastDriverError;
   std::vector<CifxEnumeratedBoard> boards;
 };
 
 struct CifxChannelInfo
 {
   std::string boardName;
+  std::string boardAlias;
   std::string firmwareName;
   unsigned firmwareMajor{0};
   unsigned firmwareMinor{0};
   unsigned firmwareBuild{0};
+  unsigned firmwareRevision{0};
+  std::uint32_t deviceNumber{0};
+  std::uint32_t serialNumber{0};
+  std::uint32_t channelError{0};
+  std::uint32_t openCount{0};
   std::size_t mailboxSize{0};
   unsigned inputAreaCount{0};
   unsigned outputAreaCount{0};
   std::size_t inputAreaBytes{0};
   std::size_t outputAreaBytes{0};
+  /// Host/bus state when queried; false if query failed.
+  bool hostReadyKnown{false};
+  bool hostReady{false};
+  bool busOnKnown{false};
+  bool busOn{false};
 };
 
 /// Process-wide cifX driver (Linux: cifXDriverInit / cifXDriverDeinit).
@@ -85,6 +117,7 @@ public:
 
   bool queryInfo(CifxChannelInfo *info, std::string *error);
   bool setHostReady(bool ready, std::string *error);
+  bool queryHostReady(bool *ready, std::string *error);
   bool setBusOn(bool on, unsigned timeoutMs, std::string *error);
   bool queryBusOn(bool *on, std::string *error);
   bool downloadConfigFile(const std::string &path, std::string *error);

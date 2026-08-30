@@ -256,3 +256,16 @@ add_executable(icp_configuration_test
 target_link_libraries(icp_configuration_test PRIVATE virtual_factory_icp)
 add_test(NAME icp_configuration_test COMMAND icp_configuration_test)
 set_tests_properties(icp_configuration_test PROPERTIES TIMEOUT 60)
+
+add_executable(hilscher_hardware_readiness_test
+    tests/hilscher_hardware_readiness_test.cc
+)
+target_include_directories(hilscher_hardware_readiness_test
+    PRIVATE ${CMAKE_SOURCE_DIR}/industrial/src)
+target_compile_definitions(hilscher_hardware_readiness_test
+    PRIVATE VF_ICP_NATIVE_EXAMPLE_DIR="${CMAKE_SOURCE_DIR}/icp/examples/native-fieldbus")
+target_link_libraries(hilscher_hardware_readiness_test
+    PRIVATE virtual_factory_industrial virtual_factory_icp pthread)
+add_test(NAME hilscher_hardware_readiness_test
+    COMMAND hilscher_hardware_readiness_test)
+set_tests_properties(hilscher_hardware_readiness_test PROPERTIES TIMEOUT 60)

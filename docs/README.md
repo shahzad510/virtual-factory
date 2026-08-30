@@ -32,6 +32,10 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 | — | [native-fieldbus-implementation-status.md](native-fieldbus-implementation-status.md) | Native PROFINET/PROFIBUS: software boundary vs hardware pending. |
 | — | [hilscher-sdk-license.md](hilscher-sdk-license.md) | libcifx vs proprietary firmware/license boundary. |
 | — | [hilscher-hardware-smoke-test.md](hilscher-hardware-smoke-test.md) | Hardware validation plan (do not run without cards). |
+| — | [hilscher-hardware-validation-procedure.md](hilscher-hardware-validation-procedure.md) | Step-by-step PN/PB hardware procedure. |
+| — | [hilscher-platform-and-docker.md](hilscher-platform-and-docker.md) | Windows/Ubuntu/Docker honesty matrix. |
+| — | [hilscher-test-peer-options.md](hilscher-test-peer-options.md) | Legitimate IO-Device / DP slave test peers (research). |
+| — | [templates/hilscher-hardware-test-report.md](templates/hilscher-hardware-test-report.md) | Hardware test report template. |
 | — | [profibus-native-evaluation.md](profibus-native-evaluation.md) | Native PROFIBUS evaluation (ADR-046). |
 | — | [profinet-native-evaluation.md](profinet-native-evaluation.md) | Native PROFINET evaluation (ADR-040 amendment). |
 | — | [archive/](archive/) | Historical/legacy documents only. Not authoritative. |

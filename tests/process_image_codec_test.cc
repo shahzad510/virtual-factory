@@ -67,6 +67,21 @@ int main()
   expect(real > 12.49 && real < 12.51, "real value");
 
   expect(!processImageRead(image, ProcessValueType::Int32, 14, 0, &i32), "short image rejected");
+  expect(
+      !processImageWrite(&image, ProcessValueType::Int32, 14, 0, 1.0),
+      "short image write rejected");
+
+  // Deterministic little-endian offsets: Int16 at 2 occupies bytes [2,3].
+  std::vector<std::uint8_t> directed(4, 0);
+  expect(
+      processImageWrite(&directed, ProcessValueType::Int16, 2, 0, 0x1234),
+      "write directed i16");
+  expect(directed[0] == 0 && directed[1] == 0, "bytes before offset untouched");
+  double directedValue = 0.0;
+  expect(
+      processImageRead(directed, ProcessValueType::Int16, 2, 0, &directedValue)
+          && directedValue == 0x1234,
+      "directed offset readback");
 
   GenericEquipment equipment("EQ-001", "remote_io");
   std::vector<std::uint8_t> mapped(8, 0);
@@ -92,6 +107,19 @@ int main()
           &equipment, ProcessValueType::Bool, 0, 2, mapped),
       "apply fault");
   expect(equipment.fault(), "fault bit 2");
+
+  // Invalid mapping fails safely without changing equipment.
+  GenericEquipment safe("EQ-SAFE", "remote_io");
+  expect(
+      !applyTelemetryFromImage(
+          &safe, "overflow", ProcessValueType::Int32, 6, 0, "rpm", mapped),
+      "invalid telemetry offset rejected");
+  expect(safe.telemetry().empty(), "rejected mapping leaves telemetry empty");
+  expect(
+      !applyFaultFromImage(
+          &safe, ProcessValueType::Bool, 8, 0, mapped),
+      "invalid fault offset rejected");
+  expect(!safe.fault(), "rejected fault mapping does not invent machineFault");
 
   if (failures != 0)
   {

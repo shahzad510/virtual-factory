@@ -84,6 +84,8 @@ add_library(virtual_factory_industrial STATIC
     src/eip_session.cc
     src/hilscher/hilscher_availability.cc
     src/hilscher/cifx_runtime.cc
+    src/hilscher/hilscher_hardware_readiness.cc
+    src/hilscher/hilscher_hardware_test_harness.cc
     src/hilscher/profinet_session.cc
     src/hilscher/profibus_session.cc
     src/ProfinetIndustrialAdapter.cc

@@ -124,10 +124,15 @@ bool CifxDriver::enumerate(CifxInventory *inventory, std::string *error)
   }
   inventory->driverVersion.clear();
   inventory->boardCount = 0;
+  inventory->lastDriverError.clear();
   inventory->boards.clear();
 
   if (!acquire(error))
   {
+    if (error != nullptr)
+    {
+      inventory->lastDriverError = *error;
+    }
     return false;
   }
 
@@ -136,10 +141,13 @@ bool CifxDriver::enumerate(CifxInventory *inventory, std::string *error)
   if (rc != CIFX_NO_ERROR)
   {
     release();
+    const std::string message =
+        "xDriverOpen failed: " + CifxChannel::formatError(rc)
+        + " (HARDWARE VALIDATION PENDING if no cifX card/driver is present)";
+    inventory->lastDriverError = message;
     if (error != nullptr)
     {
-      *error = "xDriverOpen failed: " + CifxChannel::formatError(rc)
-               + " (HARDWARE VALIDATION PENDING if no cifX card is present)";
+      *error = message;
     }
     return false;
   }
@@ -151,6 +159,11 @@ bool CifxDriver::enumerate(CifxInventory *inventory, std::string *error)
     inventory->driverVersion = packedName(
         driverInfo.abDriverVersion, sizeof(driverInfo.abDriverVersion));
     inventory->boardCount = driverInfo.ulBoardCnt;
+  }
+  else
+  {
+    inventory->lastDriverError =
+        "xDriverGetInformation failed: " + CifxChannel::formatError(rc);
   }
 
   unsigned boardIndex = 0;
@@ -166,6 +179,15 @@ bool CifxDriver::enumerate(CifxInventory *inventory, std::string *error)
         packedName(boardInfo.abBoardAlias, sizeof(boardInfo.abBoardAlias));
     board.boardId = boardInfo.ulBoardID;
     board.channelCount = boardInfo.ulChannelCnt;
+    board.boardError = boardInfo.lBoardError;
+    board.systemError = boardInfo.ulSystemError;
+    board.dpmTotalSize = boardInfo.ulDpmTotalSize;
+    board.deviceNumber = boardInfo.tSystemInfo.ulDeviceNumber;
+    board.serialNumber = boardInfo.tSystemInfo.ulSerialNumber;
+    board.licenseFlags1 = boardInfo.tSystemInfo.ulLicenseFlags1;
+    board.licenseFlags2 = boardInfo.tSystemInfo.ulLicenseFlags2;
+    board.netxLicenseId = boardInfo.tSystemInfo.usNetxLicenseID;
+    board.netxLicenseFlags = boardInfo.tSystemInfo.usNetxLicenseFlags;
 
     unsigned channel = 0;
     CHANNEL_INFORMATION channelInfo{};
@@ -185,6 +207,17 @@ bool CifxDriver::enumerate(CifxInventory *inventory, std::string *error)
       entry.firmwareMajor = channelInfo.usFWMajor;
       entry.firmwareMinor = channelInfo.usFWMinor;
       entry.firmwareBuild = channelInfo.usFWBuild;
+      entry.firmwareRevision = channelInfo.usFWRevision;
+      entry.firmwareYear = channelInfo.usFWYear;
+      entry.firmwareMonth = channelInfo.bFWMonth;
+      entry.firmwareDay = channelInfo.bFWDay;
+      entry.deviceNumber = channelInfo.ulDeviceNumber;
+      entry.serialNumber = channelInfo.ulSerialNumber;
+      entry.channelError = channelInfo.ulChannelError;
+      entry.openCount = channelInfo.ulOpenCnt;
+      entry.mailboxSize = channelInfo.ulMailboxSize;
+      entry.inputAreaCount = channelInfo.ulIOInAreaCnt;
+      entry.outputAreaCount = channelInfo.ulIOOutAreaCnt;
       board.channels.push_back(entry);
       ++channel;
     }
@@ -313,11 +346,18 @@ bool CifxChannel::queryInfo(CifxChannelInfo *info, std::string *error)
 
   info->boardName =
       packedName(channelInfo.abBoardName, sizeof(channelInfo.abBoardName));
+  info->boardAlias =
+      packedName(channelInfo.abBoardAlias, sizeof(channelInfo.abBoardAlias));
   info->firmwareName =
       packedFwName(channelInfo.abFWName, sizeof(channelInfo.abFWName));
   info->firmwareMajor = channelInfo.usFWMajor;
   info->firmwareMinor = channelInfo.usFWMinor;
   info->firmwareBuild = channelInfo.usFWBuild;
+  info->firmwareRevision = channelInfo.usFWRevision;
+  info->deviceNumber = channelInfo.ulDeviceNumber;
+  info->serialNumber = channelInfo.ulSerialNumber;
+  info->channelError = channelInfo.ulChannelError;
+  info->openCount = channelInfo.ulOpenCnt;
   info->mailboxSize = channelInfo.ulMailboxSize;
   info->inputAreaCount = channelInfo.ulIOInAreaCnt;
   info->outputAreaCount = channelInfo.ulIOOutAreaCnt;
@@ -346,6 +386,19 @@ bool CifxChannel::queryInfo(CifxChannelInfo *info, std::string *error)
     info->outputAreaBytes = outInfo.ulTotalSize;
   }
 
+  bool hostReady = false;
+  if (this->queryHostReady(&hostReady, nullptr))
+  {
+    info->hostReadyKnown = true;
+    info->hostReady = hostReady;
+  }
+  bool busOn = false;
+  if (this->queryBusOn(&busOn, nullptr))
+  {
+    info->busOnKnown = true;
+    info->busOn = busOn;
+  }
+
   return true;
 }
 
@@ -372,6 +425,34 @@ bool CifxChannel::setHostReady(bool ready, std::string *error)
     }
     return false;
   }
+  return true;
+}
+
+bool CifxChannel::queryHostReady(bool *ready, std::string *error)
+{
+  if (!this->open_ || ready == nullptr)
+  {
+    if (error != nullptr)
+    {
+      *error = "cifX channel not open";
+    }
+    return false;
+  }
+  uint32_t state = 0;
+  const int32_t rc = xChannelHostState(
+      static_cast<CIFXHANDLE>(this->channel_),
+      CIFX_HOST_STATE_READ,
+      &state,
+      0);
+  if (rc != CIFX_NO_ERROR)
+  {
+    if (error != nullptr)
+    {
+      *error = "xChannelHostState(READ) failed: " + formatError(rc);
+    }
+    return false;
+  }
+  *ready = (state == CIFX_HOST_STATE_READY);
   return true;
 }
 
@@ -669,8 +750,17 @@ bool CifxDriver::acquired()
   return false;
 }
 
-bool CifxDriver::enumerate(CifxInventory *, std::string *error)
+bool CifxDriver::enumerate(CifxInventory *inventory, std::string *error)
 {
+  if (inventory != nullptr)
+  {
+    inventory->driverVersion.clear();
+    inventory->boardCount = 0;
+    inventory->boards.clear();
+    inventory->lastDriverError =
+        "Hilscher cifX SDK not compiled in (VF_HILSCHER_CIFX_AVAILABLE=0). "
+        "BLOCKED BY SDK/HARDWARE.";
+  }
   if (error != nullptr)
   {
     *error =
@@ -708,6 +798,15 @@ bool CifxChannel::queryInfo(CifxChannelInfo *, std::string *error)
 }
 
 bool CifxChannel::setHostReady(bool, std::string *error)
+{
+  if (error != nullptr)
+  {
+    *error = "cifX SDK not compiled in";
+  }
+  return false;
+}
+
+bool CifxChannel::queryHostReady(bool *, std::string *error)
 {
   if (error != nullptr)
   {

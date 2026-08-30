@@ -178,12 +178,18 @@ tests/eip_test_server.hh/.cc            TEST ONLY: libplctag ab_server, localhos
 tests/native_fieldbus_scaffolding_test.cc  SOFTWARE-INTEGRATION: construction, blocked connect
 tests/process_image_codec_test.cc          SOFTWARE-INTEGRATION: process-image codec/mapping
 tests/native_fieldbus_software_integration_test.cc  SOFTWARE-INTEGRATION: factory/manager/cache/config
+tests/hilscher_hardware_readiness_test.cc           SOFTWARE-INTEGRATION: readiness + harness plans + examples
 tests/icp_configuration_test.cc             ICP-1B persist/validate (not native IO)
 docs/icp-configuration.md               ICP-1B format, validation, secrets boundary
+icp/examples/native-fieldbus/           Placeholder ICP-1B PN/PB topologies
 docs/hilscher-environment-audit.md    SDK/hardware audit
 docs/native-fieldbus-implementation-status.md  software boundary vs hardware pending
 docs/hilscher-sdk-license.md           runtime/license boundary
 docs/hilscher-hardware-smoke-test.md  hardware validation plan (not run)
+docs/hilscher-hardware-validation-procedure.md  step-by-step when cards arrive
+docs/hilscher-platform-and-docker.md  OS/Docker honesty
+docs/hilscher-test-peer-options.md    legitimate test peers (research)
+docs/templates/hilscher-hardware-test-report.md  report template
 ```
 
 ### Simulation (Gazebo)
