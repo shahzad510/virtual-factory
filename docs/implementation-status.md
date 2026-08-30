@@ -269,10 +269,10 @@ ctest --test-dir build --output-on-failure
 | `mqtt_multi_equipment_scalability_test` | **VALIDATED** (2026-08-29). See `docs/mqtt-scalability-test.md`. **Not** production capacity |
 | `eip_adapter_test` | **PASSED** (2026-08-29). Local `ab_server`; **not** hardware certification |
 | `icp_runtime_test` | **PASSED** (2026-08-29). Multi-adapter manager, scheduler, cache, fault isolation, collisions |
-| `native_fieldbus_scaffolding_test` | **PASSED** (2026-08-30). Stage-A scaffolding: adapter construction, configuration, `AdapterManager` integration, honest SDK/hardware-blocked `connect()` → `Faulted`. **Not** real PROFINET or PROFIBUS communication; **not** Hilscher hardware validation |
+| `native_fieldbus_scaffolding_test` | **PASSED** on SDK-absent CI (2026-08-30 master). On this ICP-1B host the same test **FAILED** because `.deps/libcifx` is present (`hilscherSdkPresent()` is true). ICP-1B did **not** modify this test or native IO. **Not** plant communication. |
 | `icp_configuration_test` | **PASSED** (2026-08-30). Create/save/load/round-trip, validation, malformed/unsupported version, migration identity, all protocols including PN/PB **model**, persistence across restart, atomic-save failure. **Not** native fieldbus communication |
 
-Full suite: **12/12 passed**. Gateway-backed PROFINET path validated by existing multi-equipment adapter tests. No native `profinet_adapter_test` or `profibus_adapter_test`. **Native PROFINET/PROFIBUS fieldbus and gateway PROFINET hardware not tested in CI.**
+Full suite this host: **11/12 passed**, 1 environment-dependent fieldbus scaffolding assertion (`native_fieldbus_scaffolding_test`) when cifX is installed. ICP tests: `icp_runtime_test` and `icp_configuration_test` **PASSED**. Gateway-backed PROFINET path validated by existing multi-equipment adapter tests. No native `profinet_adapter_test` or `profibus_adapter_test`. **Native PROFINET/PROFIBUS fieldbus and gateway PROFINET hardware not tested in CI.**
 
 ---
 
