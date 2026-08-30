@@ -228,3 +228,10 @@ target_link_libraries(native_fieldbus_scaffolding_test
 add_test(NAME native_fieldbus_scaffolding_test
     COMMAND native_fieldbus_scaffolding_test)
 set_tests_properties(native_fieldbus_scaffolding_test PROPERTIES TIMEOUT 60)
+
+add_executable(icp_configuration_test
+    tests/icp_configuration_test.cc
+)
+target_link_libraries(icp_configuration_test PRIVATE virtual_factory_icp)
+add_test(NAME icp_configuration_test COMMAND icp_configuration_test)
+set_tests_properties(icp_configuration_test PROPERTIES TIMEOUT 60)

@@ -8,12 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Native fieldbus Stage A scaffolding (2026-08-30): Hilscher-target `ProfinetIndustrialAdapter` and `ProfibusIndustrialAdapter` with private session stubs, CMake `FindHilscherCifX`, feature flags `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS` (default OFF). **No real cifX integration** — connect fails with **BLOCKED BY SDK/HARDWARE**. Gateway PROFINET/PROFIBUS unchanged. `native_fieldbus_scaffolding_test` + full suite **11/11 passed**. See `docs/hilscher-environment-audit.md`, `docs/native-fieldbus-implementation-status.md`.
+ICP-1B persistent configuration (2026-08-30): versioned JSON configuration subsystem (`ConfigurationCatalog`, `ConfigurationValidator`, `JsonFileConfigurationRepository`). Create/modify/remove/validate/save/load/enumerate adapters and equipment mappings. No database. Credential references only. PROFINET/PROFIBUS **configuration model** only — Hilscher SDK not required to parse files; native plant IO unchanged. **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** **MES NOT STARTED.** `icp_configuration_test` **PASSED**. Full ctest this host: 11/12 passed; `native_fieldbus_scaffolding_test` failed because `.deps/libcifx` is present (test asserts SDK-absent CI; not modified by ICP-1B). ADR-047. See `docs/icp-configuration.md`.
 
-ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES, or persistent config. `icp_runtime_test` + full suite **10/10 passed**. Phase 7 **NOT STARTED**. Native PROFINET production **BLOCKED BY SDK/HARDWARE**.
+Native fieldbus Stage A scaffolding (2026-08-30): Hilscher-target `ProfinetIndustrialAdapter` and `ProfibusIndustrialAdapter` with private session stubs, CMake `FindHilscherCifX`, feature flags `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS` (default OFF). **No real cifX integration** — connect fails with **BLOCKED BY SDK/HARDWARE**. Gateway PROFINET/PROFIBUS unchanged. `native_fieldbus_scaffolding_test` + full suite **11/11 passed** at that increment. See `docs/hilscher-environment-audit.md`, `docs/native-fieldbus-implementation-status.md`.
+
+ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES. Persistent config is now ICP-1B. `icp_runtime_test` + full suite **10/10 passed** at that increment. Phase 7 **NOT STARTED**. Native PROFINET production **HARDWARE VALIDATION PENDING**.
 
 ### Added
 
+- ICP-1B configuration API under `icp/include/virtual_factory/icp/config/`
+- `tests/icp_configuration_test.cc`
+- `docs/icp-configuration.md`, ADR-047
 - `ProfinetIndustrialAdapter`, `ProfibusIndustrialAdapter` (scaffolding; SDK-absent stubs)
 - `industrial/src/hilscher/` private session layer; `industrial/cmake/FindHilscherCifX.cmake`
 - `AdapterFactory::createProfinet` / `createProfibus`
@@ -24,7 +29,8 @@ ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManage
 
 ### Changed
 
-- Root CMakeLists; `industrial/CMakeLists.txt`; roadmap / implementation-status / architecture / CHANGELOG
+- Root `CMakeLists.txt` and `icp/CMakeLists.txt` for ICP-1B sources and `icp_configuration_test`
+- ICP product architecture, implementation-status, roadmap, architecture, docs index
 
 ---
 
