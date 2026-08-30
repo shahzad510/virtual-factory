@@ -5,6 +5,8 @@
 #include <string>
 
 #include <virtual_factory/industrial/EtherNetIpIndustrialAdapter.hh>
+#include <virtual_factory/industrial/ProfibusIndustrialAdapter.hh>
+#include <virtual_factory/industrial/ProfinetIndustrialAdapter.hh>
 #include <virtual_factory/industrial/IndustrialAdapter.hh>
 #include <virtual_factory/industrial/MockIndustrialAdapter.hh>
 #include <virtual_factory/industrial/ModbusIndustrialAdapter.hh>
@@ -43,6 +45,12 @@ public:
 
   static std::unique_ptr<EtherNetIpIndustrialAdapter> createEtherNetIp(
       std::string id, EtherNetIpAdapterConfig config);
+
+  static std::unique_ptr<ProfinetIndustrialAdapter> createProfinet(
+      std::string id, ProfinetIndustrialAdapter::AdapterConfig config);
+
+  static std::unique_ptr<ProfibusIndustrialAdapter> createProfibus(
+      std::string id, ProfibusIndustrialAdapter::AdapterConfig config);
 };
 
 }  // namespace icp

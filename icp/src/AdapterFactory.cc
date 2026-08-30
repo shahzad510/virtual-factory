@@ -48,5 +48,19 @@ std::unique_ptr<EtherNetIpIndustrialAdapter> AdapterFactory::createEtherNetIp(
       std::move(id), std::move(config));
 }
 
+std::unique_ptr<ProfinetIndustrialAdapter> AdapterFactory::createProfinet(
+    std::string id, ProfinetIndustrialAdapter::AdapterConfig config)
+{
+  return std::make_unique<ProfinetIndustrialAdapter>(
+      std::move(id), std::move(config));
+}
+
+std::unique_ptr<ProfibusIndustrialAdapter> AdapterFactory::createProfibus(
+    std::string id, ProfibusIndustrialAdapter::AdapterConfig config)
+{
+  return std::make_unique<ProfibusIndustrialAdapter>(
+      std::move(id), std::move(config));
+}
+
 }  // namespace icp
 }  // namespace virtual_factory

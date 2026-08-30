@@ -219,3 +219,12 @@ target_include_directories(icp_runtime_test PRIVATE tests)
 target_link_libraries(icp_runtime_test PRIVATE virtual_factory_icp)
 add_test(NAME icp_runtime_test COMMAND icp_runtime_test)
 set_tests_properties(icp_runtime_test PROPERTIES TIMEOUT 120)
+
+add_executable(native_fieldbus_scaffolding_test
+    tests/native_fieldbus_scaffolding_test.cc
+)
+target_link_libraries(native_fieldbus_scaffolding_test
+    PRIVATE virtual_factory_industrial virtual_factory_icp pthread)
+add_test(NAME native_fieldbus_scaffolding_test
+    COMMAND native_fieldbus_scaffolding_test)
+set_tests_properties(native_fieldbus_scaffolding_test PROPERTIES TIMEOUT 60)

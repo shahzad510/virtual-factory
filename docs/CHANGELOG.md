@@ -8,15 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES, or persistent config. `icp_runtime_test` + full suite **10/10 passed**. Phase 7 **NOT STARTED**. Native PROFINET **DEFERRED**.
+Native fieldbus Stage A scaffolding (2026-08-30): Hilscher-target `ProfinetIndustrialAdapter` and `ProfibusIndustrialAdapter` with private session stubs, CMake `FindHilscherCifX`, feature flags `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS` (default OFF). **No real cifX integration** — connect fails with **BLOCKED BY SDK/HARDWARE**. Gateway PROFINET/PROFIBUS unchanged. `native_fieldbus_scaffolding_test` + full suite **11/11 passed**. See `docs/hilscher-environment-audit.md`, `docs/native-fieldbus-implementation-status.md`.
+
+ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES, or persistent config. `icp_runtime_test` + full suite **10/10 passed**. Phase 7 **NOT STARTED**. Native PROFINET production **BLOCKED BY SDK/HARDWARE**.
 
 ### Added
 
-- `icp/` library and `tests/icp_runtime_test.cc`
+- `ProfinetIndustrialAdapter`, `ProfibusIndustrialAdapter` (scaffolding; SDK-absent stubs)
+- `industrial/src/hilscher/` private session layer; `industrial/cmake/FindHilscherCifX.cmake`
+- `AdapterFactory::createProfinet` / `createProfibus`
+- `tests/native_fieldbus_scaffolding_test.cc`
+- Evaluation docs: `profinet-native-evaluation.md`, `profinet-hilscher-evaluation.md`, `profinet-hilscher-final-gate.md`, `profinet-native-implementation-plan.md`, `profibus-native-evaluation.md`
+- `docs/hilscher-environment-audit.md`, `docs/native-fieldbus-implementation-status.md`
+- `icp/` library and `tests/icp_runtime_test.cc` (prior increment)
 
 ### Changed
 
-- Root CMakeLists; roadmap / implementation-status / icp-product-architecture / architecture / CHANGELOG
+- Root CMakeLists; `industrial/CMakeLists.txt`; roadmap / implementation-status / architecture / CHANGELOG
 
 ---
 

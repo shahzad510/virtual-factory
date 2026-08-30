@@ -46,7 +46,7 @@ Legacy layer view (still valid inside ICP):
 
 ```text
 INDUSTRIAL ADAPTERS          (protocol-oriented)
-  mock | OPC UA | Modbus | REST | MQTT | EtherNet/IP | PROFINET (gateway)
+  mock | OPC UA | Modbus | REST | MQTT | EtherNet/IP | PROFINET (gateway + native scaffolding) | PROFIBUS (gateway + native scaffolding)
         ▼
 NORMALIZED EQUIPMENT MODEL
 ```
