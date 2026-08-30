@@ -924,3 +924,33 @@ See `docs/connectivity-integration-contract.md`. **PLANNED. NOT IMPLEMENTED.**
 
 **Alternatives:** MES reads fieldbuses directly (rejected); monolith with ICP (rejected: ADR-042).
 
+---
+
+## ADR-046 — PROFIBUS gateway **supported**; native DP Master **approved for ICP** (pending implementation gate)
+
+- **Status:** Accepted (evaluation 2026-08-30)
+- **Date:** 2026-08-30
+- **Detail:** [`docs/profibus-native-evaluation.md`](profibus-native-evaluation.md)
+
+**Context:** ICP roadmap omitted PROFIBUS as a first-class capability. PROFIBUS DP is **not** PROFINET with different firmware — RS-485 serial bus, GSD configuration, DP Master Class 1 cyclic polling, and strict timing differ materially from Ethernet-based PROFINET IO-Controller operation.
+
+**Decision:**
+
+1. **Gateway path — SUPPORTED:** PROFIBUS field devices reached via industrial gateway → OPC UA / Modbus / MQTT / REST → existing `IndustrialAdapter` → `GenericEquipment` → CIC. Same product pattern as PROFINET gateway (ADR-040).
+
+2. **Native path — APPROVED FOR IMPLEMENTATION (ICP only, not MES):** **PROFIBUS DP Master Class 1** behind future `ProfibusIndustrialAdapter` + private `profibus_session`. **Not implemented** until explicit implementation-slice approval after evaluation + hardware smoke test.
+
+3. **Primary native stack (evaluation):** **Hilscher cifX** — **CIFX 50E-DP** (part **1251.410**, RS-485) + **CIFXDPM.NXF** firmware + **NXLIC-MASTER 8211.000** + **NXDRV-WIN/LINUX** + **cifX API** + **SYCON.net / Communication Studio** (GSD). **Alternate:** Softing PBpro + PROFIBUS API.
+
+4. **Hilscher platform alignment with native PROFINET:** Same **product family** (cifX, netX, driver, license model, API, config tools) but **different physical SKU** from PROFINET (**CIFX 50E-RE** is Ethernet-only). Simultaneous native PN + PB on one ICP host: **CIFX 50E-RE + CIFX 50E-DP** (two cards/adapters) — **not** one RE card for both.
+
+5. **Software-only PROFIBUS Master on standard NIC:** **Rejected** for commercial ICP v1 (RS-485 + timing required).
+
+6. **Implementation gate:** No `ProfibusIndustrialAdapter`, CMake, or protected header changes until user approves implementation after this evaluation.
+
+**Topology:** One `ProfibusIndustrialAdapter` = one **DP Master** → many **DP Slaves** (≠ one adapter per slave).
+
+**Consequences:** ICP Standard SKU may ship gateway-only PROFIBUS. ICP Industrial SKU may add native PB with Hilscher DP hardware. MES never embeds PROFIBUS.
+
+**Alternatives:** Fake TCP/UDP PROFIBUS (rejected); profirust/OSS master as v1 product stack (rejected); gateway-only forever (rejected for Industrial SKU); reuse CIFX 50E-RE for PROFIBUS (rejected — wrong PHY).
+
