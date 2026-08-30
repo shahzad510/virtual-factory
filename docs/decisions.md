@@ -836,8 +836,23 @@ Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/pri
 
 - `ProfinetIndustrialAdapter` **scaffolding IMPLEMENTED** with private `profinet_session` stub; **no production cyclic IO** until cifX smoke test.
 - `VF_ENABLE_HILSCHER_PROFINET` / `VF_HILSCHER_CIFX_AVAILABLE` CMake flags; default OFF when SDK absent.
-- Status: **PARTIALLY IMPLEMENTED** / **BLOCKED BY SDK/HARDWARE** — not **TESTED** for plant connectivity.
-- See [`native-fieldbus-implementation-status.md`](../native-fieldbus-implementation-status.md), [`hilscher-environment-audit.md`](../hilscher-environment-audit.md).
+- Status: **PARTIALLY IMPLEMENTED** / **BLOCKED BY SDK/HARDWARE** on master (stubs).
+- See [`native-fieldbus-implementation-status.md`](native-fieldbus-implementation-status.md), [`hilscher-environment-audit.md`](hilscher-environment-audit.md).
+
+### Amendment 2026-08-30 — Isolated native software boundary (Hilscher track)
+
+- Isolated branch `cursor/icp-hilscher-native-development-a88d` (not merged to master).
+- Private `cifx_runtime` uses official cifX host APIs only. Native PROFINET: **IMPLEMENTED TO SOFTWARE BOUNDARY**. **HARDWARE VALIDATION PENDING**.
+- DCP/AR/RT1 remain firmware/Protocol API — not invented. Gateway remains **SUPPORTED**.
+- See [`native-fieldbus-implementation-status.md`](native-fieldbus-implementation-status.md), [`hilscher-sdk-license.md`](hilscher-sdk-license.md), [`hilscher-hardware-smoke-test.md`](hilscher-hardware-smoke-test.md).
+
+### Amendment 2026-08-30 — Hilscher is the primary native path; Softing is a future alternative
+
+- Softing investigation **COMPLETE**. Softing is **not implemented**.
+- **Primary native implementation:** Hilscher cifX (this isolated branch).
+- Softing may be reconsidered later if OEM availability, Windows 10/11, Ubuntu 24.04, RT quality, redistribution terms, and a current SDK are confirmed.
+- Architecture remains vendor-swappable below `IndustrialAdapter` / GenericEquipment.
+- **Do not merge this branch to master** until explicit approval.
 
 ---
 
@@ -863,7 +878,7 @@ Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/pri
 | Path | Status |
 | --- | --- |
 | **Gateway integration** | **APPROVED and SUPPORTED** — same pattern as PROFINET gateway (ADR-040) |
-| **Native DP Master** | **APPROVED FOR IMPLEMENTATION** — Hilscher cifX primary; Softing PBpro alternate if procurement fails |
+| **Native DP Master** | **APPROVED FOR IMPLEMENTATION** — Hilscher cifX primary; Softing PBpro is a **future alternative** (not implemented) |
 | **Fake serial/TCP PROFIBUS** | **Rejected** |
 
 ### Simultaneous PROFINET + PROFIBUS
@@ -872,9 +887,18 @@ One ICP host may run **CIFX 50E-RE** (PROFINET) and **CIFX 50E-DP** (PROFIBUS) s
 
 ### Stage A scaffolding (2026-08-30)
 
-- `ProfibusIndustrialAdapter` + private `profibus_session` stub compile without SDK.
-- Production cyclic IO **BLOCKED BY SDK/HARDWARE**.
+- `ProfibusIndustrialAdapter` + private `profibus_session` stub compile without SDK (on master).
+- Production cyclic IO **HARDWARE VALIDATION PENDING**.
+
+### Isolated branch software boundary (2026-08-30)
+
+- `cursor/icp-hilscher-native-development-a88d`: real cifX host API for DP Master lifecycle + process-image mapping.
+- Native PROFIBUS: **IMPLEMENTED TO SOFTWARE BOUNDARY**. DCP-equivalent DP mailbox commands are **not invented**.
 - Gateway path unchanged.
+
+### Amendment 2026-08-30 — Softing not implemented
+
+- Softing PBpro remains documented as a future alternative. No Softing dependencies on this branch.
 
 **Consequences:** ICP Industrial SKU can add native PB without MES changes. ICP Standard remains gateway-only.
 
@@ -964,7 +988,7 @@ See `docs/connectivity-integration-contract.md`. **PLANNED. NOT IMPLEMENTED.**
 
 **Context:** ICP must be commercially complete without MES. Visual industrial topology configuration is primary product value.
 
-**Decision:** **ICP Designer** is a **major ICP component**. UX: **DRAG → DROP → CONFIGURE → CONNECT → DEPLOY**. Configures sources, equipment, gateways (incl. PROFINET-via-gateway), and northbound CIC targets (MES, SCADA, ERP). Separate from MES GUI. **PLANNED** — slice **ICP-1F**. See `docs/icp-product-architecture.md`.
+**Decision:** **ICP Designer** is a **major ICP component**. UX: **DRAG → DROP → CONFIGURE → CONNECT → DEPLOY**. Configures sources, equipment, gateways (incl. PROFINET-via-gateway), and northbound CIC targets (MES, SCADA, ERP). Separate from MES GUI. **PLANNED** — slice **ICP-1F**. Configuration **backend** for that GUI is ICP-1B (`docs/icp-configuration.md`). See `docs/icp-product-architecture.md`.
 
 **Alternatives:** YAML-only (insufficient for commercial ICP); merged with MES GUI (rejected).
 
@@ -980,4 +1004,18 @@ See `docs/connectivity-integration-contract.md`. **PLANNED. NOT IMPLEMENTED.**
 **Decision:** MES Core owns MES domain + **MES GUI** + MES API. Industrial data via **CIC** only (`IIndustrialDataProvider`). Official **Phase 7** = MES Core. **NOT IMPLEMENTED.** See `docs/mes-core-product-architecture.md`.
 
 **Alternatives:** MES reads fieldbuses directly (rejected); monolith with ICP (rejected: ADR-042).
+
+---
+
+## ADR-047 — ICP configuration is versioned JSON behind a replaceable repository
+
+- **Status:** Accepted
+- **Date:** 2026-08-30
+
+**Context:** ICP-1A configuration was in-memory only. ICP Designer (ICP-1F) needs a durable, human-readable configuration API. A database is not required at this stage.
+
+**Decision:** Persist ICP adapter/equipment configuration as a versioned JSON document (`schema=virtual-factory.icp.config`, `version=1`) via `ConfigurationRepository`. Default backend: `JsonFileConfigurationRepository` (atomic temp+rename). No MES types. Credential **references** only (`env:`, `file:`, `secret:`) — not a secret-management product. Native PROFINET/PROFIBUS appear as configuration fields only; parsing does not require Hilscher. See `docs/icp-configuration.md`.
+
+**Alternatives:** SQLite (rejected until a requirement is demonstrated); YAML (JSON already used in industrial adapters); embedding secrets in the file (rejected).
+
 

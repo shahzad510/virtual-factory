@@ -12,7 +12,7 @@
 
 MES + SCADA + **modular manufacturing platform** (ICP + MES Core). Gazebo Sim 8 is a **simulation plant** used to develop and test the normalized equipment model.
 
-**Products (ADR-042):** **Industrial Connectivity Platform (ICP)** and **MES Core** — independently sellable; integrate via **CIC** (ADR-043). **Neither product started** beyond Phase 6 ICP adapter foundation.
+**Products (ADR-042):** **Industrial Connectivity Platform (ICP)** and **MES Core** — independently sellable; integrate via **CIC** (ADR-043). **ICP-1A IMPLEMENTED / TESTED.** **ICP-1B IMPLEMENTED / TESTED.** **ICP standalone GUI / Application API IMPLEMENTED / TESTED** (isolated branch). **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** **MES NOT STARTED.**
 
 Gazebo is not MES. `ConveyorSystem` is not SCADA. The mock adapter is not a production protocol.
 
@@ -22,11 +22,11 @@ Gazebo is not MES. `ConveyorSystem` is not SCADA. The mock adapter is not a prod
 
 | Item | Value |
 | --- | --- |
-| Branch | `cursor/icp-native-fieldbus-hilscher-a88d` (implementation); `master` @ `0dffad9` base |
+| Branch | `cursor/icp-standalone-gui-a88d` (isolated; from Hilscher tip). `master` @ `d3e557b` must stay untouched. |
 | HEAD commit | see `git log -1` on active branch |
 | Working tree | Use `git status`. |
 | Remote | `origin/master` |
-| Audit date | 2026-08-30 (native fieldbus Stage A) |
+| Audit date | 2026-08-30 (standalone ICP GUI + Application API on isolated branch) |
 
 Use `git status` and `git log -1` when resuming; this file is not a substitute for Git.
 
@@ -36,7 +36,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 
 **Phase 6 — Industrial Adapter Layer — COMPLETE** (final audit 2026-08-28)
 
-**ICP product:** **ICP-1A IMPLEMENTED / TESTED**. ICP-1B–1F **NOT STARTED**.
+**ICP product:** **ICP-1A IMPLEMENTED / TESTED**. **ICP-1B IMPLEMENTED / TESTED**. **ICP standalone GUI / Application API IMPLEMENTED / TESTED** (isolated branch; see `docs/icp-gui-architecture.md`). **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.**
 
 **Phase 7 MES Core:** **NOT STARTED**.
 
@@ -49,10 +49,12 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6E** REST industrial gateway adapter (`RestIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** MQTT industrial adapter (`MqttIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; see `docs/mqtt-scalability-test.md`) |
 | **6G** EtherNet/IP industrial adapter (`EtherNetIpIndustrialAdapter`) | **COMPLETE** / **TESTED** (libplctag explicit messaging; local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |
-| **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native IO-Controller scaffolding **PARTIALLY IMPLEMENTED** — **BLOCKED BY SDK/HARDWARE**. See `docs/profinet-gateway-integration.md`, `docs/native-fieldbus-implementation-status.md` |
-| **6I** PROFIBUS (native) | Gateway **SUPPORTED** (ADR-046). Native DP Master scaffolding **PARTIALLY IMPLEMENTED** — **BLOCKED BY SDK/HARDWARE**. See `docs/profibus-native-evaluation.md` |
+| **6H** PROFINET | **SUPPORTED VIA GATEWAY** (ADR-040). Native IO-Controller **IMPLEMENTED TO SOFTWARE BOUNDARY** on isolated Hilscher branch — **HARDWARE VALIDATION PENDING**. See `docs/native-fieldbus-implementation-status.md` |
+| **6I** PROFIBUS (native) | Gateway **SUPPORTED** (ADR-046). Native DP Master **IMPLEMENTED TO SOFTWARE BOUNDARY** on isolated Hilscher branch — **HARDWARE VALIDATION PENDING**. |
 | **ICP-1A** AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** (`icp/`, `icp_runtime_test`) |
-| **Native fieldbus (Hilscher)** Stage A | **IMPLEMENTED** / **TESTED** (stub backends; `native_fieldbus_scaffolding_test`). **TESTED** here means scaffolding construction, integration, and honest SDK/hardware-blocked failure handling only — **not** native PROFINET/PROFIBUS connectivity, Hilscher hardware, cyclic IO, or DP Master operation. Stage B/C **BLOCKED BY SDK/HARDWARE** |
+| **ICP-1B** Persistent configuration | **IMPLEMENTED** / **TESTED** (`icp/config/`, `icp_configuration_test`) on this isolated branch. **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** |
+| **ICP GUI** | **IMPLEMENTED** / **TESTED** — standalone browser GUI + `/api/v1` Application API (`icp_server`, `icp/gui/`, `icp_application_api_test`). No MES/CIC dependency. Designer nav disabled. |
+| **Native fieldbus (Hilscher)** | **SOFTWARE-INTEGRATION** on Hilscher line; GUI branch continues from that tip. Stage A remains on `master`. **Not** a REAL PROFINET/PROFIBUS or hardware validation. |
 
 ---
 
@@ -101,8 +103,8 @@ Implemented:
 - Multiple EtherNet/IP devices via **multiple adapter instances** (one device/session per instance); several logical machines on one device via mappings
 - libplctag `ab_server` ControlLogix emulator fixture and unit test `eip_adapter_test` (connect/poll/commands, multi-equipment, isolation, timeout/refused/invalid tag, Faulted vs `Equipment::fault()`, explicit reconnect, two devices). **DEVELOPMENT/INTEGRATION VALIDATION ONLY** — not Allen-Bradley/Rockwell hardware certification. Two-device isolation **VALIDATED** under those test conditions — **not** production capacity
 
-- **PROFINET (6H):** supported via industrial gateway → OPC UA / Modbus / REST / MQTT (ADR-040, `docs/profinet-gateway-integration.md`). Native `ProfinetIndustrialAdapter` **scaffolding only** — connect/cyclic IO **BLOCKED BY SDK/HARDWARE** (`docs/hilscher-environment-audit.md`).
-- **PROFIBUS:** gateway path **supported** (ADR-046). Native `ProfibusIndustrialAdapter` **scaffolding only** — **BLOCKED BY SDK/HARDWARE**.
+- **PROFINET (6H):** supported via industrial gateway → OPC UA / Modbus / REST / MQTT (ADR-040, `docs/profinet-gateway-integration.md`). Native `ProfinetIndustrialAdapter` **IMPLEMENTED TO SOFTWARE BOUNDARY** on this isolated branch — **HARDWARE VALIDATION PENDING**. On `master`: Stage A scaffolding only.
+- **PROFIBUS:** gateway path **supported** (ADR-046). Native `ProfibusIndustrialAdapter` **IMPLEMENTED TO SOFTWARE BOUNDARY** on this isolated branch — **HARDWARE VALIDATION PENDING**. On `master`: Stage A scaffolding only.
 
 Not implemented in adapters: real Hilscher cyclic PROFINET/PROFIBUS IO; Class 1 implicit/cyclic EtherNet/IP I/O; Sparkplug B; MQTT 5 architecture; MQTT wildcards; REST DELETE; Modbus RTU/TLS/batch writes; production OPC UA SignAndEncrypt / certificates; subscriptions/history/alarms.
 
@@ -128,8 +130,8 @@ industrial/
     RestIndustrialAdapter.hh            mapping config + REST gateway adapter
     MqttIndustrialAdapter.hh            mapping config + MQTT broker adapter
     EtherNetIpIndustrialAdapter.hh      mapping config + EtherNet/IP adapter
-    ProfinetIndustrialAdapter.hh        native PN scaffolding (Hilscher target)
-    ProfibusIndustrialAdapter.hh        native PB scaffolding (Hilscher target)
+    ProfinetIndustrialAdapter.hh        native PN (software boundary; hardware pending)
+    ProfibusIndustrialAdapter.hh        native PB (software boundary; hardware pending)
   src/MockIndustrialAdapter.cc
   src/OpcUaIndustrialAdapter.cc
   src/ModbusIndustrialAdapter.cc
@@ -142,10 +144,15 @@ industrial/
   src/eip_session.hh/.cc                private libplctag session wrapper
   src/ProfinetIndustrialAdapter.cc
   src/ProfibusIndustrialAdapter.cc
-  src/hilscher/                         private Hilscher session stubs (no public vendor types)
+  src/hilscher/                         private cifX runtime + sessions (no public vendor types)
   cmake/FindHilscherCifX.cmake          optional SDK detection; flags default OFF
 icp/
-  include/virtual_factory/icp/AdapterFactory.hh   + createProfinet/createProfibus
+  include/virtual_factory/icp/AdapterFactory.hh   + createProfinet/createProfibus + FromRecord
+  include/virtual_factory/icp/config/            ICP-1B configuration API + NativeFieldbusConfigMapper
+  src/config/ConfigurationValidator.cc
+  src/config/JsonFileConfigurationRepository.cc
+  src/config/ConfigurationCatalog.cc
+  src/config/NativeFieldbusConfigMapper.cc
   src/AdapterFactory.cc
 gazebo/
   worlds/phase1/factory.sdf
@@ -169,9 +176,21 @@ tests/mqtt_test_broker.hh/.cc           TEST ONLY: Mosquitto process, localhost
 tests/mqtt_multi_equipment_scalability_test.cc  VALIDATION ONLY; not a production component
 tests/eip_adapter_test.cc
 tests/eip_test_server.hh/.cc            TEST ONLY: libplctag ab_server, localhost
-tests/native_fieldbus_scaffolding_test.cc  Stage A: blocked connect, dual adapter manager
-docs/hilscher-environment-audit.md    SDK/hardware audit (2026-08-30)
-docs/native-fieldbus-implementation-status.md  Stage A/B/C status
+tests/native_fieldbus_scaffolding_test.cc  SOFTWARE-INTEGRATION: construction, blocked connect
+tests/process_image_codec_test.cc          SOFTWARE-INTEGRATION: process-image codec/mapping
+tests/native_fieldbus_software_integration_test.cc  SOFTWARE-INTEGRATION: factory/manager/cache/config
+tests/hilscher_hardware_readiness_test.cc           SOFTWARE-INTEGRATION: readiness + harness plans + examples
+tests/icp_configuration_test.cc             ICP-1B persist/validate (not native IO)
+docs/icp-configuration.md               ICP-1B format, validation, secrets boundary
+icp/examples/native-fieldbus/           Placeholder ICP-1B PN/PB topologies
+docs/hilscher-environment-audit.md    SDK/hardware audit
+docs/native-fieldbus-implementation-status.md  software boundary vs hardware pending
+docs/hilscher-sdk-license.md           runtime/license boundary
+docs/hilscher-hardware-smoke-test.md  hardware validation plan (not run)
+docs/hilscher-hardware-validation-procedure.md  step-by-step when cards arrive
+docs/hilscher-platform-and-docker.md  OS/Docker honesty
+docs/hilscher-test-peer-options.md    legitimate test peers (research)
+docs/templates/hilscher-hardware-test-report.md  report template
 ```
 
 ### Simulation (Gazebo)
@@ -208,13 +227,23 @@ Gazebo plugin does **not** link `virtual_factory_industrial`, open62541, libmodb
 - `virtual_factory::icp::LiveStateCache` — latest-value snapshots with `observedAtUtc` on **cache DTOs only**
 - `virtual_factory::icp::AdapterFactory` — in-memory create helpers for Phase 6 adapters
 - Library: `virtual_factory_icp` under `icp/`
-- Does **not** depend on MES. Does **not** implement CIC, Designer, or persistent config.
+- Does **not** depend on MES. Does **not** implement CIC or Designer.
+
+### ICP configuration (ICP-1B)
+
+- `virtual_factory::icp::ConfigurationCatalog` — in-memory create/modify/remove/enumerate/validate/save/load
+- `ConfigurationValidator` — duplicate IDs, protocol, connection, mappings, versions
+- `JsonFileConfigurationRepository` — versioned JSON, atomic save, corrupt detection
+- Protocols represented: mock, opcua, modbus, mqtt, rest, ethernetip, profinet, profibus
+- Secrets: credential **references** only (ADR-047)
+- Does **not** require Hilscher to load a file
+- Does **not** connect adapters or implement CIC/Designer/MES
 
 ---
 
 ## 7. Build status
 
-Last verified 2026-08-29 (ICP-1A).
+Last verified 2026-08-30 (ICP-1B).
 
 ```bash
 cmake -S . -B build -DCMAKE_CXX_COMPILER=g++
@@ -250,9 +279,10 @@ ctest --test-dir build --output-on-failure
 | `mqtt_multi_equipment_scalability_test` | **VALIDATED** (2026-08-29). See `docs/mqtt-scalability-test.md`. **Not** production capacity |
 | `eip_adapter_test` | **PASSED** (2026-08-29). Local `ab_server`; **not** hardware certification |
 | `icp_runtime_test` | **PASSED** (2026-08-29). Multi-adapter manager, scheduler, cache, fault isolation, collisions |
-| `native_fieldbus_scaffolding_test` | **PASSED** (2026-08-30). Stage-A scaffolding: adapter construction, configuration, `AdapterManager` integration, honest SDK/hardware-blocked `connect()` → `Faulted`. **Not** real PROFINET or PROFIBUS communication; **not** Hilscher hardware validation |
+| `native_fieldbus_scaffolding_test` | **PASSED** on SDK-absent CI (2026-08-30 master). On this ICP-1B host the same test **FAILED** because `.deps/libcifx` is present (`hilscherSdkPresent()` is true). ICP-1B did **not** modify this test or native IO. **Not** plant communication. |
+| `icp_configuration_test` | **PASSED** (2026-08-30). Create/save/load/round-trip, validation, malformed/unsupported version, migration identity, all protocols including PN/PB **model**, persistence across restart, atomic-save failure. **Not** native fieldbus communication |
 
-Full suite: **11/11 passed**. Gateway-backed PROFINET path validated by existing multi-equipment adapter tests. No native `profinet_adapter_test` or `profibus_adapter_test`. **Native PROFINET/PROFIBUS fieldbus and gateway PROFINET hardware not tested in CI.**
+Full suite this host: **11/12 passed**, 1 environment-dependent fieldbus scaffolding assertion (`native_fieldbus_scaffolding_test`) when cifX is installed. ICP tests: `icp_runtime_test` and `icp_configuration_test` **PASSED**. Gateway-backed PROFINET path validated by existing multi-equipment adapter tests. No native `profinet_adapter_test` or `profibus_adapter_test`. **Native PROFINET/PROFIBUS fieldbus and gateway PROFINET hardware not tested in CI.**
 
 ---
 
@@ -304,7 +334,8 @@ Label: **NOT IMPLEMENTED** / **PLANNED**.
 - REST DELETE, background reconnect, production vendor HTTPS certification
 - Modbus RTU, TLS, FC 15/16 batch writes, background reconnect
 - OPC UA SignAndEncrypt, certificates, subscriptions, history, alarms/conditions
-- MES Core product (Phase 7), ICP-1B–1F (persistent config, CIC API, events, package, Designer)
+- MES Core product (Phase 7) — **NOT STARTED**
+- ICP-1C CIC v1, ICP-1D events, ICP-1E package, **ICP Designer (ICP-1F)** — **NOT STARTED**
 - SCADA / HMI
 - Application API
 - Database
@@ -320,10 +351,10 @@ Label: **NOT IMPLEMENTED** / **PLANNED**.
 
 ## 12. Next phase
 
-**ICP product:** **ICP-1A COMPLETE**. Next approved slice among ICP-1B–1F only when instructed.
+**ICP product:** **ICP-1B COMPLETE**. Next approved slice: **ICP-1C (CIC v1)** only when instructed. **Do not start ICP Designer, MES, or additional fieldbus work.**
 
 **Phase 7 — MES Core (Product 2):** **NOT IMPLEMENTED / NOT STARTED** (ADR-045).
 
 Intended MES scope (all **PLANNED**, none in code): configurable plant hierarchy; equipment assignment via CIC; production orders; Resource Management; readiness; scheduling; materials; scrap; quality; genealogy; downtime; OEE; analytics. See `architecture.md` §10, SoT, ADR-024 and ADR-027–035, `docs/mes-core-product-architecture.md`.
 
-Do not put scheduling logic in `Equipment`, `IndustrialAdapter`, or ICP adapters. Do not start Phase 7 or ICP-1B+ until explicitly instructed.
+Do not put scheduling logic in `Equipment`, `IndustrialAdapter`, or ICP adapters. Do not start Phase 7, ICP-1C, or ICP Designer until explicitly instructed.

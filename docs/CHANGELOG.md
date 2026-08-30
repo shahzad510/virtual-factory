@@ -8,23 +8,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Native fieldbus Stage A scaffolding (2026-08-30): Hilscher-target `ProfinetIndustrialAdapter` and `ProfibusIndustrialAdapter` with private session stubs, CMake `FindHilscherCifX`, feature flags `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS` (default OFF). **No real cifX integration** — connect fails with **BLOCKED BY SDK/HARDWARE**. Gateway PROFINET/PROFIBUS unchanged. `native_fieldbus_scaffolding_test` + full suite **11/11 passed**. See `docs/hilscher-environment-audit.md`, `docs/native-fieldbus-implementation-status.md`.
+Standalone ICP GUI / Application API (2026-08-30, isolated branch `cursor/icp-standalone-gui-a88d`): browser SPA (`icp/gui`) + C++ `/api/v1` (`ApplicationService`, `HttpApiServer`, `icp_server`) on ICP Core. Mock E2E configure/connect/equipment/live data/persist. PROFINET/PROFIBUS configure/validate/save without hardware; connect reports Hilscher hardware not detected. No MES/CIC. Hilscher remains optional. **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** **Do not merge to master.**
 
-ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES, or persistent config. `icp_runtime_test` + full suite **10/10 passed**. Phase 7 **NOT STARTED**. Native PROFINET production **BLOCKED BY SDK/HARDWARE**.
+Native Hilscher hardware readiness (2026-08-30, isolated branch): cifX discovery enrichment (serial/firmware/IO/host-bus), `HilscherHardwareReadiness` preflight, PN/PB hardware test plans with honest `BLOCKED_PROTOCOL_API` boundaries, ICP-1B example configs, platform/Docker/test-peer docs, hardware procedure + report template. **Still HARDWARE VALIDATION PENDING.** Softing not implemented. **Do not merge to master.**
+
+Native Hilscher software boundary (2026-08-30, **isolated branch** `cursor/icp-hilscher-native-development-a88d`): real libcifx host API (`cifx_runtime`), process-image mapping, optional flags default OFF. Native PROFINET/PROFIBUS **IMPLEMENTED TO SOFTWARE BOUNDARY**. **HARDWARE VALIDATION PENDING**. Gateway unchanged. ICP-1B catalog merged onto this branch only (not master). Softing remains a documented future alternative — **not implemented**. **Do not merge to master** until explicit approval.
+
+ICP-1B persistent configuration (2026-08-30): versioned JSON configuration subsystem (`ConfigurationCatalog`, `ConfigurationValidator`, `JsonFileConfigurationRepository`). Create/modify/remove/validate/save/load/enumerate adapters and equipment mappings. No database. Credential references only. **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** **MES NOT STARTED.** ADR-047. See `docs/icp-configuration.md`.
+
+Native fieldbus Stage A scaffolding (2026-08-30): Hilscher-target `ProfinetIndustrialAdapter` and `ProfibusIndustrialAdapter` with private session stubs, CMake `FindHilscherCifX`, feature flags `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS` (default OFF). **On master:** no real cifX integration — connect fails with **BLOCKED BY SDK/HARDWARE**. Gateway PROFINET/PROFIBUS unchanged.
+
+ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, PollScheduler, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES. Persistent config is ICP-1B. Phase 7 **NOT STARTED**.
 
 ### Added
 
-- `ProfinetIndustrialAdapter`, `ProfibusIndustrialAdapter` (scaffolding; SDK-absent stubs)
-- `industrial/src/hilscher/` private session layer; `industrial/cmake/FindHilscherCifX.cmake`
+- Standalone ICP GUI (`icp/gui`) and Application API (`/api/v1`, `icp_server`)
+- `tests/icp_application_api_test.cc` (Mock E2E + PN/PB configure-without-hardware)
+- `docs/icp-gui-architecture.md`
+- `third_party/cpp-httplib` (MIT) for HTTP API hosting
+- Isolated-branch SOFTWARE-INTEGRATION tests: `process_image_codec_test`, `native_fieldbus_software_integration_test`, `hilscher_hardware_readiness_test`
+- ICP-1B catalog → native AdapterConfig mapper (`NativeFieldbusConfigMapper`)
+- ICP-1B example configs under `icp/examples/native-fieldbus/`
+- Hardware readiness / procedure docs: `hilscher-hardware-validation-procedure.md`, `hilscher-platform-and-docker.md`, `hilscher-test-peer-options.md`, `templates/hilscher-hardware-test-report.md`
+- `docs/hilscher-sdk-license.md`, `docs/hilscher-hardware-smoke-test.md`
+- ICP-1B configuration API under `icp/include/virtual_factory/icp/config/`
+- `tests/icp_configuration_test.cc`
+- `docs/icp-configuration.md`, ADR-047
+- Stage A (master): `ProfinetIndustrialAdapter`, `ProfibusIndustrialAdapter` scaffolding; `FindHilscherCifX.cmake`
 - `AdapterFactory::createProfinet` / `createProfibus`
-- `tests/native_fieldbus_scaffolding_test.cc`
 - Evaluation docs: `profinet-native-evaluation.md`, `profinet-hilscher-evaluation.md`, `profinet-hilscher-final-gate.md`, `profinet-native-implementation-plan.md`, `profibus-native-evaluation.md`
-- `docs/hilscher-environment-audit.md`, `docs/native-fieldbus-implementation-status.md`
-- `icp/` library and `tests/icp_runtime_test.cc` (prior increment)
 
 ### Changed
 
-- Root CMakeLists; `industrial/CMakeLists.txt`; roadmap / implementation-status / architecture / CHANGELOG
+- Root `CMakeLists.txt` and `icp/CMakeLists.txt` for ICP-1B sources and `icp_configuration_test`
+- ICP product architecture, implementation-status, roadmap, architecture, docs index
 
 ---
 
