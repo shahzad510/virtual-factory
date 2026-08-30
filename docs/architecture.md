@@ -46,7 +46,7 @@ Legacy layer view (still valid inside ICP):
 
 ```text
 INDUSTRIAL ADAPTERS          (protocol-oriented)
-  mock | OPC UA | Modbus | REST | MQTT | EtherNet/IP | PROFINET (gateway)
+  mock | OPC UA | Modbus | REST | MQTT | EtherNet/IP | PROFINET (gateway | native pending)
         ▼
 NORMALIZED EQUIPMENT MODEL
 ```
@@ -134,7 +134,7 @@ Production Modbus TCP adapter: **IMPLEMENTED** (libmodbus client + register mapp
 Production REST industrial gateway adapter: **IMPLEMENTED** (libcurl client + JSON mapping; ADR-037). Local HTTP fixture tests are development/integration validation, **not** vendor API certification.
 MQTT adapter: **IMPLEMENTED** / **TESTED** (Paho MQTT C client, one broker per instance; ADR-038). Local Mosquitto tests are development/integration validation, **not** cloud/vendor certification.
 EtherNet/IP adapter: **IMPLEMENTED** / **TESTED** (libplctag 2.7.1 explicit CIP tag messaging; ADR-039). Class 1 implicit/cyclic I/O **NOT IMPLEMENTED**. Local `ab_server` tests are development/integration validation, **not** Allen-Bradley/Rockwell hardware certification.
-PROFINET (6H): **SUPPORTED VIA GATEWAY** (ADR-040, [`profinet-gateway-integration.md`](profinet-gateway-integration.md)). Native IO-Controller **DEFERRED**. A TCP mock is not PROFINET.
+PROFINET (6H): **SUPPORTED VIA GATEWAY** (ADR-040, [`profinet-gateway-integration.md`](profinet-gateway-integration.md)). Native IO-Controller **APPROVED FOR IMPLEMENTATION** pending Softing/Hilscher procurement ([`profinet-native-evaluation.md`](profinet-native-evaluation.md)) — **NOT IMPLEMENTED**. A TCP mock is not PROFINET.
 
 ---
 
@@ -170,7 +170,7 @@ IndustrialAdapter           IMPLEMENTED (contract)
   RestIndustrialAdapter     IMPLEMENTED (6E)
   MqttIndustrialAdapter     IMPLEMENTED (6F)
   EtherNetIpIndustrialAdapter IMPLEMENTED (6G)
-  (no native ProfinetIndustrialAdapter — 6H via gateway; ADR-040)
+  (native ProfinetIndustrialAdapter APPROVED pending stack — NOT IMPLEMENTED; gateway path remains)
 ```
 
 `IndustrialAdapter` (C++): `id()`, `protocol()`, `connectionState()`, `lastError()`, `connect()` / `disconnect()`, `equipment()` / `equipmentById()`, `poll()`.
@@ -379,30 +379,37 @@ Private `eip_session` wraps libplctag; public headers do not include `libplctag.
 
 Tests use libplctag **`ab_server`** ControlLogix emulator (`tests/eip_test_server.*`) — **DEVELOPMENT/INTEGRATION VALIDATION ONLY**, not Allen-Bradley/Rockwell hardware certification. Two-device isolation was **VALIDATED** under those test conditions (`eip_adapter_test`). That is correctness/isolation validation, **not** a claim of hundreds of production PLCs.
 
-### 4.6 PROFINET (6H) — **SUPPORTED VIA GATEWAY**; native IO-Controller **DEFERRED** (ADR-040)
+### 4.6 PROFINET (6H) — gateway **SUPPORTED**; native **APPROVED** pending stack (ADR-040)
 
-PROFINET IO is **not** OPC UA / Modbus / REST / MQTT / EtherNet/IP. Native integration requires an **IO-Controller** (Layer 2 cyclic IO, DCP, GSDML). **No OSS C/C++ IO-Controller** suitable for this repo was found (p-net is IO-Device/GPLv3 only).
+PROFINET IO is **not** OPC UA / Modbus / REST / MQTT / EtherNet/IP. Native integration requires an **IO-Controller** (Layer 2 cyclic IO, DCP, GSDML).
 
-**Final decision (ADR-040):** Phase 6 **6H is satisfied by supported gateway integration** — a **first-class**, **approved** path, not a workaround. PROFINET field equipment integrates via an **external industrial gateway** exposing **OPC UA, Modbus TCP, REST, or MQTT** to existing adapters (6B–6F). MES/SCADA still consume `GenericEquipment`; they never see PROFINET slots.
+**Gateway decision (2026-08-28, retained):** Phase 6 **6H is satisfied by supported gateway integration** — a **first-class**, **approved** path. PROFINET field equipment integrates via an **external industrial gateway** exposing **OPC UA, Modbus TCP, REST, or MQTT** to existing adapters (6B–6F). MES never sees PROFINET slots.
+
+**Native re-evaluation (2026-08-29):** For the **ICP** product (ADR-042), native IO-Controller is **APPROVED FOR IMPLEMENTATION** pending Softing (primary) or Hilscher (alternate) commercial procurement. Code **NOT IMPLEMENTED**. See [`profinet-native-evaluation.md`](profinet-native-evaluation.md). p-net remains IO-Device-only (rejected as controller). Fake TCP/UDP remains rejected.
 
 ```text
 PROFINET IO-Device(s)
         │
-Industrial gateway (out of repo)
-        │ OPC UA | Modbus | REST | MQTT
-        ▼
-Existing IndustrialAdapter (6B–6F)
-        ▼
-GenericEquipment
-        ▼
-MES (Phase 7+)
+   ┌────┴────────────────────────────┐
+   │                                 │
+Gateway (supported)          Native IO-Controller (ICP; future)
+   │  OPC UA|Modbus|REST|MQTT        │
+Existing adapters (6B–6F)    ProfinetIndustrialAdapter (not coded)
+   │                                 │
+   └────────────┬────────────────────┘
+                ▼
+        GenericEquipment → CIC → MES / SCADA / third parties
 ```
 
-**`ProfinetIndustrialAdapter` is NOT IMPLEMENTED** and is **deferred** unless a future ADR approves a commercial or PI Community Stack path.
+**Trade-offs vs native (gateway):** higher latency; gateway-dependent diagnostics; cyclic IO becomes polled gateway data. Still valid and supported.
 
-See [`profinet-gateway-integration.md`](profinet-gateway-integration.md) for configuration model, capability matrix, multi-PLC topology, and test evidence.
+**Capability honesty:** Gateway integration preserves MES-relevant mapped data only; native PN timing/diagnostics may not be preserved on the gateway path.
 
-**Trade-offs vs native:** higher latency; gateway-dependent diagnostics; cyclic IO becomes polled gateway data, not direct RT Class 1. **Acceptable for Phase 6** equipment abstraction goal.
+**Future 1,200-device benchmark:** Gateway “200 PROFINET” = **200 gateway-backed logical mappings**. Native scale = devices-per-controller + controllers-per-ICP — measure separately. Do not run the 1,200-device test in this evaluation.
+
+**`ProfinetIndustrialAdapter` is NOT IMPLEMENTED** until stack procurement + explicit coding approval (ADR-040 amendment).
+
+See [`profinet-gateway-integration.md`](profinet-gateway-integration.md) and [`profinet-native-evaluation.md`](profinet-native-evaluation.md).
 
 **Failure isolation:** One gateway/adapter failure must not fault unrelated gateways. Existing tests prove per-endpoint isolation (`opcua_adapter_test`, `modbus_adapter_test`, `rest_adapter_test`, `mqtt_adapter_test`, `eip_adapter_test`). Communication `Faulted` ≠ `Equipment::fault()`. See [`profinet-gateway-integration.md`](profinet-gateway-integration.md) §5.
 
@@ -710,7 +717,7 @@ Development Start/Stop at updates 1000/5000 is **not** SCADA (ADR-017).
 | 3 | Conveyor Control | **IMPLEMENTED** |
 | 4 | Product Motion | **IMPLEMENTED** |
 | 5 | Industrial Equipment Abstraction | **IMPLEMENTED** |
-| 6 | Industrial Adapter Layer | **COMPLETE** (6A–6G implemented/tested; 6H supported via gateway; native PN deferred) |
+| 6 | Industrial Adapter Layer | **COMPLETE** (6A–6G; 6H gateway; native PN approved pending stack — not coded) |
 | 7 | MES Core + Resource Management | **PLANNED / NOT IMPLEMENTED** |
 | 8 | SCADA / Operational HMI | **PLANNED / NOT IMPLEMENTED** |
 | 9 | Security & Authorization | **PLANNED / NOT IMPLEMENTED** |
