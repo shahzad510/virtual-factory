@@ -18,7 +18,14 @@
     adapterId: null,
     protocols: [],
     pollTimer: null,
+    _editingAdapter: null,
+    _cfgDraft: null,
+    _cfgEditorDirty: false,
+    _lastRefreshAt: null,
+    _renderGeneration: 0,
   };
+
+  let renderChain = Promise.resolve();
 
   function $(sel) {
     return document.querySelector(sel);
@@ -34,7 +41,19 @@
 
   function statusBadge(value) {
     const v = value || "UNKNOWN";
-    return `<span class="status ${esc(v)}">${esc(v)}</span>`;
+    return `<span class="status ${esc(v)}">${esc(v.replace(/_/g, " "))}</span>`;
+  }
+
+  function adapterConnectionBadge(adapter) {
+    const display =
+      adapter.connectionStateDisplay || adapter.connectionState || "UNKNOWN";
+    return statusBadge(display);
+  }
+
+  function equipmentCommBadge(equipment) {
+    const display =
+      equipment.communicationStateDisplay || equipment.communicationState || "UNKNOWN";
+    return statusBadge(display);
   }
 
   function flash(message, kind) {
@@ -59,6 +78,145 @@
         .join("") +
       `</ul>`
     );
+  }
+
+  function captureAdapterFormDraft() {
+    if (!state._editingAdapter) {
+      return;
+    }
+    const idEl = document.getElementById("f-id");
+    const protoEl = document.getElementById("f-protocol");
+    if (!idEl || !protoEl) {
+      return;
+    }
+    const draft = state._editingAdapter;
+    draft.adapterId = idEl.value.trim();
+    draft.protocol = protoEl.value;
+    draft.description = (document.getElementById("f-desc") || {}).value || "";
+    draft.enabled = (document.getElementById("f-enabled") || {}).value === "true";
+    draft.connection = draft.connection || {};
+    const hostOrEndpoint = (document.getElementById("f-host") || {}).value.trim();
+    const port = parseInt((document.getElementById("f-port") || {}).value, 10);
+    const station = (document.getElementById("f-station") || {}).value.trim();
+    const timeoutMs = parseInt((document.getElementById("f-timeout") || {}).value, 10);
+    const boardId = (document.getElementById("f-board") || {}).value.trim();
+    const channel = parseInt((document.getElementById("f-channel") || {}).value, 10);
+    const baudOrMaster = (document.getElementById("f-baud") || {}).value.trim();
+    const iface = (document.getElementById("f-iface") || {}).value.trim();
+    const protocol = draft.protocol;
+
+    if (protocol === "opcua") {
+      draft.connection.endpointUrl = hostOrEndpoint;
+    } else if (protocol === "rest") {
+      draft.connection.host = hostOrEndpoint;
+      draft.connection.scheme = draft.connection.scheme || "http";
+    } else if (hostOrEndpoint) {
+      draft.connection.host = hostOrEndpoint;
+    }
+    if (!Number.isNaN(port) && port > 0 && protocol !== "mock") {
+      draft.connection.port = port;
+    }
+    if (!Number.isNaN(timeoutMs) && timeoutMs > 0) {
+      draft.connection.timeoutMs = timeoutMs;
+    }
+    if (protocol === "mqtt" && station) {
+      draft.connection.clientId = station;
+    } else if (protocol === "ethernetip" && station) {
+      draft.connection.path = station;
+    } else if (protocol === "profinet") {
+      if (station) draft.connection.stationName = station;
+      if (boardId) draft.connection.boardId = boardId;
+      if (!Number.isNaN(channel)) draft.connection.channel = channel;
+      if (iface) draft.connection.interfaceName = iface;
+    } else if (protocol === "profibus") {
+      if (boardId) draft.connection.boardId = boardId;
+      if (!Number.isNaN(channel)) draft.connection.channel = channel;
+      if (baudOrMaster) {
+        const n = parseInt(baudOrMaster, 10);
+        if (!Number.isNaN(n)) {
+          if (n < 100) draft.connection.masterAddress = n;
+          else draft.connection.baudRateKbps = n;
+        }
+      }
+    }
+
+    const eqEl = document.getElementById("f-equipment");
+    if (eqEl) {
+      try {
+        draft.equipment = JSON.parse(eqEl.value || "[]");
+      } catch (_) {
+        /* keep prior equipment if JSON temporarily invalid */
+      }
+    }
+    const credEl = document.getElementById("f-creds");
+    if (credEl) {
+      try {
+        draft.credentials = JSON.parse(credEl.value || "{}");
+      } catch (_) {
+        /* keep prior credentials */
+      }
+    }
+    state._editingAdapter = draft;
+  }
+
+  function applyProtocolChange(newProtocol) {
+    captureAdapterFormDraft();
+    const prev = state._editingAdapter;
+    if (!prev || prev.protocol === newProtocol) {
+      return;
+    }
+    const kept = {
+      adapterId: prev.adapterId,
+      description: prev.description,
+      enabled: prev.enabled,
+      credentials: prev.credentials || {},
+      _edit: prev._edit,
+    };
+    const merged = defaultAdapter(newProtocol);
+    Object.assign(merged, kept);
+    state._editingAdapter = merged;
+  }
+
+  function captureConfigurationDraft() {
+    const editor = document.getElementById("cfg-editor");
+    if (editor && state._cfgEditorDirty) {
+      state._cfgDraft = editor.value;
+    }
+  }
+
+  function bindPostRenderHandlers() {
+    const protoEl = document.getElementById("f-protocol");
+    if (protoEl && !protoEl.dataset.bound) {
+      protoEl.dataset.bound = "1";
+      protoEl.addEventListener("change", async () => {
+        applyProtocolChange(protoEl.value);
+        await render({ skipDraftCapture: true });
+        flash("Protocol changed to " + protoEl.value, "ok");
+      });
+      ["f-id", "f-desc", "f-host", "f-port", "f-station", "f-timeout", "f-board",
+       "f-channel", "f-baud", "f-iface", "f-equipment", "f-creds"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && !el.dataset.bound) {
+          el.dataset.bound = "1";
+          el.addEventListener("input", () => captureAdapterFormDraft());
+          el.addEventListener("change", () => captureAdapterFormDraft());
+        }
+      });
+      const enabledEl = document.getElementById("f-enabled");
+      if (enabledEl && !enabledEl.dataset.bound) {
+        enabledEl.dataset.bound = "1";
+        enabledEl.addEventListener("change", () => captureAdapterFormDraft());
+      }
+    }
+
+    const cfgEditor = document.getElementById("cfg-editor");
+    if (cfgEditor && !cfgEditor.dataset.bound) {
+      cfgEditor.dataset.bound = "1";
+      cfgEditor.addEventListener("input", () => {
+        state._cfgEditorDirty = true;
+        state._cfgDraft = cfgEditor.value;
+      });
+    }
   }
 
   function defaultAdapter(protocol) {
@@ -322,7 +480,7 @@
     } else if (hostOrEndpoint) {
       adapter.connection.host = hostOrEndpoint;
     }
-    if (!Number.isNaN(port) && port > 0) adapter.connection.port = port;
+    if (!Number.isNaN(port) && port > 0 && protocol !== "mock") adapter.connection.port = port;
     if (!Number.isNaN(timeoutMs) && timeoutMs > 0) adapter.connection.timeoutMs = timeoutMs;
     if (protocol === "mqtt" && station) adapter.connection.clientId = station;
     if (protocol === "ethernetip" && station) adapter.connection.path = station;
@@ -379,7 +537,7 @@
           (a) => `<tr>
           <td><a href="#/adapters/${esc(a.adapterId)}">${esc(a.adapterId)}</a></td>
           <td>${esc(a.protocol)}</td>
-          <td>${statusBadge(a.connectionState)}</td>
+          <td>${adapterConnectionBadge(a)}</td>
           <td>${a.enabled ? "yes" : "no"}</td>
           <td>${esc(a.equipmentCount)}</td>
           <td class="mono">${esc(a.lastError || "")}</td>
@@ -422,21 +580,24 @@
               )}</td></tr>`
           )
           .join("") || `<tr><td colspan="3" class="muted">No telemetry from backend</td></tr>`;
-      const canCommand = e.communicationState === "CONNECTED" && !e.stale;
+      const canCommand =
+        (e.communicationState === "CONNECTED" ||
+          e.communicationStateDisplay === "SIMULATED_ACTIVE") &&
+        !e.stale;
       const cmdBar = canCommand
         ? `<div class="toolbar">
             <button data-action="eq-cmd" data-id="${esc(e.equipmentId)}" data-cmd="start">Start</button>
             <button data-action="eq-cmd" data-id="${esc(e.equipmentId)}" data-cmd="stop">Stop</button>
           </div>`
-        : `<p class="muted">Commands available when communication is CONNECTED.</p>`;
+        : `<p class="muted">Commands available when communication is active (connected or simulated).</p>`;
       return `<div class="toolbar"><a href="#/equipment">← Equipment list</a></div>
         <div class="panel">
           <h2>Equipment ${esc(e.equipmentId)}</h2>
           <dl class="kv">
             <dt>Type</dt><dd>${esc(e.type)}</dd>
             <dt>Adapter</dt><dd>${esc(e.adapterId)}</dd>
-            <dt>Protocol</dt><dd>${esc(e.protocol)}</dd>
-            <dt>Communication</dt><dd>${statusBadge(e.communicationState)}</dd>
+            <dt>Protocol</dt><dd>${esc(e.protocol)}${e.protocol === "mock" ? " (simulation)" : ""}</dd>
+            <dt>Communication</dt><dd>${equipmentCommBadge(e)}</dd>
             <dt>Machine state</dt><dd>${statusBadge(e.machineState)}</dd>
             <dt>Machine fault</dt><dd>${
               e.machineFault ? statusBadge("FAULTED") : statusBadge("NONE")
@@ -467,7 +628,7 @@
         <td><a href="#/equipment/${esc(e.equipmentId)}">${esc(e.equipmentId)}</a></td>
         <td>${esc(e.adapterId)}</td>
         <td>${esc(e.protocol)}</td>
-        <td>${statusBadge(e.communicationState)}</td>
+        <td>${equipmentCommBadge(e)}</td>
         <td>${statusBadge(e.machineState)}</td>
         <td>${e.machineFault ? statusBadge("FAULTED") : "NONE"}</td>
         <td>${e.stale ? statusBadge("STALE") : "no"}</td>
@@ -490,7 +651,7 @@
         (a) => `<tr>
         <td>${esc(a.adapterId)}</td>
         <td>${esc(a.protocol)}</td>
-        <td>${statusBadge(a.connectionState)}</td>
+        <td>${adapterConnectionBadge(a)}</td>
         <td class="mono">${esc(a.lastError || "")}</td>
         <td>
           <button data-action="connect" data-id="${esc(a.adapterId)}">Connect</button>
@@ -509,7 +670,10 @@
       IcpApi.configuration(),
       IcpApi.validateConfiguration(),
     ]);
-    const text = JSON.stringify(cfg.data || {}, null, 2);
+    const text =
+      state._cfgEditorDirty && state._cfgDraft != null
+        ? state._cfgDraft
+        : JSON.stringify(cfg.data || {}, null, 2);
     return `<div class="toolbar">
       <button class="primary" data-action="cfg-validate">Validate</button>
       <button data-action="cfg-save">Save</button>
@@ -687,34 +851,61 @@
     </div>`;
   }
 
-  async function render() {
-    const route = state.route;
-    $("#page-title").textContent = titles[route] || "ICP";
-    document.querySelectorAll(".nav a").forEach((a) => {
-      a.classList.toggle("active", a.dataset.route === route);
-    });
-    let html = "";
-    try {
-      if (route === "dashboard") html = await renderDashboard();
-      else if (route === "adapters") html = await renderAdapters();
-      else if (route === "equipment") html = await renderEquipment();
-      else if (route === "connections") html = await renderConnections();
-      else if (route === "configuration") html = await renderConfiguration();
-      else if (route === "mappings") html = await renderMappings();
-      else if (route === "diagnostics") html = await renderDiagnostics();
-      else if (route === "events") html = await renderEvents();
-      else if (route === "settings") html = await renderSettings();
-      else html = `<div class="empty">Unknown route</div>`;
-    } catch (e) {
-      html = `<div class="empty"><strong>Render error</strong>${esc(e.message)}</div>`;
-    }
-    $("#content").innerHTML = html;
-    const st = await IcpApi.status();
-    if (st.ok) {
-      $("#runtime-pill").textContent = st.data.schedulerRunning
-        ? "ICP RUNNING"
-        : "ICP STOPPED";
-    }
+  async function render(options) {
+    options = options || {};
+    const run = async () => {
+      const generation = ++state._renderGeneration;
+      if (!options.skipDraftCapture) {
+        captureAdapterFormDraft();
+        captureConfigurationDraft();
+      }
+
+      const route = state.route;
+      if (generation !== state._renderGeneration) {
+        return;
+      }
+      $("#page-title").textContent = titles[route] || "ICP";
+      document.querySelectorAll(".nav a").forEach((a) => {
+        a.classList.toggle("active", a.dataset.route === route);
+      });
+      let html = "";
+      try {
+        if (route === "dashboard") html = await renderDashboard();
+        else if (route === "adapters") html = await renderAdapters();
+        else if (route === "equipment") html = await renderEquipment();
+        else if (route === "connections") html = await renderConnections();
+        else if (route === "configuration") html = await renderConfiguration();
+        else if (route === "mappings") html = await renderMappings();
+        else if (route === "diagnostics") html = await renderDiagnostics();
+        else if (route === "events") html = await renderEvents();
+        else if (route === "settings") html = await renderSettings();
+        else html = `<div class="empty">Unknown route</div>`;
+      } catch (e) {
+        html = `<div class="empty"><strong>Render error</strong>${esc(e.message)}</div>`;
+      }
+      if (generation !== state._renderGeneration) {
+        return;
+      }
+      $("#content").innerHTML = html;
+      bindPostRenderHandlers();
+      state._lastRefreshAt = new Date().toISOString();
+      const st = await IcpApi.status();
+      if (generation !== state._renderGeneration) {
+        return;
+      }
+      if (st.ok) {
+        $("#runtime-pill").textContent = st.data.schedulerRunning
+          ? "ICP RUNNING"
+          : "ICP STOPPED";
+      }
+      const pollEl = $("#poll-indicator");
+      if (pollEl && options.manualRefresh) {
+        pollEl.textContent = "Live";
+        pollEl.classList.remove("paused");
+      }
+    };
+    renderChain = renderChain.then(run, run);
+    return renderChain;
   }
 
   function parseHash() {
@@ -771,6 +962,7 @@
         return;
       }
       if (action === "save-adapter") {
+        state._renderGeneration++;
         const adapter = readAdapterForm();
         const res = await IcpApi.upsertAdapter(adapter);
         const box = $("#editor-result");
@@ -781,12 +973,13 @@
         }
         // Persist immediately so restart survives.
         const save = await IcpApi.saveConfiguration();
+        state._renderGeneration++;
         state._editingAdapter = null;
         flash(
           save.ok ? "Adapter saved and configuration persisted" : "Adapter saved in memory; persist failed",
           save.ok ? "ok" : "error"
         );
-        await render();
+        await render({ skipDraftCapture: true });
         return;
       }
       if (action === "eq-cmd") {
@@ -837,6 +1030,8 @@
       }
       if (action === "cfg-load") {
         const res = await IcpApi.loadConfiguration();
+        state._cfgEditorDirty = false;
+        state._cfgDraft = null;
         flash(res.data.message || (res.ok ? "Loaded" : "Load failed"), res.ok ? "ok" : "error");
         await render();
         return;
@@ -845,6 +1040,8 @@
         const text = $("#cfg-editor").value;
         const doc = JSON.parse(text);
         const res = await IcpApi.putConfiguration(doc);
+        state._cfgEditorDirty = false;
+        state._cfgDraft = null;
         flash(res.data.message || (res.ok ? "Applied" : "Apply failed"), res.ok ? "ok" : "error");
         if (!res.ok) $("#cfg-validation").innerHTML = formatIssues(res.data);
         else await render();
@@ -853,6 +1050,8 @@
       if (action === "cfg-import") {
         const text = $("#cfg-import").value;
         const res = await IcpApi.importConfiguration(text);
+        state._cfgEditorDirty = false;
+        state._cfgDraft = null;
         flash(res.data.message || (res.ok ? "Imported" : "Import failed"), res.ok ? "ok" : "error");
         await render();
         return;
@@ -871,10 +1070,20 @@
   document.addEventListener("click", (ev) => {
     const btn = ev.target.closest("[data-action]");
     if (!btn) return;
-    onAction(btn.dataset.action, btn.dataset.id, btn);
+    void onAction(btn.dataset.action, btn.dataset.id, btn).catch((e) => {
+      flash(e.message || String(e), "error");
+    });
   });
 
-  $("#btn-refresh").addEventListener("click", () => render());
+  $("#btn-refresh").addEventListener("click", async () => {
+    const pollEl = $("#poll-indicator");
+    if (pollEl) {
+      pollEl.textContent = "Refreshing…";
+      pollEl.classList.add("paused");
+    }
+    await render({ manualRefresh: true, skipDraftCapture: false });
+    flash("View refreshed at " + new Date().toLocaleTimeString(), "ok");
+  });
 
   window.addEventListener("hashchange", () => {
     parseHash();
@@ -885,10 +1094,13 @@
     if (state.pollTimer) clearInterval(state.pollTimer);
     state.pollTimer = setInterval(() => {
       if (document.hidden) return;
+      // Do not overwrite unsaved adapter editor or configuration editor during poll.
+      if (state._editingAdapter && state.route === "adapters") return;
+      if (state._cfgEditorDirty && state.route === "configuration") return;
       if (["dashboard", "equipment", "connections", "diagnostics", "events", "adapters"].includes(
         state.route
       )) {
-        render();
+        render({ skipDraftCapture: false });
       }
     }, 2000);
   }

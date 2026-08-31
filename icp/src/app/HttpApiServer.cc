@@ -87,6 +87,12 @@ json managerResultToJson(const AdapterManagerResult &result)
 
 json equipmentToJson(const EquipmentSnapshot &snap)
 {
+  const std::string commState = connectionStateName(snap.communicationState);
+  std::string commDisplay = commState;
+  if (snap.protocol == "mock" && commState == "CONNECTED")
+  {
+    commDisplay = "SIMULATED_ACTIVE";
+  }
   json telemetry = json::array();
   for (const CachedTelemetryPoint &point : snap.telemetry)
   {
@@ -98,7 +104,8 @@ json equipmentToJson(const EquipmentSnapshot &snap)
       {"type", snap.type},
       {"adapterId", snap.adapterId},
       {"protocol", snap.protocol},
-      {"communicationState", connectionStateName(snap.communicationState)},
+      {"communicationState", commState},
+      {"communicationStateDisplay", commDisplay},
       {"machineState", operationalStateName(snap.operationalState)},
       {"machineFault", snap.machineFault},
       {"stale", snap.stale},
@@ -359,6 +366,9 @@ public:
              {"enabled", view.enabled},
              {"runtimePresent", view.runtimePresent},
              {"connectionState", view.connectionState},
+             {"connectionStateDisplay", view.connectionStateDisplay.empty()
+                                              ? view.connectionState
+                                              : view.connectionStateDisplay},
              {"lastError", view.lastError},
              {"description", view.description},
              {"equipmentCount", view.equipmentCount}});
@@ -384,6 +394,9 @@ public:
               {"enabled", view->enabled},
               {"runtimePresent", view->runtimePresent},
               {"connectionState", view->connectionState},
+              {"connectionStateDisplay",
+               view->connectionStateDisplay.empty() ? view->connectionState
+                                                      : view->connectionStateDisplay},
               {"lastError", view->lastError},
               {"description", view->description},
               {"equipmentCount", view->equipmentCount},

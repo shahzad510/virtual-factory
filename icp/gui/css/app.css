@@ -90,6 +90,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   display: inline-block; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.75rem;
   font-family: var(--mono); letter-spacing: 0.02em; border: 1px solid transparent;
 }
+.status.SIMULATED_ACTIVE { color: #d8ffe9; background: #1a3340; border-color: #3a7a8a; }
 .status.CONNECTED, .status.RUNNING, .status.ok { color: #d8ffe9; background: #1d3d2d; border-color: #2f6b4c; }
 .status.DISCONNECTED, .status.STOPPED, .status.NOT_CONFIGURED { color: #d7e0ea; background: #2a323c; border-color: #3c4652; }
 .status.FAULTED, .status.STALE, .status.error { color: #ffe0de; background: #4a2422; border-color: #7a3a36; }

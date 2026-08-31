@@ -241,9 +241,18 @@ Diagnostics distinguish SDK missing vs hardware missing vs communication vs mach
 
 ## 23. GUI UX acceptance
 
-Terminology and status badges are distinct (CONNECTED, FAULTED, STALE, HARDWARE_NOT_AVAILABLE, SDK_MISSING). Validation messages come from backend. Destructive remove requires confirmation.
+Terminology and status badges are distinct (CONNECTED, **SIMULATED ACTIVE** for mock, FAULTED, STALE, HARDWARE_NOT_AVAILABLE, SDK_MISSING). Validation messages come from backend. Destructive remove requires confirmation.
 
-Minor polish: favicon added; adapter editor scroll hint added.
+**Manual-test defect fixes (2026-08-31, post-validation):**
+
+| Area | Root cause | Fix | Verified |
+| --- | --- | --- | --- |
+| Protocol selector | ~2s polling called `render()` which rebuilt the Add Adapter form from `state._editingAdapter` without syncing DOM `#f-protocol` changes | `captureAdapterFormDraft()`, `applyProtocolChange()`, input listeners, pause poll while editor open | Headless smoke: all 8 protocols |
+| Refresh button | Same stale re-render race; Configuration editor overwritten on poll | Serialized `render()` queue + generation guard; preserve config draft; refresh feedback flash | Headless smoke + API |
+| Mock CONNECTED label | Canonical state remains `CONNECTED`; GUI showed raw enum | `connectionStateDisplay` → `SIMULATED_ACTIVE` for mock when connected | API + GUI smoke |
+| icp-config.json first-run | Old binary/process/cwd confusion during manual test | Already fixed in validation branch; status API exposes path/state | `testMissingConfigFirstRun` |
+
+Minor polish: favicon added; adapter editor scroll hint added; `.status.SIMULATED_ACTIVE` styling.
 
 ---
 
@@ -251,10 +260,13 @@ Minor polish: favicon added; adapter editor scroll hint added.
 
 | Test | Purpose |
 | --- | --- |
-| `icp_standalone_acceptance_test` | Config scenarios, Mock E2E, API security, OPC UA/Modbus via ApplicationService, PN software boundary, comm vs machine fault |
-| Fixes in `JsonFileConfigurationRepository`, `ConfigurationCatalog`, `ApplicationService`, `HttpApiServer`, GUI | First-run config, command API, UX |
+| `icp_standalone_acceptance_test` | Config scenarios, Mock E2E, API security, OPC UA/Modbus via ApplicationService, PN software boundary, comm vs machine fault, **mock display semantics**, **multi-protocol coexistence** |
+| `tests/gui_protocol_selector_smoke.mjs` | Headless Chromium regression: protocol selection sticks, refresh re-render, poll does not wipe draft, mock `SIMULATED ACTIVE` badge |
+| Fixes in `JsonFileConfigurationRepository`, `ConfigurationCatalog`, `ApplicationService`, `HttpApiServer`, GUI | First-run config, command API, UX, protocol/refresh/mock semantics |
 
-**ctest:** **17/17 passed**.
+**ctest:** **17/17 passed** (full suite ~280s).
+
+**GUI smoke:** `node tests/gui_protocol_selector_smoke.mjs http://127.0.0.1:8090` — **PASS** (requires running `icp_server`).
 
 ---
 
@@ -269,6 +281,11 @@ Minor polish: favicon added; adapter editor scroll hint added.
 | V-005 | Settings showed config state "unknown" | Expose `configurationLoaded` / `configurationLoadState` in status API |
 | V-006 | favicon 404 | Added `assets/favicon.svg` |
 | V-007 | Add Adapter editor easy to miss | Scroll + flash hint |
+| V-008 | Protocol dropdown selection did not stick (poll/re-render wiped DOM) | Draft capture, protocol change handler, poll pause on Adapters editor |
+| V-009 | Refresh appeared broken / overwrote unsaved editors | Serialized render queue, config draft preservation, refresh flash |
+| V-010 | Mock connect showed plain CONNECTED | `connectionStateDisplay` = `SIMULATED_ACTIVE` (canonical state unchanged) |
+| V-011 | Concurrent async `render()` races lost save results | Render chain + generation invalidation on save |
+| V-012 | Multi-protocol adapter persistence untested at acceptance layer | `testMultiProtocolAdapterCoexistence()` |
 
 ---
 
@@ -300,7 +317,7 @@ No **critical** open defects after validation fixes and rebuilt `icp_server`.
 | Gate | Verdict |
 | --- | --- |
 | **A. ICP standalone software** | **ACCEPTED** — suitable foundation for next phase, with documented limitations |
-| **B. GUI** | **ACCEPTED** — usable standalone operator/config UI; Designer explicitly out of scope |
+| **B. GUI** | **ACCEPTED** — protocol selector + refresh verified (headless smoke + API); Designer explicitly out of scope |
 | **C. API** | **ACCEPTED** — `/api/v1` complete for current scope |
 | **D. Existing protocol adapters** | **PARTIAL ACCEPTED** — Mock/OPC UA/Modbus fully validated through ApplicationService; MQTT/REST/EIP validated at adapter layer |
 | **E. Native PROFINET** | **SOFTWARE ACCEPTED / HARDWARE VALIDATION PENDING** |

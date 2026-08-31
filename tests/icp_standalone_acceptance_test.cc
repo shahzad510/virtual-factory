@@ -425,6 +425,195 @@ void testCommunicationVsMachineFault()
   service.stop();
 }
 
+void testMockConnectionDisplaySemantics()
+{
+  const std::string path = tempPath("mock-display.json");
+  virtual_factory::icp::ApplicationService service(path);
+  service.start();
+  service.upsertAdapterConfig(mockAdapterRecord("mock-display"));
+  service.connectAdapter("mock-display");
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  for (const virtual_factory::icp::RuntimeAdapterView &view : service.adapters())
+  {
+    if (view.adapterId == "mock-display")
+    {
+      expect(view.connectionState == "CONNECTED", "canonical mock state remains CONNECTED");
+      expect(
+          view.connectionStateDisplay == "SIMULATED_ACTIVE",
+          "mock display label is SIMULATED_ACTIVE");
+    }
+  }
+  service.stop();
+}
+
+void testMultiProtocolAdapterCoexistence()
+{
+  const std::string path = tempPath("multi-proto.json");
+  ::unlink(path.c_str());
+
+  virtual_factory::icp::ApplicationService service(path);
+  service.start();
+
+  const std::vector<std::pair<std::string, virtual_factory::icp::AdapterConfigRecord>>
+      adapters = {
+          {"mock", mockAdapterRecord("mock-multi")},
+          {"opcua",
+           [] {
+             virtual_factory::icp::AdapterConfigRecord rec;
+             rec.adapterId = "opcua-multi";
+             rec.protocol = "opcua";
+             rec.connection.endpointUrl = "opc.tcp://127.0.0.1:4840";
+             virtual_factory::icp::EquipmentMappingRecord eq;
+             eq.equipmentId = "UA-1";
+             eq.type = "device";
+             virtual_factory::icp::TelemetryMappingRecord tel;
+             tel.name = "speed";
+             tel.address = "ns=1;s=Speed";
+             tel.namespaceIndex = 1;
+             eq.telemetry.push_back(tel);
+             rec.equipment.push_back(eq);
+             return rec;
+           }()},
+          {"modbus",
+           [] {
+             virtual_factory::icp::AdapterConfigRecord rec;
+             rec.adapterId = "modbus-multi";
+             rec.protocol = "modbus";
+             rec.connection.host = "127.0.0.1";
+             rec.connection.port = 502;
+             virtual_factory::icp::EquipmentMappingRecord eq;
+             eq.equipmentId = "MB-1";
+             eq.type = "device";
+             virtual_factory::icp::TelemetryMappingRecord tel;
+             tel.name = "reg";
+             tel.table = "holdingRegister";
+             tel.registerAddress = 1;
+             eq.telemetry.push_back(tel);
+             rec.equipment.push_back(eq);
+             return rec;
+           }()},
+          {"mqtt",
+           [] {
+             virtual_factory::icp::AdapterConfigRecord rec;
+             rec.adapterId = "mqtt-multi";
+             rec.protocol = "mqtt";
+             rec.connection.host = "127.0.0.1";
+             rec.connection.port = 1883;
+             virtual_factory::icp::EquipmentMappingRecord eq;
+             eq.equipmentId = "MQ-1";
+             eq.type = "device";
+             virtual_factory::icp::TelemetryMappingRecord tel;
+             tel.name = "t";
+             tel.address = "plant/telemetry";
+             eq.telemetry.push_back(tel);
+             rec.equipment.push_back(eq);
+             return rec;
+           }()},
+          {"rest",
+           [] {
+             virtual_factory::icp::AdapterConfigRecord rec;
+             rec.adapterId = "rest-multi";
+             rec.protocol = "rest";
+             rec.connection.scheme = "http";
+             rec.connection.host = "127.0.0.1";
+             rec.connection.port = 8081;
+             virtual_factory::icp::EquipmentMappingRecord eq;
+             eq.equipmentId = "REST-1";
+             eq.type = "device";
+             eq.telemetryPath = "/api/device";
+             rec.equipment.push_back(eq);
+             return rec;
+           }()},
+          {"ethernetip",
+           [] {
+             virtual_factory::icp::AdapterConfigRecord rec;
+             rec.adapterId = "eip-multi";
+             rec.protocol = "ethernetip";
+             rec.connection.host = "127.0.0.1";
+             rec.connection.port = 44818;
+             rec.connection.path = "1,0";
+             virtual_factory::icp::EquipmentMappingRecord eq;
+             eq.equipmentId = "EIP-1";
+             eq.type = "device";
+             virtual_factory::icp::TelemetryMappingRecord tel;
+             tel.name = "tag";
+             tel.address = "Program:Main.MyTag";
+             eq.telemetry.push_back(tel);
+             rec.equipment.push_back(eq);
+             return rec;
+           }()},
+          {"profinet",
+           [] {
+             virtual_factory::icp::AdapterConfigRecord rec;
+             rec.adapterId = "pn-multi";
+             rec.protocol = "profinet";
+             rec.connection.boardId = "cifx0";
+             virtual_factory::icp::EquipmentMappingRecord eq;
+             eq.equipmentId = "PN-1";
+             eq.type = "io_device";
+             eq.stationName = "dev";
+             virtual_factory::icp::ProfinetSubmoduleRecord sub;
+             sub.slot = 0;
+             sub.subslot = 1;
+             sub.inputLength = 8;
+             sub.outputLength = 8;
+             eq.submodules.push_back(sub);
+             rec.equipment.push_back(eq);
+             return rec;
+           }()},
+          {"profibus",
+           [] {
+             virtual_factory::icp::AdapterConfigRecord rec;
+             rec.adapterId = "pb-multi";
+             rec.protocol = "profibus";
+             rec.connection.boardId = "cifx0";
+             rec.connection.baudRateKbps = 1500;
+             virtual_factory::icp::EquipmentMappingRecord eq;
+             eq.equipmentId = "PB-1";
+             eq.type = "dp_slave";
+             eq.stationAddress = 3;
+             virtual_factory::icp::ProfibusModuleRecord mod;
+             mod.slot = 0;
+             mod.ident = "m0";
+             mod.inputLength = 8;
+             mod.outputLength = 8;
+             eq.modules.push_back(mod);
+             rec.equipment.push_back(eq);
+             return rec;
+           }()},
+      };
+
+  for (const auto &entry : adapters)
+  {
+    const auto upsert = service.upsertAdapterConfig(entry.second);
+    expect(upsert.ok, "upsert " + entry.first + ": " + upsert.message);
+  }
+  expect(service.validateConfiguration().ok, "validate multi-protocol catalog");
+  expect(service.saveConfiguration().ok, "save multi-protocol catalog");
+
+  expect(service.catalog().document().adapters.size() == adapters.size(), "all adapters in catalog");
+
+  virtual_factory::icp::ApplicationService reloaded(path);
+  expect(reloaded.loadConfiguration().ok, "reload multi-protocol");
+  for (const auto &entry : adapters)
+  {
+    const virtual_factory::icp::AdapterConfigRecord *rec =
+        reloaded.catalog().adapter(entry.second.adapterId);
+    expect(rec != nullptr, "persisted adapter " + entry.first);
+    if (rec)
+    {
+      expect(rec->protocol == entry.first, "protocol preserved for " + entry.first);
+    }
+  }
+
+  virtual_factory::icp::ConfigResult removed = reloaded.removeAdapterConfig("mqtt-multi");
+  expect(removed.ok, "remove one adapter");
+  expect(reloaded.catalog().adapter("mqtt-multi") == nullptr, "mqtt removed");
+  expect(reloaded.catalog().adapter("modbus-multi") != nullptr, "modbus remains");
+  service.stop();
+}
+
 }  // namespace
 
 int main()
@@ -438,6 +627,8 @@ int main()
   testModbusThroughApplicationService();
   testProfinetProfibusSoftwareBoundary();
   testCommunicationVsMachineFault();
+  testMockConnectionDisplaySemantics();
+  testMultiProtocolAdapterCoexistence();
 
   if (failures == 0)
   {

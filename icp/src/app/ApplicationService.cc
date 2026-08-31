@@ -348,6 +348,7 @@ std::vector<RuntimeAdapterView> ApplicationService::adapters() const
     {
       view.connectionState = "DISCONNECTED";
     }
+    view.connectionStateDisplay = connectionStateDisplay(view.protocol, view.connectionState);
     out.push_back(std::move(view));
   }
   return out;
@@ -941,6 +942,16 @@ std::string ApplicationService::connectionStateName(ConnectionState state)
       return "FAULTED";
   }
   return "DISCONNECTED";
+}
+
+std::string ApplicationService::connectionStateDisplay(
+    const std::string &protocol, const std::string &connectionState)
+{
+  if (protocol == "mock" && connectionState == "CONNECTED")
+  {
+    return "SIMULATED_ACTIVE";
+  }
+  return connectionState;
 }
 
 }  // namespace icp

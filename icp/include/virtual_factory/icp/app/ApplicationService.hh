@@ -77,6 +77,8 @@ struct RuntimeAdapterView
   bool enabled{true};
   bool runtimePresent{false};
   std::string connectionState;
+  /// GUI-friendly label; mock Connected → SIMULATED_ACTIVE (canonical state unchanged).
+  std::string connectionStateDisplay;
   std::string lastError;
   std::string description;
   std::size_t equipmentCount{0};
@@ -160,6 +162,8 @@ private:
   std::unique_ptr<IndustrialAdapter> createRuntimeAdapter(
       const AdapterConfigRecord &record, std::string *error) const;
   static std::string connectionStateName(ConnectionState state);
+  static std::string connectionStateDisplay(
+      const std::string &protocol, const std::string &connectionState);
 
   mutable std::mutex mutex_;
   std::string configuration_path_;
