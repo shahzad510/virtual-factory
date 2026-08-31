@@ -28,7 +28,12 @@ ConfigResult ConfigurationCatalog::load(ConfigurationRepository &repository)
     return parsed;
   }
   document_ = std::move(loaded);
-  return ConfigurationValidator::validate(document_);
+  ConfigResult result = ConfigurationValidator::validate(document_);
+  if (result.ok && parsed.message != "ok")
+  {
+    result.message = parsed.message;
+  }
+  return result;
 }
 
 ConfigResult ConfigurationCatalog::save(ConfigurationRepository &repository) const

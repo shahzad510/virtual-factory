@@ -278,6 +278,34 @@ target_link_libraries(icp_application_api_test PRIVATE virtual_factory_icp pthre
 add_test(NAME icp_application_api_test COMMAND icp_application_api_test)
 set_tests_properties(icp_application_api_test PROPERTIES TIMEOUT 120)
 
+add_executable(icp_standalone_acceptance_test
+    tests/icp_standalone_acceptance_test.cc
+    tests/opcua_test_server.cc
+    tests/modbus_test_server.cc
+)
+target_include_directories(icp_standalone_acceptance_test
+    PRIVATE
+        tests
+        ${CMAKE_SOURCE_DIR}/third_party/cpp-httplib
+        ${VIRTUAL_FACTORY_LIBMODBUS_INCLUDE_DIRS}
+)
+if (_VF_NLOHMANN_FOR_ICP_API)
+  target_include_directories(icp_standalone_acceptance_test PRIVATE ${_VF_NLOHMANN_FOR_ICP_API})
+endif()
+target_link_libraries(icp_standalone_acceptance_test
+    PRIVATE
+        virtual_factory_icp
+        virtual_factory_industrial
+        pthread
+)
+if (VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS)
+  set_property(
+      TARGET icp_standalone_acceptance_test
+      PROPERTY BUILD_RPATH "${VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS}")
+endif()
+add_test(NAME icp_standalone_acceptance_test COMMAND icp_standalone_acceptance_test)
+set_tests_properties(icp_standalone_acceptance_test PROPERTIES TIMEOUT 180)
+
 add_executable(hilscher_hardware_readiness_test
     tests/hilscher_hardware_readiness_test.cc
 )

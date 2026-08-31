@@ -26,6 +26,7 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 | — | [icp-product-architecture.md](icp-product-architecture.md) | **ICP** product architecture (ADR-042, ADR-044). |
 | — | [icp-configuration.md](icp-configuration.md) | **ICP-1B** persistent configuration format and API. |
 | — | [icp-gui-architecture.md](icp-gui-architecture.md) | **ICP standalone GUI** + Application API architecture. |
+| — | [icp-standalone-acceptance-report.md](icp-standalone-acceptance-report.md) | **ICP standalone acceptance / validation** (validation branch). |
 | — | [mes-core-product-architecture.md](mes-core-product-architecture.md) | **MES Core** product architecture (ADR-045). |
 | — | [connectivity-integration-contract.md](connectivity-integration-contract.md) | **CIC** boundary between ICP and MES (ADR-043). |
 | — | [profinet-gateway-integration.md](profinet-gateway-integration.md) | Phase 6H PROFINET **supported via gateway** (ADR-040). |

@@ -3,6 +3,7 @@
 #include <virtual_factory/icp/AdapterFactory.hh>
 #include <virtual_factory/icp/config/JsonFileConfigurationRepository.hh>
 #include <virtual_factory/icp/config/NativeFieldbusConfigMapper.hh>
+#include <virtual_factory/equipment/Equipment.hh>
 #include <virtual_factory/industrial/EtherNetIpIndustrialAdapter.hh>
 #include <virtual_factory/industrial/MockIndustrialAdapter.hh>
 #include <virtual_factory/industrial/ModbusIndustrialAdapter.hh>
@@ -149,6 +150,8 @@ ApplicationStatus ApplicationService::status() const
   out.runtimeAdapterCount = this->manager_.adapterCount();
   out.configurationPath = this->configuration_path_;
   out.configurationName = this->catalog_.document().name;
+  out.configurationLoaded = this->configuration_loaded_;
+  out.configurationLoadState = this->configuration_load_state_;
 
   for (const std::string &adapterId : this->manager_.adapterIds())
   {
@@ -247,12 +250,24 @@ ConfigResult ApplicationService::loadConfiguration()
 {
   JsonFileConfigurationRepository repo(this->configuration_path_);
   const ConfigResult result = this->catalog_.load(repo);
+  this->configuration_loaded_ = result.ok;
+  this->configuration_load_state_ = result.message;
   if (result.ok)
   {
-    this->recordEvent(
-        "info",
-        "configuration",
-        "Configuration loaded from " + this->configuration_path_);
+    if (result.message.find("not found") != std::string::npos)
+    {
+      this->recordEvent(
+          "info",
+          "configuration",
+          "First run: no configuration file; using empty configuration");
+    }
+    else
+    {
+      this->recordEvent(
+          "info",
+          "configuration",
+          "Configuration loaded from " + this->configuration_path_);
+    }
   }
   else
   {
@@ -440,6 +455,57 @@ std::optional<EquipmentSnapshot> ApplicationService::equipmentById(
     const std::string &id) const
 {
   return this->cache_.equipmentById(id);
+}
+
+EquipmentCommandResult ApplicationService::executeEquipmentCommand(
+    const std::string &equipmentId,
+    const std::string &command,
+    double parameter)
+{
+  EquipmentCommandResult out;
+  out.equipmentId = equipmentId;
+  out.command = command;
+
+  Equipment *equipment = this->manager_.equipmentById(equipmentId);
+  if (equipment == nullptr)
+  {
+    out.message = "equipment '" + equipmentId + "' not found or not connected";
+    this->recordEvent("error", "command", out.message, {}, equipmentId);
+    return out;
+  }
+
+  IndustrialAdapter *owner = nullptr;
+  this->manager_.forEachAdapter([&](IndustrialAdapter &adapter) {
+    if (owner == nullptr && adapter.equipmentById(equipmentId) != nullptr)
+    {
+      owner = &adapter;
+    }
+  });
+  if (owner == nullptr)
+  {
+    out.message = "no adapter owns equipment '" + equipmentId + "'";
+    this->recordEvent("error", "command", out.message, {}, equipmentId);
+    return out;
+  }
+
+  if (owner->connectionState() != ConnectionState::Connected)
+  {
+    out.message = "adapter '" + owner->id() + "' is not connected";
+    this->recordEvent("error", "command", out.message, owner->id(), equipmentId);
+    return out;
+  }
+
+  const CommandResult executed = equipment->execute(command, parameter);
+  this->cache_.updateFromAdapter(*owner);
+  out.ok = executed.accepted;
+  out.message = executed.message;
+  this->recordEvent(
+      executed.accepted ? "info" : "error",
+      "command",
+      command + ": " + executed.message,
+      owner->id(),
+      equipmentId);
+  return out;
 }
 
 HilscherDiagnosticsView ApplicationService::hilscherDiagnostics() const

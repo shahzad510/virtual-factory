@@ -48,6 +48,11 @@
       request("/adapters/" + encodeURIComponent(id) + "/reconnect", { method: "POST" }),
     equipment: () => request("/equipment"),
     equipmentById: (id) => request("/equipment/" + encodeURIComponent(id)),
+    executeCommand: (id, command, parameter) =>
+      request("/equipment/" + encodeURIComponent(id) + "/command", {
+        method: "POST",
+        body: { command: command, parameter: parameter == null ? 0 : parameter },
+      }),
     mappings: () => request("/mappings"),
     diagnostics: () => request("/diagnostics"),
     events: (limit = 100) => request("/events?limit=" + limit),

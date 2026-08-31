@@ -29,6 +29,14 @@ struct ProtocolCapability
   bool requiresHilscherHardware{false};
 };
 
+struct EquipmentCommandResult
+{
+  bool ok{false};
+  std::string message;
+  std::string equipmentId;
+  std::string command;
+};
+
 struct ApplicationEvent
 {
   std::chrono::system_clock::time_point atUtc{};
@@ -55,6 +63,8 @@ struct ApplicationStatus
   std::size_t equipmentCount{0};
   std::size_t staleEquipment{0};
   std::size_t machineFaultEquipment{0};
+  bool configurationLoaded{false};
+  std::string configurationLoadState;
   std::string configurationPath;
   std::string configurationName;
 };
@@ -124,6 +134,12 @@ public:
   std::vector<EquipmentSnapshot> equipment() const;
   std::optional<EquipmentSnapshot> equipmentById(const std::string &id) const;
 
+  /// Execute a named command on connected equipment (updates LiveStateCache).
+  EquipmentCommandResult executeEquipmentCommand(
+      const std::string &equipmentId,
+      const std::string &command,
+      double parameter = 0.0);
+
   HilscherDiagnosticsView hilscherDiagnostics() const;
   std::vector<ApplicationEvent> events(std::size_t limit = 100) const;
 
@@ -152,6 +168,8 @@ private:
   LiveStateCache cache_;
   std::unique_ptr<PollScheduler> scheduler_;
   bool running_{false};
+  bool configuration_loaded_{false};
+  std::string configuration_load_state_;
   std::deque<ApplicationEvent> events_;
   static constexpr std::size_t kMaxEvents = 500;
 };

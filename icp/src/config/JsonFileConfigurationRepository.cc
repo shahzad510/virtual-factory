@@ -861,6 +861,17 @@ ConfigResult JsonFileConfigurationRepository::load(IcpConfigurationDocument *out
   std::ifstream input(path_, std::ios::binary);
   if (!input)
   {
+    if (errno == ENOENT)
+    {
+      // First-run / no saved configuration yet — not an error for standalone ICP.
+      *out = IcpConfigurationDocument{};
+      out->name = "default";
+      ConfigResult result;
+      result.ok = true;
+      result.message =
+          "configuration file not found; using empty in-memory configuration";
+      return result;
+    }
     return failResult(path_, "cannot open configuration file '" + path_ + "'");
   }
   std::ostringstream buffer;

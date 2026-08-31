@@ -275,6 +275,8 @@ public:
            {"protocolDistribution", protocolDistribution},
            {"configurationPath", st.configurationPath},
            {"configurationName", st.configurationName},
+           {"configurationLoaded", st.configurationLoaded},
+           {"configurationLoadState", st.configurationLoadState},
            {"recentEvents", recentEvents}});
     });
 
@@ -490,6 +492,40 @@ public:
             return;
           }
           setJson(res, 200, equipmentToJson(*snap));
+        });
+
+    server.Post(
+        R"(/api/v1/equipment/([^/]+)/command)",
+        [this](const httplib::Request &req, httplib::Response &res) {
+          std::string error;
+          json body = parseJsonBody(req.body, &error);
+          if (body.is_null())
+          {
+            setJson(res, 400, {{"ok", false}, {"message", error}});
+            return;
+          }
+          if (!body.contains("command") || !body["command"].is_string())
+          {
+            setJson(
+                res,
+                400,
+                {{"ok", false}, {"message", "field 'command' is required"}});
+            return;
+          }
+          double parameter = 0.0;
+          if (body.contains("parameter") && body["parameter"].is_number())
+          {
+            parameter = body["parameter"].get<double>();
+          }
+          const EquipmentCommandResult result = service.executeEquipmentCommand(
+              req.matches[1].str(), body["command"].get<std::string>(), parameter);
+          setJson(
+              res,
+              result.ok ? 200 : 400,
+              {{"ok", result.ok},
+               {"message", result.message},
+               {"equipmentId", result.equipmentId},
+               {"command", result.command}});
         });
 
     server.Get("/api/v1/mappings", [this](const httplib::Request &, httplib::Response &res) {

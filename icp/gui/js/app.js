@@ -235,7 +235,9 @@
     body += `</div>
       <p class="muted">MES dependency: ${s.mesDependency ? "yes" : "no"} · CIC dependency: ${
       s.cicDependency ? "yes" : "no"
-    } · Config: ${esc(s.configurationName || "(unnamed)")}</p>`;
+    } · Config: ${esc(s.configurationName || "(unnamed)")} · ${
+      s.configurationLoaded ? esc(s.configurationLoadState || "loaded") : "not loaded"
+    }</p>`;
     return body;
   }
 
@@ -420,6 +422,13 @@
               )}</td></tr>`
           )
           .join("") || `<tr><td colspan="3" class="muted">No telemetry from backend</td></tr>`;
+      const canCommand = e.communicationState === "CONNECTED" && !e.stale;
+      const cmdBar = canCommand
+        ? `<div class="toolbar">
+            <button data-action="eq-cmd" data-id="${esc(e.equipmentId)}" data-cmd="start">Start</button>
+            <button data-action="eq-cmd" data-id="${esc(e.equipmentId)}" data-cmd="stop">Stop</button>
+          </div>`
+        : `<p class="muted">Commands available when communication is CONNECTED.</p>`;
       return `<div class="toolbar"><a href="#/equipment">← Equipment list</a></div>
         <div class="panel">
           <h2>Equipment ${esc(e.equipmentId)}</h2>
@@ -438,6 +447,8 @@
           </dl>
           <h3>Telemetry</h3>
           <table><thead><tr><th>Name</th><th>Value</th><th>Unit</th></tr></thead><tbody>${tel}</tbody></table>
+          <h3>Commands</h3>
+          ${cmdBar}
           <p class="muted">Communication fault is distinct from machine fault.</p>
         </div>`;
     }
@@ -667,6 +678,7 @@
         <dt>Version</dt><dd>${esc(s.version)}</dd>
         <dt>API</dt><dd>${esc(s.apiVersion)}</dd>
         <dt>Config path</dt><dd class="mono">${esc(s.configurationPath)}</dd>
+        <dt>Config state</dt><dd>${esc(s.configurationLoadState || (s.configurationLoaded ? "loaded" : "unknown"))}</dd>
         <dt>Live updates</dt><dd>HTTP polling (~2s)</dd>
         <dt>MES</dt><dd>not required</dd>
         <dt>CIC</dt><dd>not required</dd>
@@ -727,6 +739,11 @@
         state._editingAdapter = defaultAdapter(protocol);
         state._editingAdapter._edit = false;
         await render();
+        const editor = document.getElementById("adapter-editor");
+        if (editor) {
+          editor.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+        flash("Adapter editor opened — configure and click Validate & Save adapter", "ok");
         return;
       }
       if (action === "cancel-editor") {
@@ -772,8 +789,18 @@
         await render();
         return;
       }
+      if (action === "eq-cmd") {
+        const cmd = btn.dataset.cmd;
+        const res = await IcpApi.executeCommand(id, cmd, 0);
+        flash(
+          (res.data && res.data.message) || (res.ok ? cmd + " ok" : cmd + " failed"),
+          res.ok && res.data && res.data.ok !== false ? "ok" : "error"
+        );
+        await render();
+        return;
+      }
       if (action === "remove-adapter") {
-        if (!confirm("Remove adapter " + id + "?")) return;
+        if (!confirm("Remove adapter " + id + "? This cannot be undone.")) return;
         await IcpApi.removeAdapter(id);
         await IcpApi.saveConfiguration();
         flash("Adapter removed", "ok");
