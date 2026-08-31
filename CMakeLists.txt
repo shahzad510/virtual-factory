@@ -306,6 +306,15 @@ endif()
 add_test(NAME icp_standalone_acceptance_test COMMAND icp_standalone_acceptance_test)
 set_tests_properties(icp_standalone_acceptance_test PROPERTIES TIMEOUT 180)
 
+find_program(VIRTUAL_FACTORY_NODE_EXECUTABLE NAMES node)
+if (VIRTUAL_FACTORY_NODE_EXECUTABLE)
+  add_test(
+      NAME icp_gui_adapter_form_test
+      COMMAND ${VIRTUAL_FACTORY_NODE_EXECUTABLE}
+              ${CMAKE_SOURCE_DIR}/tests/gui_adapter_form_test.mjs)
+  set_tests_properties(icp_gui_adapter_form_test PROPERTIES TIMEOUT 30)
+endif()
+
 add_executable(hilscher_hardware_readiness_test
     tests/hilscher_hardware_readiness_test.cc
 )

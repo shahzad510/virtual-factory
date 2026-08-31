@@ -605,21 +605,76 @@ public:
         adapters.push_back(
             {{"adapterId", view.adapterId},
              {"protocol", view.protocol},
+             {"description", view.description},
+             {"configured", view.configured},
+             {"runtimePresent", view.runtimePresent},
              {"connectionState", view.connectionState},
+             {"connectionStateDisplay",
+              view.connectionStateDisplay.empty() ? view.connectionState
+                                                  : view.connectionStateDisplay},
              {"lastError", view.lastError},
-             {"enabled", view.enabled}});
+             {"enabled", view.enabled},
+             {"equipmentCount", view.equipmentCount}});
       }
+      json equipment = json::array();
       json stale = json::array();
       for (const EquipmentSnapshot &snap : service.equipment())
       {
+        json tel = json::array();
+        for (const CachedTelemetryPoint &point : snap.telemetry)
+        {
+          tel.push_back(
+              {{"name", point.name}, {"value", point.value}, {"unit", point.unit}});
+        }
+        const std::string observed = iso8601(snap.observedAtUtc);
+        const json eqEntry =
+            {{"equipmentId", snap.equipmentId},
+             {"adapterId", snap.adapterId},
+             {"protocol", snap.protocol},
+             {"type", snap.type},
+             {"communicationState", connectionStateName(snap.communicationState)},
+             {"communicationStateDisplay",
+              snap.protocol == "mock" &&
+                      snap.communicationState == ConnectionState::Connected
+                  ? "SIMULATED_ACTIVE"
+                  : connectionStateName(snap.communicationState)},
+             {"machineState", operationalStateName(snap.operationalState)},
+             {"machineFault", snap.machineFault},
+             {"stale", snap.stale},
+             {"lastError", snap.lastError},
+             {"observedAtUtc", observed},
+             {"lastSuccessfulTelemetryUtc", observed},
+             {"telemetry", tel}};
+        equipment.push_back(eqEntry);
         if (snap.stale)
         {
-          stale.push_back(
-              {{"equipmentId", snap.equipmentId},
-               {"adapterId", snap.adapterId},
-               {"communicationState", connectionStateName(snap.communicationState)},
-               {"machineFault", snap.machineFault},
-               {"lastError", snap.lastError}});
+          stale.push_back(eqEntry);
+        }
+      }
+      json recentErrors = json::array();
+      for (const ApplicationEvent &ev : service.events(100))
+      {
+        if (ev.level == "error" || ev.level == "warn")
+        {
+          recentErrors.push_back(
+              {{"atUtc", iso8601(ev.atUtc)},
+               {"level", ev.level},
+               {"category", ev.category},
+               {"message", ev.message},
+               {"adapterId", ev.adapterId},
+               {"equipmentId", ev.equipmentId}});
+        }
+      }
+      json protocolDistribution = json::object();
+      {
+        std::map<std::string, std::size_t> protocols;
+        for (const RuntimeAdapterView &view : service.adapters())
+        {
+          ++protocols[view.protocol];
+        }
+        for (const auto &entry : protocols)
+        {
+          protocolDistribution[entry.first] = entry.second;
         }
       }
       json validation = configResultToJson(service.validateConfiguration());
@@ -643,13 +698,25 @@ public:
           {{"runtime",
             {{"schedulerRunning", st.schedulerRunning},
              {"configuredAdapterCount", st.configuredAdapterCount},
+             {"runtimeAdapterCount", st.runtimeAdapterCount},
              {"connectedAdapters", st.connectedAdapters},
+             {"disconnectedAdapters", st.disconnectedAdapters},
              {"faultedAdapters", st.faultedAdapters},
+             {"equipmentCount", st.equipmentCount},
+             {"connectedEquipment", st.equipmentCount - st.staleEquipment},
+             {"staleEquipment", st.staleEquipment},
+             {"machineFaultEquipment", st.machineFaultEquipment},
+             {"activeCommunications", st.connectedAdapters},
+             {"protocolDistribution", protocolDistribution},
+             {"configurationPath", st.configurationPath},
+             {"configurationLoadState", st.configurationLoadState},
              {"mesDependency", false},
              {"cicDependency", false}}},
            {"adapters", adapters},
+           {"equipment", equipment},
            {"configurationValidation", validation},
            {"staleEquipment", stale},
+           {"recentErrors", recentErrors},
            {"hilscher",
             {{"compiledIn", hilscher.compiledIn},
              {"readinessState", hilscher.readinessState},

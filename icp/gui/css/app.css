@@ -115,7 +115,36 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; }
 
+.form-grid label.field-error input,
+.form-grid label.field-error select,
+.form-grid label.field-error textarea,
+.field-error input,
+.field-error select,
+.field-error textarea {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 1px rgba(209, 80, 74, 0.35);
+}
+.field-error-msg { color: #ffc9c5; font-size: 0.78rem; margin-top: 0.2rem; }
+.req { color: var(--warn); }
+.section-title {
+  grid-column: 1 / -1; margin: 0.5rem 0 0; font-size: 0.9rem; color: var(--text);
+  border-bottom: 1px solid var(--border); padding-bottom: 0.35rem;
+}
+.eq-card {
+  grid-column: 1 / -1; border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.75rem; background: var(--bg-elevated); margin-top: 0.35rem;
+}
+.eq-card h4 { margin: 0 0 0.5rem; font-size: 0.9rem; }
+.row-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; margin: 0.4rem 0; }
+.tel-row, .cmd-row {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.5rem; padding: 0.5rem; margin: 0.35rem 0; border: 1px dashed var(--border);
+  border-radius: 4px;
+}
+.tel-row label, .cmd-row label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.8rem; color: var(--muted); }
+.advanced-json { margin-top: 0.75rem; }
+.protocol-hint { font-size: 0.8rem; color: var(--muted); margin: 0.25rem 0 0.5rem; }
+.diag-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
 @media (max-width: 1400px) {
-  .grid.stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .split { grid-template-columns: 1fr; }
+  .diag-grid { grid-template-columns: 1fr; }
 }
