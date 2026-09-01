@@ -349,6 +349,7 @@ std::vector<RuntimeAdapterView> ApplicationService::adapters() const
       view.connectionState = "DISCONNECTED";
     }
     view.connectionStateDisplay = connectionStateDisplay(view.protocol, view.connectionState);
+    view.implementation = adapterImplementation(record.protocol);
     out.push_back(std::move(view));
   }
   return out;
@@ -952,6 +953,26 @@ std::string ApplicationService::connectionStateDisplay(
     return "SIMULATED_ACTIVE";
   }
   return connectionState;
+}
+
+std::string ApplicationService::adapterImplementation(const std::string &protocol)
+{
+  if (protocol == "mock")
+  {
+    return "simulated";
+  }
+  if (protocol == "profinet" || protocol == "profibus")
+  {
+    // Native fieldbus adapters in this build use the Hilscher CIFX stack.
+    // Future Softing adapters would use softing_native (not creatable yet).
+    return "hilscher_native";
+  }
+  if (protocol == "opcua" || protocol == "modbus" || protocol == "mqtt"
+      || protocol == "rest" || protocol == "ethernetip")
+  {
+    return "gateway";
+  }
+  return "gateway";
 }
 
 }  // namespace icp

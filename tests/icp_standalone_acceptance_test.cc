@@ -447,6 +447,24 @@ void testMockConnectionDisplaySemantics()
   service.stop();
 }
 
+void testAdapterImplementationClassification()
+{
+  expect(
+      virtual_factory::icp::ApplicationService::adapterImplementation("mock") == "simulated",
+      "mock implementation is simulated");
+  expect(
+      virtual_factory::icp::ApplicationService::adapterImplementation("opcua") == "gateway",
+      "opcua implementation is gateway");
+  expect(
+      virtual_factory::icp::ApplicationService::adapterImplementation("profinet")
+          == "hilscher_native",
+      "profinet implementation is hilscher_native");
+  expect(
+      virtual_factory::icp::ApplicationService::adapterImplementation("profibus")
+          == "hilscher_native",
+      "profibus implementation is hilscher_native");
+}
+
 void testMultiProtocolAdapterCoexistence()
 {
   const std::string path = tempPath("multi-proto.json");
@@ -628,6 +646,7 @@ int main()
   testProfinetProfibusSoftwareBoundary();
   testCommunicationVsMachineFault();
   testMockConnectionDisplaySemantics();
+  testAdapterImplementationClassification();
   testMultiProtocolAdapterCoexistence();
 
   if (failures == 0)

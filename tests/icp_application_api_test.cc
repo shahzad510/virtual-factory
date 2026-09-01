@@ -215,6 +215,22 @@ int main()
   }
 
   {
+    auto diag = client.Get("/api/v1/diagnostics");
+    expect(diag && diag->status == 200, "GET diagnostics after mock only");
+    if (diag)
+    {
+      auto body = json::parse(diag->body);
+      expect(
+          !body["implementations"].contains("gateway"),
+          "mock-only: no gateway implementation section");
+      expect(
+          !body["implementations"].contains("hilscher_native"),
+          "mock-only: no Hilscher section");
+      expect(!body.contains("hilscher"), "mock-only: no global hilscher block");
+    }
+  }
+
+  {
     json adapter = {
         {"adapterId", "pn-cfg"},
         {"protocol", "profinet"},
@@ -331,10 +347,24 @@ int main()
     if (diag)
     {
       auto body = json::parse(diag->body);
-      expect(
-          body["hilscher"]["hardware"] == "NOT DETECTED" || body["hilscher"]["boardCount"] == 0,
-          "Hilscher hardware not falsely READY");
       expect(body["runtime"]["mesDependency"] == false, "diagnostics: no MES");
+      expect(
+          body.contains("implementations") && body["implementations"].is_object(),
+          "diagnostics: contextual implementations object");
+      expect(
+          !body["implementations"].contains("gateway"),
+          "no gateway section when only mock + native fieldbus (no OPC UA/Modbus/etc.)");
+      expect(
+          body["implementations"].contains("hilscher_native"),
+          "hilscher section when PROFINET/PROFIBUS configured");
+      if (body["implementations"].contains("hilscher_native"))
+      {
+        const auto &hw = body["implementations"]["hilscher_native"]["hardware"];
+        expect(
+            hw["hardware"] == "NOT DETECTED" || hw["boardCount"] == 0,
+            "Hilscher hardware not falsely READY");
+      }
+      expect(!body.contains("hilscher"), "no global permanent hilscher block");
     }
   }
 

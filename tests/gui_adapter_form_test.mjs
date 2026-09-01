@@ -128,6 +128,10 @@ const rest = Form.defaultAdapter("rest");
 expect(rest.connection.scheme === "http", "REST default scheme");
 expect(rest.equipment[0].telemetry[0].jsonPointer, "REST default jsonPointer");
 
+expect(Form.adapterImplementation("profinet") === "hilscher_native", "profinet is hilscher_native");
+expect(Form.adapterImplementation("opcua") === "gateway", "opcua is gateway");
+expect(Form.adapterImplementation("mock") === "simulated", "mock is simulated");
+
 if (failures) {
   console.error("gui_adapter_form_test:", failures, "failure(s)");
   process.exit(1);

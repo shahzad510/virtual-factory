@@ -7,6 +7,7 @@
 #include <ctime>
 #include <iostream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -205,6 +206,53 @@ void setJson(httplib::Response &res, int status, const json &body)
   res.set_content(body.dump(2), "application/json");
 }
 
+json hilscherHardwareToJson(const HilscherDiagnosticsView &hilscher)
+{
+  std::string hardwareLabel = "NOT DETECTED";
+  if (hilscher.boardCount > 0)
+  {
+    hardwareLabel = "DETECTED";
+  }
+  else if (!hilscher.compiledIn)
+  {
+    hardwareLabel = "NOT DETECTED";
+  }
+  if (hilscher.readinessState == "READY_FOR_TEST" && hilscher.boardCount == 0)
+  {
+    hardwareLabel = "NOT DETECTED";
+  }
+  return {
+      {"compiledIn", hilscher.compiledIn},
+      {"readinessState", hilscher.readinessState},
+      {"summary", hilscher.summary},
+      {"driverVersion", hilscher.driverVersion},
+      {"boardCount", hilscher.boardCount},
+      {"hardware", hardwareLabel},
+      {"selectedBoard", hilscher.selectedBoard},
+      {"selectedFirmware", hilscher.selectedFirmware},
+      {"serialNumber", hilscher.serialNumber},
+      {"notes", hilscher.notes},
+      {"manualChecks", hilscher.manualChecks}};
+}
+
+json adapterDiagnosticsJson(const RuntimeAdapterView &view)
+{
+  return {
+      {"adapterId", view.adapterId},
+      {"protocol", view.protocol},
+      {"implementation", view.implementation},
+      {"description", view.description},
+      {"configured", view.configured},
+      {"runtimePresent", view.runtimePresent},
+      {"connectionState", view.connectionState},
+      {"connectionStateDisplay",
+       view.connectionStateDisplay.empty() ? view.connectionState
+                                            : view.connectionStateDisplay},
+      {"lastError", view.lastError},
+      {"enabled", view.enabled},
+      {"equipmentCount", view.equipmentCount}};
+}
+
 }  // namespace
 
 class HttpApiServer::Impl
@@ -371,7 +419,8 @@ public:
                                               : view.connectionStateDisplay},
              {"lastError", view.lastError},
              {"description", view.description},
-             {"equipmentCount", view.equipmentCount}});
+             {"equipmentCount", view.equipmentCount},
+             {"implementation", view.implementation}});
       }
       setJson(res, 200, {{"adapters", arr}});
     });
@@ -400,6 +449,7 @@ public:
               {"lastError", view->lastError},
               {"description", view->description},
               {"equipmentCount", view->equipmentCount},
+              {"implementation", view->implementation},
           };
           if (record != nullptr)
           {
@@ -598,24 +648,37 @@ public:
 
     server.Get("/api/v1/diagnostics", [this](const httplib::Request &, httplib::Response &res) {
       const ApplicationStatus st = service.status();
-      const HilscherDiagnosticsView hilscher = service.hilscherDiagnostics();
+      const std::vector<RuntimeAdapterView> adapterViews = service.adapters();
+
       json adapters = json::array();
-      for (const RuntimeAdapterView &view : service.adapters())
+      json gatewayAdapters = json::array();
+      json hilscherAdapters = json::array();
+      std::set<std::string> gatewayProtocols;
+      std::size_t gatewayConnected = 0;
+      std::size_t gatewayFaulted = 0;
+
+      for (const RuntimeAdapterView &view : adapterViews)
       {
-        adapters.push_back(
-            {{"adapterId", view.adapterId},
-             {"protocol", view.protocol},
-             {"description", view.description},
-             {"configured", view.configured},
-             {"runtimePresent", view.runtimePresent},
-             {"connectionState", view.connectionState},
-             {"connectionStateDisplay",
-              view.connectionStateDisplay.empty() ? view.connectionState
-                                                  : view.connectionStateDisplay},
-             {"lastError", view.lastError},
-             {"enabled", view.enabled},
-             {"equipmentCount", view.equipmentCount}});
+        adapters.push_back(adapterDiagnosticsJson(view));
+        if (view.implementation == "gateway")
+        {
+          gatewayAdapters.push_back(adapterDiagnosticsJson(view));
+          gatewayProtocols.insert(view.protocol);
+          if (view.connectionState == "CONNECTED" || view.connectionState == "SIMULATED_ACTIVE")
+          {
+            ++gatewayConnected;
+          }
+          if (view.connectionState == "FAULTED")
+          {
+            ++gatewayFaulted;
+          }
+        }
+        else if (view.implementation == "hilscher_native")
+        {
+          hilscherAdapters.push_back(adapterDiagnosticsJson(view));
+        }
       }
+
       json equipment = json::array();
       json stale = json::array();
       for (const EquipmentSnapshot &snap : service.equipment())
@@ -651,6 +714,7 @@ public:
           stale.push_back(eqEntry);
         }
       }
+
       json recentErrors = json::array();
       for (const ApplicationEvent &ev : service.events(100))
       {
@@ -665,10 +729,11 @@ public:
                {"equipmentId", ev.equipmentId}});
         }
       }
+
       json protocolDistribution = json::object();
       {
         std::map<std::string, std::size_t> protocols;
-        for (const RuntimeAdapterView &view : service.adapters())
+        for (const RuntimeAdapterView &view : adapterViews)
         {
           ++protocols[view.protocol];
         }
@@ -677,21 +742,38 @@ public:
           protocolDistribution[entry.first] = entry.second;
         }
       }
+
       json validation = configResultToJson(service.validateConfiguration());
-      std::string hardwareLabel = "NOT DETECTED";
-      if (hilscher.boardCount > 0)
+
+      json implementations = json::object();
+      if (!gatewayAdapters.empty())
       {
-        hardwareLabel = "DETECTED";
+        json protocols = json::array();
+        for (const std::string &proto : gatewayProtocols)
+        {
+          protocols.push_back(proto);
+        }
+        implementations["gateway"] =
+            {{"active", true},
+             {"label", "Industrial gateway (OPC UA / Modbus / MQTT / REST / EtherNet/IP)"},
+             {"adapterCount", gatewayAdapters.size()},
+             {"connectedCount", gatewayConnected},
+             {"faultedCount", gatewayFaulted},
+             {"protocols", protocols},
+             {"adapters", gatewayAdapters}};
       }
-      else if (!hilscher.compiledIn)
+      if (!hilscherAdapters.empty())
       {
-        hardwareLabel = "NOT DETECTED";
+        const HilscherDiagnosticsView hilscher = service.hilscherDiagnostics();
+        implementations["hilscher_native"] =
+            {{"active", true},
+             {"label", "Hilscher native fieldbus (PROFINET / PROFIBUS)"},
+             {"adapterCount", hilscherAdapters.size()},
+             {"adapters", hilscherAdapters},
+             {"hardware", hilscherHardwareToJson(hilscher)}};
       }
-      // Never report READY/CONNECTED solely because SDK is present.
-      if (hilscher.readinessState == "READY_FOR_TEST" && hilscher.boardCount == 0)
-      {
-        hardwareLabel = "NOT DETECTED";
-      }
+      // Softing native: omitted until Softing adapters can be created (Coming Soon).
+
       setJson(
           res,
           200,
@@ -717,18 +799,7 @@ public:
            {"configurationValidation", validation},
            {"staleEquipment", stale},
            {"recentErrors", recentErrors},
-           {"hilscher",
-            {{"compiledIn", hilscher.compiledIn},
-             {"readinessState", hilscher.readinessState},
-             {"summary", hilscher.summary},
-             {"driverVersion", hilscher.driverVersion},
-             {"boardCount", hilscher.boardCount},
-             {"hardware", hardwareLabel},
-             {"selectedBoard", hilscher.selectedBoard},
-             {"selectedFirmware", hilscher.selectedFirmware},
-             {"serialNumber", hilscher.serialNumber},
-             {"notes", hilscher.notes},
-             {"manualChecks", hilscher.manualChecks}}}});
+           {"implementations", implementations}});
     });
 
     server.Get("/api/v1/events", [this](const httplib::Request &req, httplib::Response &res) {

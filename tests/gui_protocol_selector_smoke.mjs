@@ -198,13 +198,15 @@ try {
     pass("mock connect shows simulated active label");
   }
 
-  // Diagnostics dynamic content.
+  // Diagnostics dynamic content (contextual sections, no global Hilscher).
   await page.goto(`${base}/#/diagnostics`, { waitUntil: "networkidle2" });
   await page.waitForFunction(
-    () => /Per-adapter diagnostics|Runtime health/i.test(document.body.innerText),
+    () =>
+      /Runtime health/i.test(document.body.innerText) &&
+      !/Hilscher native fieldbus/i.test(document.body.innerText),
     { timeout: 5000 }
   );
-  pass("diagnostics renders runtime/adapter sections");
+  pass("diagnostics omits Hilscher when no native fieldbus adapters");
 
   // Polling must not wipe unsaved draft.
   await page.goto(`${base}/#/adapters`, { waitUntil: "networkidle2" });

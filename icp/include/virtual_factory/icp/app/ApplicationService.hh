@@ -82,6 +82,8 @@ struct RuntimeAdapterView
   std::string lastError;
   std::string description;
   std::size_t equipmentCount{0};
+  /// Active stack for this adapter: gateway | hilscher_native | softing_native | simulated
+  std::string implementation;
 };
 
 struct HilscherDiagnosticsView
@@ -144,6 +146,9 @@ public:
 
   HilscherDiagnosticsView hilscherDiagnostics() const;
   std::vector<ApplicationEvent> events(std::size_t limit = 100) const;
+
+  /// Classifies configured adapter stack for contextual diagnostics (GUI/API).
+  static std::string adapterImplementation(const std::string &protocol);
 
   ConfigurationCatalog &catalog();
   const ConfigurationCatalog &catalog() const;

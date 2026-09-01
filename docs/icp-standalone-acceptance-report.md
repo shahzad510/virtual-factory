@@ -289,7 +289,8 @@ Minor polish: favicon added; adapter editor scroll hint added; `.status.SIMULATE
 | V-013 | Toolbar protocol selector not synced with editor | Single authoritative protocol; toolbar ↔ `#f-protocol` sync |
 | V-014 | Generic form fields only; Equipment JSON required | Protocol-specific connection/equipment/telemetry GUI fields (ICP-1B) |
 | V-015 | Validation errors not mapped to GUI fields | Issue path → field id highlighting |
-| V-016 | Diagnostics mostly static Hilscher page | Runtime/adapters/equipment/errors + Hilscher section; live poll |
+| V-016 | Diagnostics mostly static Hilscher page | Runtime/adapters/equipment/errors + contextual implementation sections |
+| V-017 | Global Hilscher diagnostics always shown | `implementations.gateway` / `hilscher_native` only when those adapters configured; no top-level `hilscher` |
 
 ---
 

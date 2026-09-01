@@ -494,6 +494,21 @@
     return Object.keys(CONNECTION_FIELDS);
   }
 
+  function adapterImplementation(protocol) {
+    if (protocol === "mock") return "simulated";
+    if (protocol === "profinet" || protocol === "profibus") return "hilscher_native";
+    if (
+      protocol === "opcua" ||
+      protocol === "modbus" ||
+      protocol === "mqtt" ||
+      protocol === "rest" ||
+      protocol === "ethernetip"
+    ) {
+      return "gateway";
+    }
+    return "gateway";
+  }
+
   return {
     PROTOCOL_LABELS,
     CONNECTION_FIELDS,
@@ -509,6 +524,7 @@
     requiredTelemetryKeys,
     requiredConnectionKeys,
     equipmentExtraFields,
-    protocolsList,
-  };
+  protocolsList,
+  adapterImplementation,
+};
 });

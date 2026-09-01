@@ -889,25 +889,51 @@
     return html;
   }
 
+  function implementationLabel(impl) {
+    const labels = {
+      gateway: "Gateway",
+      hilscher_native: "Hilscher native",
+      softing_native: "Softing native",
+      simulated: "Simulated",
+    };
+    return labels[impl] || impl || "—";
+  }
+
+  function renderImplementationAdapterTable(adapters, title) {
+    if (!adapters || !adapters.length) {
+      return `<p class="muted">No adapters in this implementation group.</p>`;
+    }
+    return `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>State</th><th>Enabled</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
+      .map(
+        (a) => `<tr>
+        <td>${esc(a.adapterId)}</td>
+        <td>${esc(a.protocol)}</td>
+        <td>${statusBadge(a.connectionStateDisplay || a.connectionState)}</td>
+        <td>${a.enabled ? "yes" : "no"}</td>
+        <td>${a.runtimePresent ? "yes" : "no"}</td>
+        <td>${esc(a.equipmentCount || 0)}</td>
+        <td class="mono">${esc(a.lastError || "")}</td>
+      </tr>`
+      )
+      .join("")}</tbody></table>`;
+  }
+
   async function renderDiagnostics() {
-    const [res, eventsRes] = await Promise.all([
-      IcpApi.diagnostics(),
-      IcpApi.events(50),
-    ]);
+    const res = await IcpApi.diagnostics();
     if (!res.ok) {
       return `<div class="empty"><strong>Diagnostics unavailable</strong></div>`;
     }
     const d = res.data;
-    const h = d.hilscher || {};
     const rt = d.runtime || {};
-    const hw =
-      h.hardware === "DETECTED"
-        ? statusBadge("DETECTED")
-        : statusBadge("HARDWARE_NOT_AVAILABLE");
     const adapters = d.adapters || [];
     const equipment = d.equipment || [];
     const recentErrors = d.recentErrors || [];
     const dist = rt.protocolDistribution || {};
+    const impl = d.implementations || {};
+    const gateway = impl.gateway;
+    const hilscher = impl.hilscher_native;
+    const softing = impl.softing_native;
+
     let html = `<div class="grid stats">
         <div class="stat"><div class="label">Scheduler</div><div class="value">${
           rt.schedulerRunning ? "ON" : "OFF"
@@ -924,8 +950,8 @@
         <div class="stat"><div class="label">Active comms</div><div class="value">${esc(
           rt.activeCommunications || 0
         )}</div></div>
-        <div class="stat"><div class="label">Hilscher HW</div><div class="value" style="font-size:1rem">${hw}</div></div>
       </div>
+      <p class="muted">Diagnostics reflect what you configured — implementation-specific sections appear only for active adapter types.</p>
       <div class="panel">
         <h2>Runtime health</h2>
         <dl class="kv">
@@ -947,17 +973,69 @@
                 .join("")}</tbody></table>`
             : `<p class="muted">No adapters configured.</p>`
         }
-      </div>
-      <div class="panel">
-        <h2>Per-adapter diagnostics</h2>
+      </div>`;
+
+    if (gateway && gateway.active) {
+      html += `<div class="panel">
+        <h2>Gateway implementation</h2>
+        <p class="muted">${esc(gateway.label || "Industrial gateway protocols")}</p>
+        <dl class="kv">
+          <dt>Adapters</dt><dd>${esc(gateway.adapterCount || 0)}</dd>
+          <dt>Connected</dt><dd>${esc(gateway.connectedCount || 0)}</dd>
+          <dt>Faulted</dt><dd>${esc(gateway.faultedCount || 0)}</dd>
+          <dt>Protocols</dt><dd>${esc(
+            (gateway.protocols || []).join(", ")
+          )}</dd>
+        </dl>
+        ${renderImplementationAdapterTable(gateway.adapters)}
+        <p class="muted">Field equipment reached via OPC UA, Modbus, MQTT, REST, or EtherNet/IP — not native PROFINET/PROFIBUS stacks.</p>
+      </div>`;
+    }
+
+    if (hilscher && hilscher.active) {
+      const hw = hilscher.hardware || {};
+      const hwBadge =
+        hw.hardware === "DETECTED"
+          ? statusBadge("DETECTED")
+          : statusBadge("HARDWARE_NOT_AVAILABLE");
+      html += `<div class="panel">
+        <h2>Hilscher native fieldbus</h2>
+        <p class="muted">${esc(hilscher.label || "PROFINET / PROFIBUS via Hilscher CIFX")}</p>
+        ${renderImplementationAdapterTable(hilscher.adapters)}
+        <h3>Hardware readiness</h3>
+        <dl class="kv">
+          <dt>SDK compiled in</dt><dd>${hw.compiledIn ? "yes" : "no"}</dd>
+          <dt>Readiness</dt><dd>${esc(hw.readinessState || "")}</dd>
+          <dt>Hardware</dt><dd>${hwBadge}</dd>
+          <dt>Driver</dt><dd class="mono">${esc(hw.driverVersion || "")}</dd>
+          <dt>Boards</dt><dd>${esc(hw.boardCount || 0)}</dd>
+          <dt>Selected board</dt><dd>${esc(hw.selectedBoard || "")}</dd>
+          <dt>Firmware</dt><dd>${esc(hw.selectedFirmware || "")}</dd>
+          <dt>Summary</dt><dd>${esc(hw.summary || "")}</dd>
+        </dl>
+        <p class="muted">Shown because PROFINET or PROFIBUS adapters are configured in this runtime.</p>
+      </div>`;
+    }
+
+    if (softing && softing.active) {
+      html += `<div class="panel">
+        <h2>Softing native fieldbus</h2>
+        <p class="muted">${esc(softing.label || "Softing stack")}</p>
+        ${renderImplementationAdapterTable(softing.adapters)}
+      </div>`;
+    }
+
+    html += `<div class="panel">
+        <h2>All configured adapters</h2>
         ${
           !adapters.length
             ? `<p class="muted">No adapters.</p>`
-            : `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>State</th><th>Enabled</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
+            : `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>Implementation</th><th>State</th><th>Enabled</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
                 .map(
                   (a) => `<tr>
               <td>${esc(a.adapterId)}</td>
               <td>${esc(a.protocol)}</td>
+              <td>${esc(implementationLabel(a.implementation))}</td>
               <td>${statusBadge(
                 a.connectionStateDisplay || a.connectionState
               )}</td>
@@ -1022,20 +1100,6 @@
                 )
                 .join("")}</tbody></table>`
         }
-      </div>
-      <div class="panel">
-        <h2>Hilscher readiness</h2>
-        <dl class="kv">
-          <dt>SDK compiled in</dt><dd>${h.compiledIn ? "yes" : "no"}</dd>
-          <dt>Readiness</dt><dd>${esc(h.readinessState || "")}</dd>
-          <dt>Hardware</dt><dd>${hw}</dd>
-          <dt>Driver</dt><dd class="mono">${esc(h.driverVersion || "")}</dd>
-          <dt>Boards</dt><dd>${esc(h.boardCount || 0)}</dd>
-          <dt>Selected board</dt><dd>${esc(h.selectedBoard || "")}</dd>
-          <dt>Firmware</dt><dd>${esc(h.selectedFirmware || "")}</dd>
-          <dt>Summary</dt><dd>${esc(h.summary || "")}</dd>
-        </dl>
-        <p class="muted">SDK installed without a card does not mean READY or CONNECTED. This section updates with the rest of diagnostics on Refresh / live poll.</p>
       </div>`;
     return html;
   }
