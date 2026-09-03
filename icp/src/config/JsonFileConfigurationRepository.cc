@@ -374,8 +374,9 @@ AdapterConnectionRecord parseConnection(
       object,
       {"endpointUrl", "host", "port", "timeoutMs", "pollTimeoutMs",
        "keepaliveSeconds", "scheme", "basePath", "healthPath", "clientId",
-       "path", "plcType", "useTls", "tlsVerify", "boardId", "channel",
-       "interfaceName", "stationName", "configArtifactPath",
+       "path", "plcType", "useTls", "tlsVerify", "transport", "serialDevice",
+       "baudRate", "parity", "dataBits", "stopBits", "unitId", "boardId",
+       "channel", "interfaceName", "stationName", "configArtifactPath",
        "expectedFirmwareName", "masterAddress", "baudRateKbps",
        "processImageBytes"},
       path);
@@ -393,6 +394,13 @@ AdapterConnectionRecord parseConnection(
   record.plcType = asString(result, object, "plcType", path);
   record.useTls = asBool(result, object, "useTls", path, false);
   record.tlsVerify = asBool(result, object, "tlsVerify", path, true);
+  record.transport = asString(result, object, "transport", path);
+  record.serialDevice = asString(result, object, "serialDevice", path);
+  record.baudRate = asInt(result, object, "baudRate", path, 0);
+  record.parity = asString(result, object, "parity", path);
+  record.dataBits = asInt(result, object, "dataBits", path, 0);
+  record.stopBits = asInt(result, object, "stopBits", path, 0);
+  record.unitId = asUint8(result, object, "unitId", path, 0);
   record.boardId = asString(result, object, "boardId", path);
   record.channel = asUnsigned(result, object, "channel", path, 0);
   record.interfaceName = asString(result, object, "interfaceName", path);
@@ -662,6 +670,13 @@ json connectionToJson(const AdapterConnectionRecord &record)
       {"plcType", record.plcType},
       {"useTls", record.useTls},
       {"tlsVerify", record.tlsVerify},
+      {"transport", record.transport},
+      {"serialDevice", record.serialDevice},
+      {"baudRate", record.baudRate},
+      {"parity", record.parity},
+      {"dataBits", record.dataBits},
+      {"stopBits", record.stopBits},
+      {"unitId", static_cast<unsigned>(record.unitId)},
       {"boardId", record.boardId},
       {"channel", record.channel},
       {"interfaceName", record.interfaceName},

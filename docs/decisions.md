@@ -590,7 +590,8 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 - `connect()` after `Faulted` recreates the libmodbus client (explicit reconnect). Background auto-reconnect is not implemented.
 - Public headers do not include `<modbus.h>`. Equipment remains protocol-independent. Gazebo is not a dependency of this adapter.
 - Tests use an in-process libmodbus TCP slave (`tests/modbus_test_server.*`) on localhost. Mixer/pump/unknown names are register-map **labels only**. **DEVELOPMENT ONLY:** no authentication, no TLS.
-- Client coverage in this slice: FC 1–6. Batch writes, RTU, TLS, and production capacity claims are **not** implemented.
+- Client coverage in this slice: FC 1–6. Batch writes, TLS, and production capacity claims are **not** implemented.
+- **Amendment (2026-09-03):** Modbus **RTU / RS-485** is supported on the same `ModbusIndustrialAdapter` via `ModbusTransport::Rtu` and libmodbus `modbus_new_rtu`. One adapter instance = one serial session (`serialDevice` + baud/parity/data/stop). Unit ID remains per mapping (optional connection default for link probe). RTU `connect()` opens the serial port and verifies framing with a lightweight probe (mapped register preferred; Modbus exception = link OK; timeout = Faulted). TCP behavior unchanged. PTY loopback tests are **SOFTWARE-INTEGRATION**; real RS-485 hardware validation is separate.
 - Isolation was validated with two independent endpoints and a modest 4-endpoint localhost loop. That is **not** production proof for hundreds of Modbus PLCs.
 - REST, MQTT, EtherNet/IP, and PROFINET were **not** implemented in this increment. MES and SCADA are not started.
 

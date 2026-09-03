@@ -149,6 +149,19 @@ struct AdapterConnectionRecord
   std::string plcType;
   bool useTls{false};
   bool tlsVerify{true};
+
+  /// Modbus transport: "tcp" (default) or "rtu". Empty means TCP for backward compatibility.
+  std::string transport;
+  /// Modbus RTU serial device path (e.g. /dev/ttyUSB0).
+  std::string serialDevice;
+  int baudRate{0};
+  /// none | even | odd (also accepts N/E/O).
+  std::string parity;
+  int dataBits{0};
+  int stopBits{0};
+  /// Optional default Unit ID used for RTU link verification when mappings omit unitId.
+  std::uint8_t unitId{0};
+
   std::string boardId;
   unsigned channel{0};
   std::string interfaceName;

@@ -45,7 +45,7 @@ Use `git status` and `git log -1` when resuming; this file is not a substitute f
 | **6A** Adapter architecture (`IndustrialAdapter`) + mock | **COMPLETE** / **TESTED** |
 | **6B** Production OPC UA adapter (`OpcUaIndustrialAdapter`) | **COMPLETE** / **TESTED** |
 | **6C** OPC UA multi-server scalability validation (10–200 simulated in-process servers) | **VALIDATED** (those conditions). **Not** production capacity certification |
-| **6D** Production Modbus TCP adapter (`ModbusIndustrialAdapter`) | **COMPLETE** / **TESTED** |
+| **6D** Production Modbus TCP + RTU adapter (`ModbusIndustrialAdapter`) | **COMPLETE** / **TESTED** (TCP + RTU/RS-485 via libmodbus; RTU PTY software tests — **not** RS-485 hardware certification) |
 | **6E** REST industrial gateway adapter (`RestIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost HTTP fixture; **not** vendor certification) |
 | **6F** MQTT industrial adapter (`MqttIndustrialAdapter`) | **COMPLETE** / **TESTED** (localhost Mosquitto; **not** vendor certification). Multi-equipment scale **VALIDATED** (10/50/100/200 + 2×50; see `docs/mqtt-scalability-test.md`) |
 | **6G** EtherNet/IP industrial adapter (`EtherNetIpIndustrialAdapter`) | **COMPLETE** / **TESTED** (libplctag explicit messaging; local `ab_server`; **not** hardware certification). Two-device isolation **VALIDATED** under test conditions |

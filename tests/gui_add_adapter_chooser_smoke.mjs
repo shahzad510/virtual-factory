@@ -76,16 +76,24 @@ try {
   if (!transportText.includes("Modbus TCP") || !/supported/i.test(transportText)) {
     fail("Modbus TCP transport must be Supported");
   }
-  if (!transportText.includes("Modbus RTU") || !/coming soon/i.test(transportText)) {
-    fail("Modbus RTU / RS-485 must be Coming Soon");
+  if (!transportText.includes("Modbus RTU") || !/supported/i.test(transportText)) {
+    fail("Modbus RTU / RS-485 must be Supported");
+  }
+  if (/coming soon/i.test(transportText)) {
+    fail("Modbus transport chooser must not show Coming Soon");
   }
   pass("Modbus opens transport selection");
 
   await page.click('[data-action="choose-modbus-transport"][data-transport="rtu"]');
-  await new Promise((r) => setTimeout(r, 300));
-  if (await page.$("#adapter-editor")) fail("RTU Coming Soon must not create adapter");
-  pass("Modbus RTU Coming Soon does not create adapter");
+  await page.waitForSelector("#adapter-editor", { timeout: 5000 });
+  await page.waitForFunction(() => document.getElementById("f-protocol")?.value === "modbus");
+  if (!(await page.$("#f-conn-serialDevice"))) fail("RTU editor must expose serialDevice");
+  if (!(await page.$("#f-conn-baudRate"))) fail("RTU editor must expose baudRate");
+  if (!(await page.$("#f-conn-parity"))) fail("RTU editor must expose parity");
+  if (await page.$("#f-conn-host")) fail("RTU editor must not show TCP host");
+  pass("Modbus RTU selectable with serial configuration");
 
+  await page.click('[data-action="cancel-editor"]');
   await page.waitForSelector('[data-action="open-add-chooser"]', { timeout: 5000 });
   await page.click('[data-action="open-add-chooser"]');
   await page.waitForSelector(".chooser-modal", { timeout: 5000 });
@@ -99,7 +107,8 @@ try {
   }
   const portVal = await page.$eval("#f-conn-port", (el) => el.value);
   if (portVal !== "502") fail("Modbus TCP default port should be 502");
-  if (await page.$("#f-conn-unitId")) fail("Unit ID must not be adapter-level");
+  if (await page.$("#f-conn-unitId")) fail("Unit ID must not be adapter-level for TCP");
+  if (await page.$("#f-conn-serialDevice")) fail("TCP editor must not show serialDevice");
   pass("Modbus TCP selectable with backend-supported fields");
 
   await page.click('[data-action="cancel-editor"]');

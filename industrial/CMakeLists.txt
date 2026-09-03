@@ -75,7 +75,7 @@ add_library(virtual_factory_industrial STATIC
     src/MockIndustrialAdapter.cc
     src/OpcUaIndustrialAdapter.cc
     src/ModbusIndustrialAdapter.cc
-    src/modbus_tcp_session.cc
+    src/modbus_session.cc
     src/RestIndustrialAdapter.cc
     src/http_session.cc
     src/MqttIndustrialAdapter.cc

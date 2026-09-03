@@ -165,13 +165,88 @@ ConfigResult ConfigurationValidator::validate(
     }
     else if (adapter.protocol == "modbus")
     {
-      if (c.host.empty())
+      const std::string transport =
+          c.transport.empty() ? "tcp" : c.transport;
+      if (transport != "tcp" && transport != "rtu")
       {
-        addIssue(&result, base + "/connection/host", "Modbus host is required");
+        addIssue(
+            &result,
+            base + "/connection/transport",
+            "Modbus transport must be 'tcp' or 'rtu'");
       }
-      if (c.port == 0)
+      else if (transport == "rtu")
       {
-        addIssue(&result, base + "/connection/port", "Modbus port is required");
+        if (c.serialDevice.empty())
+        {
+          addIssue(
+              &result,
+              base + "/connection/serialDevice",
+              "Modbus RTU serialDevice is required (e.g. /dev/ttyUSB0)");
+        }
+        const int baud = c.baudRate;
+        const bool baudOk =
+            baud == 1200 || baud == 2400 || baud == 4800 || baud == 9600
+            || baud == 19200 || baud == 38400 || baud == 57600
+            || baud == 115200;
+        if (!baudOk)
+        {
+          addIssue(
+              &result,
+              base + "/connection/baudRate",
+              "Modbus RTU baudRate must be one of 1200, 2400, 4800, 9600, "
+              "19200, 38400, 57600, 115200");
+        }
+        if (c.dataBits != 7 && c.dataBits != 8)
+        {
+          addIssue(
+              &result,
+              base + "/connection/dataBits",
+              "Modbus RTU dataBits must be 7 or 8");
+        }
+        if (c.stopBits != 1 && c.stopBits != 2)
+        {
+          addIssue(
+              &result,
+              base + "/connection/stopBits",
+              "Modbus RTU stopBits must be 1 or 2");
+        }
+        const std::string parity = c.parity;
+        const bool parityOk =
+            parity == "none" || parity == "even" || parity == "odd"
+            || parity == "N" || parity == "E" || parity == "O"
+            || parity == "n" || parity == "e" || parity == "o";
+        if (!parityOk)
+        {
+          addIssue(
+              &result,
+              base + "/connection/parity",
+              "Modbus RTU parity must be none, even, or odd");
+        }
+        if (c.timeoutMs < 0)
+        {
+          addIssue(
+              &result,
+              base + "/connection/timeoutMs",
+              "Modbus timeoutMs must be >= 0");
+        }
+        if (c.unitId > 247)
+        {
+          addIssue(
+              &result,
+              base + "/connection/unitId",
+              "Modbus Unit ID must be between 0 and 247");
+        }
+      }
+      else
+      {
+        if (c.host.empty())
+        {
+          addIssue(&result, base + "/connection/host", "Modbus host is required");
+        }
+        if (c.port == 0)
+        {
+          addIssue(&result, base + "/connection/port", "Modbus port is required");
+        }
       }
     }
     else if (adapter.protocol == "mqtt")
