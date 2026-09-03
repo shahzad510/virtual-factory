@@ -41,17 +41,33 @@ expect(Form.PROTOCOL_INFO.mock.next === "editor", "Mock opens editor directly");
 expect(Form.PROTOCOL_INFO.opcua.support === "Supported", "OPC UA marked supported");
 
 expect(Form.MODBUS_TRANSPORT_INFO.tcp.available === true, "Modbus TCP transport available");
-expect(Form.MODBUS_TRANSPORT_INFO.rtu.available === false, "Modbus RTU Coming Soon / unavailable");
-expect(/coming soon/i.test(Form.MODBUS_TRANSPORT_INFO.rtu.support), "RTU badge Coming Soon");
+expect(Form.MODBUS_TRANSPORT_INFO.rtu.available === true, "Modbus RTU transport available");
+expect(/supported/i.test(Form.MODBUS_TRANSPORT_INFO.rtu.support), "RTU badge Supported");
+expect(!/coming soon/i.test(Form.MODBUS_TRANSPORT_INFO.rtu.support), "RTU is not Coming Soon");
 
 const opcConn = Form.CONNECTION_FIELDS.opcua.map((f) => f.key);
 expect(opcConn.includes("endpointUrl"), "OPC UA exposes endpointUrl");
 expect(!opcConn.includes("useTls"), "OPC UA does not expose unused useTls");
 expect(!opcConn.includes("timeoutMs"), "OPC UA does not expose unused timeoutMs");
 
-const mbConn = Form.CONNECTION_FIELDS.modbus.map((f) => f.key);
+const mbConn = Form.connectionFieldsFor({ protocol: "modbus", connection: { transport: "tcp" } }).map((f) => f.key);
 expect(mbConn.join(",") === "host,port,timeoutMs", "Modbus TCP fields are host/port/timeout only");
-expect(!mbConn.includes("unitId"), "Unit ID is not an adapter connection field");
+expect(!mbConn.includes("unitId"), "Unit ID is not an adapter TCP connection field");
+
+const mbRtu = Form.connectionFieldsFor({ protocol: "modbus", connection: { transport: "rtu" } }).map((f) => f.key);
+expect(mbRtu.includes("serialDevice"), "Modbus RTU exposes serialDevice");
+expect(mbRtu.includes("baudRate"), "Modbus RTU exposes baudRate");
+expect(mbRtu.includes("parity"), "Modbus RTU exposes parity");
+expect(mbRtu.includes("dataBits"), "Modbus RTU exposes dataBits");
+expect(mbRtu.includes("stopBits"), "Modbus RTU exposes stopBits");
+
+const rtuDefault = Form.defaultAdapter("modbus", "rtu1", { transport: "rtu" });
+expect(rtuDefault.connection.transport === "rtu", "RTU default transport");
+expect(rtuDefault.connection.serialDevice, "RTU default serialDevice");
+expect(rtuDefault.connection.baudRate === 9600, "RTU default baud 9600");
+expect(rtuDefault.connection.parity === "none", "RTU default parity none");
+expect(rtuDefault.connection.dataBits === 8, "RTU default data bits 8");
+expect(rtuDefault.connection.stopBits === 1, "RTU default stop bits 1");
 
 const mbTel = Form.TELEMETRY_FIELDS.modbus;
 expect(mbTel.some((f) => f.key === "unitId"), "Unit ID remains mapping-level");

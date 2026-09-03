@@ -84,6 +84,8 @@ struct RuntimeAdapterView
   std::size_t equipmentCount{0};
   /// Active stack for this adapter: gateway | hilscher_native | softing_native | simulated
   std::string implementation;
+  /// Transport for protocols that distinguish it (e.g. Modbus tcp|rtu).
+  std::string transport;
   /// Non-secret connection summary for diagnostics (endpoint, host:port, boardId).
   std::string connectionSummary;
 };

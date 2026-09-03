@@ -549,6 +549,70 @@ void testImplementationFieldAndBackwardCompatibility()
   expect(parsed.adapters[0].implementation == "gateway", "implementation persisted in JSON");
 }
 
+void testModbusRtuConfiguration()
+{
+  virtual_factory::icp::AdapterConfigRecord rtu;
+  rtu.adapterId = "mb-rtu-1";
+  rtu.protocol = "modbus";
+  rtu.connection.transport = "rtu";
+  rtu.connection.serialDevice = "/dev/ttyUSB0";
+  rtu.connection.baudRate = 9600;
+  rtu.connection.dataBits = 8;
+  rtu.connection.stopBits = 1;
+  rtu.connection.parity = "none";
+  rtu.connection.timeoutMs = 2000;
+  rtu.connection.unitId = 1;
+  virtual_factory::icp::EquipmentMappingRecord eq;
+  eq.equipmentId = "Meter-01";
+  eq.type = "meter";
+  virtual_factory::icp::TelemetryMappingRecord tel;
+  tel.name = "value";
+  tel.table = "holdingRegister";
+  tel.registerAddress = 0;
+  tel.unitId = 1;
+  eq.telemetry.push_back(tel);
+  rtu.equipment.push_back(eq);
+  expect(
+      virtual_factory::icp::ConfigurationValidator::validateAdapter(rtu).ok,
+      "Modbus RTU adapter validates");
+
+  virtual_factory::icp::AdapterConfigRecord bad = rtu;
+  bad.connection.serialDevice.clear();
+  expect(
+      !virtual_factory::icp::ConfigurationValidator::validateAdapter(bad).ok,
+      "Modbus RTU requires serialDevice");
+
+  virtual_factory::icp::AdapterConfigRecord badBaud = rtu;
+  badBaud.connection.baudRate = 1234;
+  expect(
+      !virtual_factory::icp::ConfigurationValidator::validateAdapter(badBaud).ok,
+      "Modbus RTU rejects unsupported baud");
+
+  virtual_factory::icp::IcpConfigurationDocument doc;
+  doc.adapters.push_back(rtu);
+  // Legacy TCP without transport still validates.
+  virtual_factory::icp::AdapterConfigRecord tcp = modbusAdapter();
+  expect(tcp.connection.transport.empty(), "legacy Modbus TCP has empty transport");
+  expect(
+      virtual_factory::icp::ConfigurationValidator::validateAdapter(tcp).ok,
+      "legacy Modbus TCP still validates");
+  doc.adapters.push_back(tcp);
+
+  const std::string jsonText =
+      virtual_factory::icp::JsonFileConfigurationRepository::toJsonText(doc);
+  virtual_factory::icp::IcpConfigurationDocument parsed;
+  const virtual_factory::icp::ConfigResult loaded =
+      virtual_factory::icp::JsonFileConfigurationRepository::parseText(jsonText, &parsed);
+  expect(loaded.ok, "Modbus RTU JSON parses");
+  expect(parsed.adapters.size() == 2, "TCP+RTU adapters parsed");
+  expect(parsed.adapters[0].connection.transport == "rtu", "RTU transport persisted");
+  expect(
+      parsed.adapters[0].connection.serialDevice == "/dev/ttyUSB0",
+      "RTU serialDevice persisted");
+  expect(parsed.adapters[0].connection.baudRate == 9600, "RTU baudRate persisted");
+  expect(parsed.adapters[0].connection.parity == "none", "RTU parity persisted");
+}
+
 void testAllProtocolsRepresented()
 {
   expect(virtual_factory::icp::ConfigurationValidator::isSupportedProtocol("mock"), "mock");
@@ -574,6 +638,7 @@ int main()
   testMalformedAndUnsupportedVersion();
   testAtomicSaveFailure();
   testImplementationFieldAndBackwardCompatibility();
+  testModbusRtuConfiguration();
   testAllProtocolsRepresented();
 
   if (failures == 0)

@@ -352,6 +352,13 @@ std::vector<RuntimeAdapterView> ApplicationService::adapters() const
     view.connectionStateDisplay = connectionStateDisplay(view.protocol, view.connectionState);
     view.implementation = adapterImplementation(record);
     view.connectionSummary = connectionSummary(record);
+    if (record.protocol == "modbus")
+    {
+      const std::string transport =
+          record.connection.transport.empty() ? "tcp"
+                                              : record.connection.transport;
+      view.transport = transport == "rtu" ? "rtu" : "tcp";
+    }
     out.push_back(std::move(view));
   }
   return out;
@@ -702,8 +709,40 @@ std::unique_ptr<IndustrialAdapter> ApplicationService::createRuntimeAdapter(
   if (record.protocol == "modbus")
   {
     ModbusAdapterConfig config;
-    config.host = record.connection.host;
-    config.port = record.connection.port == 0 ? 502 : record.connection.port;
+    const std::string transport =
+        record.connection.transport.empty() ? "tcp" : record.connection.transport;
+    if (transport == "rtu")
+    {
+      config.transport = ModbusTransport::Rtu;
+      config.serialDevice = record.connection.serialDevice;
+      config.baudRate =
+          record.connection.baudRate > 0 ? record.connection.baudRate : 9600;
+      config.dataBits =
+          record.connection.dataBits > 0 ? record.connection.dataBits : 8;
+      config.stopBits =
+          record.connection.stopBits > 0 ? record.connection.stopBits : 1;
+      const std::string parity = record.connection.parity;
+      if (parity == "even" || parity == "E" || parity == "e")
+      {
+        config.parity = 'E';
+      }
+      else if (parity == "odd" || parity == "O" || parity == "o")
+      {
+        config.parity = 'O';
+      }
+      else
+      {
+        config.parity = 'N';
+      }
+      config.linkUnitId =
+          record.connection.unitId == 0 ? 1 : record.connection.unitId;
+    }
+    else
+    {
+      config.transport = ModbusTransport::Tcp;
+      config.host = record.connection.host;
+      config.port = record.connection.port == 0 ? 502 : record.connection.port;
+    }
     config.timeoutMs =
         record.connection.timeoutMs > 0 ? record.connection.timeoutMs : 2000;
     for (const EquipmentMappingRecord &eq : record.equipment)
@@ -718,7 +757,8 @@ std::unique_ptr<IndustrialAdapter> ApplicationService::createRuntimeAdapter(
         point.name = tel.name;
         point.unit = tel.unit;
         point.source = makeModbusRef(
-            tel.unitId == 0 ? 1 : tel.unitId,
+            tel.unitId == 0 ? (record.connection.unitId == 0 ? 1 : record.connection.unitId)
+                            : tel.unitId,
             parseModbusTable(tel.table),
             tel.registerAddress);
         mapped.telemetry.push_back(point);
@@ -728,7 +768,9 @@ std::unique_ptr<IndustrialAdapter> ApplicationService::createRuntimeAdapter(
         ModbusCommandMapping mappedCommand;
         mappedCommand.command = command.command;
         mappedCommand.target = makeModbusRef(
-            command.unitId == 0 ? 1 : command.unitId,
+            command.unitId == 0
+                ? (record.connection.unitId == 0 ? 1 : record.connection.unitId)
+                : command.unitId,
             parseModbusTable(command.table),
             command.registerAddress);
         mapped.commands.push_back(mappedCommand);
@@ -736,14 +778,18 @@ std::unique_ptr<IndustrialAdapter> ApplicationService::createRuntimeAdapter(
       if (eq.state.mapped)
       {
         mapped.stateCoil = makeModbusRef(
-            eq.state.unitId == 0 ? 1 : eq.state.unitId,
+            eq.state.unitId == 0
+                ? (record.connection.unitId == 0 ? 1 : record.connection.unitId)
+                : eq.state.unitId,
             parseModbusTable(eq.state.table.empty() ? "coil" : eq.state.table),
             eq.state.registerAddress);
       }
       if (eq.fault.mapped)
       {
         mapped.faultCoil = makeModbusRef(
-            eq.fault.unitId == 0 ? 1 : eq.fault.unitId,
+            eq.fault.unitId == 0
+                ? (record.connection.unitId == 0 ? 1 : record.connection.unitId)
+                : eq.fault.unitId,
             parseModbusTable(eq.fault.table.empty() ? "coil" : eq.fault.table),
             eq.fault.registerAddress);
       }
@@ -994,6 +1040,28 @@ std::string ApplicationService::connectionSummary(const AdapterConfigRecord &rec
   if (record.protocol == "mock")
   {
     return "in-process simulation";
+  }
+  if (record.protocol == "modbus")
+  {
+    const std::string transport = c.transport.empty() ? "tcp" : c.transport;
+    if (transport == "rtu")
+    {
+      std::string summary = "RTU " + c.serialDevice;
+      if (c.baudRate > 0)
+      {
+        summary += " @ " + std::to_string(c.baudRate);
+      }
+      std::string parity = c.parity.empty() ? "none" : c.parity;
+      summary += " " + std::to_string(c.dataBits > 0 ? c.dataBits : 8)
+          + parity.substr(0, 1) + std::to_string(c.stopBits > 0 ? c.stopBits : 1);
+      return summary;
+    }
+    std::string summary = c.host;
+    if (c.port != 0)
+    {
+      summary += ":" + std::to_string(c.port);
+    }
+    return summary.empty() ? "Modbus TCP" : summary;
   }
   if (impl == "hilscher_native")
   {

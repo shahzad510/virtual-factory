@@ -241,6 +241,7 @@ json adapterDiagnosticsJson(const RuntimeAdapterView &view)
       {"adapterId", view.adapterId},
       {"protocol", view.protocol},
       {"implementation", view.implementation},
+      {"transport", view.transport},
       {"description", view.description},
       {"configured", view.configured},
       {"runtimePresent", view.runtimePresent},
@@ -422,6 +423,7 @@ public:
              {"description", view.description},
              {"equipmentCount", view.equipmentCount},
              {"implementation", view.implementation},
+             {"transport", view.transport},
              {"connectionSummary", view.connectionSummary}});
       }
       setJson(res, 200, {{"adapters", arr}});
@@ -452,6 +454,7 @@ public:
               {"description", view->description},
               {"equipmentCount", view->equipmentCount},
               {"implementation", view->implementation},
+              {"transport", view->transport},
               {"connectionSummary", view->connectionSummary},
           };
           if (record != nullptr)

@@ -79,23 +79,125 @@
     },
   };
 
-  /** Second-step Modbus transport choices (TCP live; RTU not implemented). */
+  /** Second-step Modbus transport choices (TCP and RTU both live). */
   const MODBUS_TRANSPORT_INFO = {
     tcp: {
       title: "Modbus TCP",
       support: "Supported",
       available: true,
       description:
-        "Ethernet-based Modbus TCP communication with PLCs, gateways, RTUs, drives, meters, and other Modbus TCP devices.",
+        "Ethernet-based Modbus TCP communication with PLCs, gateways, meters, drives, and other Modbus TCP devices.",
     },
     rtu: {
       title: "Modbus RTU / RS-485",
-      support: "Coming Soon",
-      available: false,
+      support: "Supported",
+      available: true,
       description:
-        "Serial Modbus RTU communication over RS-485. Not available in this ICP release.",
+        "Modbus RTU serial protocol commonly deployed over RS-485 networks for PLCs, meters, drives, sensors, and remote I/O.",
     },
   };
+
+  const MODBUS_TCP_CONNECTION = [
+    {
+      key: "host",
+      label: "Host",
+      type: "text",
+      required: true,
+      placeholder: "192.168.1.10",
+      help: "IP address or hostname of the Modbus TCP device or gateway.",
+    },
+    {
+      key: "port",
+      label: "Port",
+      type: "number",
+      required: true,
+      placeholder: "502",
+      help: "Modbus TCP listening port. Default: 502.",
+    },
+    {
+      key: "timeoutMs",
+      label: "Timeout (ms)",
+      type: "number",
+      placeholder: "2000",
+      help: "Maximum time to wait for a Modbus response.",
+    },
+  ];
+
+  const MODBUS_RTU_CONNECTION = [
+    {
+      key: "serialDevice",
+      label: "Serial port",
+      type: "text",
+      required: true,
+      placeholder: "/dev/ttyUSB0",
+      help: "Serial device path for the RS-485 interface (for example /dev/ttyUSB0 or /dev/ttyACM0).",
+    },
+    {
+      key: "baudRate",
+      label: "Baud rate",
+      type: "number",
+      required: true,
+      options: [
+        { value: "1200", label: "1200" },
+        { value: "2400", label: "2400" },
+        { value: "4800", label: "4800" },
+        { value: "9600", label: "9600" },
+        { value: "19200", label: "19200" },
+        { value: "38400", label: "38400" },
+        { value: "57600", label: "57600" },
+        { value: "115200", label: "115200" },
+      ],
+      help: "Serial baud rate matching the Modbus RTU device.",
+    },
+    {
+      key: "dataBits",
+      label: "Data bits",
+      type: "number",
+      required: true,
+      options: [
+        { value: "7", label: "7" },
+        { value: "8", label: "8" },
+      ],
+      help: "Number of data bits per serial frame.",
+    },
+    {
+      key: "parity",
+      label: "Parity",
+      type: "text",
+      required: true,
+      options: [
+        { value: "none", label: "None" },
+        { value: "even", label: "Even" },
+        { value: "odd", label: "Odd" },
+      ],
+      help: "Serial parity setting.",
+    },
+    {
+      key: "stopBits",
+      label: "Stop bits",
+      type: "number",
+      required: true,
+      options: [
+        { value: "1", label: "1" },
+        { value: "2", label: "2" },
+      ],
+      help: "Number of stop bits.",
+    },
+    {
+      key: "timeoutMs",
+      label: "Response timeout (ms)",
+      type: "number",
+      placeholder: "2000",
+      help: "Maximum time to wait for a Modbus RTU response.",
+    },
+    {
+      key: "unitId",
+      label: "Default Unit ID",
+      type: "number",
+      placeholder: "1",
+      help: "Default Modbus slave/unit address (1–247) used when mappings omit Unit ID. Per-mapping Unit ID still applies on multi-drop buses.",
+    },
+  ];
 
   const IMPLEMENTATION_LABELS = {
     gateway: "Gateway",
@@ -132,31 +234,7 @@
         help: "OPC UA endpoint of the PLC, controller, or server (opc.tcp://…).",
       },
     ],
-    modbus: [
-      {
-        key: "host",
-        label: "Host",
-        type: "text",
-        required: true,
-        placeholder: "192.168.1.10",
-        help: "IP address or hostname of the Modbus TCP device or gateway.",
-      },
-      {
-        key: "port",
-        label: "Port",
-        type: "number",
-        required: true,
-        placeholder: "502",
-        help: "Modbus TCP listening port. Default: 502.",
-      },
-      {
-        key: "timeoutMs",
-        label: "Timeout (ms)",
-        type: "number",
-        placeholder: "2000",
-        help: "Maximum time to wait for a Modbus response.",
-      },
-    ],
+    modbus: MODBUS_TCP_CONNECTION,
     mqtt: [
       {
         key: "host",
@@ -450,6 +528,13 @@
     if ((protocol === "profinet" || protocol === "profibus") && impl === "gateway") {
       return GATEWAY_FIELD_CONNECTION;
     }
+    if (protocol === "modbus") {
+      const transport =
+        typeof adapter === "string"
+          ? "tcp"
+          : ((adapter.connection && adapter.connection.transport) || "tcp");
+      return transport === "rtu" ? MODBUS_RTU_CONNECTION : MODBUS_TCP_CONNECTION;
+    }
     return CONNECTION_FIELDS[protocol] || [];
   }
 
@@ -519,7 +604,26 @@
         },
       ];
     } else if (protocol === "modbus") {
-      base.connection = { host: "127.0.0.1", port: 502, timeoutMs: 2000 };
+      const transport = opts.transport === "rtu" ? "rtu" : "tcp";
+      if (transport === "rtu") {
+        base.connection = {
+          transport: "rtu",
+          serialDevice: "/dev/ttyUSB0",
+          baudRate: 9600,
+          dataBits: 8,
+          parity: "none",
+          stopBits: 1,
+          timeoutMs: 2000,
+          unitId: 1,
+        };
+      } else {
+        base.connection = {
+          transport: "tcp",
+          host: "127.0.0.1",
+          port: 502,
+          timeoutMs: 2000,
+        };
+      }
       base.equipment = [
         {
           equipmentId: id + "-Device-01",

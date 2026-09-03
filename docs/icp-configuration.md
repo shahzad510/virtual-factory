@@ -81,6 +81,19 @@ Protocol-neutral records (not Siemens/Allen-Bradley/Pump/Robot C++ types):
 
 Supported `protocol` values: `mock`, `opcua`, `modbus`, `mqtt`, `rest`, `ethernetip`, `profinet`, `profibus`.
 
+### Modbus transport
+
+For `protocol: "modbus"`, optional `connection.transport`:
+
+| `transport` | Meaning |
+| --- | --- |
+| `tcp` or empty (default) | Modbus TCP — `host`, `port`, `timeoutMs` |
+| `rtu` | Modbus RTU over serial / RS-485 — `serialDevice`, `baudRate`, `parity` (`none`/`even`/`odd`), `dataBits`, `stopBits`, `timeoutMs`, optional default `unitId` |
+
+Unit ID for register mappings remains on telemetry/command records. Connection `unitId` is an optional RTU default used when mappings omit it and for link verification.
+
+Legacy Modbus configs without `transport` remain Modbus TCP.
+
 ### Protocol vs implementation (PROFINET / PROFIBUS)
 
 `protocol` names the field protocol. `implementation` names the active stack:

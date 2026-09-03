@@ -267,7 +267,7 @@ Telemetry path: Modbus read → `poll()` → `GenericEquipment.telemetry()`. Opt
 
 `connect()` after `Faulted` closes and recreates the libmodbus client session (explicit reconnect). Automatic background reconnect is **NOT IMPLEMENTED**.
 
-Implemented client functions: FC 1–6 (read coils / discrete inputs / holding / input registers; write single coil / single holding register). Batch writes, FC 15/16, Modbus RTU, TLS, and unit-id multiplexing across multiple TCP sessions inside one adapter are **NOT IMPLEMENTED**.
+Implemented client functions: FC 1–6 (read coils / discrete inputs / holding / input registers; write single coil / single holding register) over **Modbus TCP** and **Modbus RTU / RS-485** (libmodbus). Batch writes, FC 15/16, TLS, and unit-id multiplexing across multiple sessions inside one adapter are **NOT IMPLEMENTED**. One adapter instance = one TCP endpoint or one serial RTU session.
 
 Tests use an in-process **libmodbus TCP slave** (`tests/modbus_test_server.*`) on localhost with mapped test machines (mixer, pump, unknown) as **data/labels only**. **DEVELOPMENT ONLY:** no authentication, no TLS. Not a production PLC.
 

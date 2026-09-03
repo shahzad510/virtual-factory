@@ -142,7 +142,7 @@
       return `<div class="modal-backdrop" data-action="close-chooser">
         <div class="modal chooser-modal" role="dialog" aria-labelledby="transport-title" data-action="stop-modal">
           <h2 id="transport-title">Modbus</h2>
-          <p class="muted">Select the communication method.</p>
+          <p class="muted">Select the communication method. Modbus RTU is the serial protocol commonly deployed over RS-485 physical networks.</p>
           <div class="chooser-list">${items.join("")}</div>
           <div class="row-actions">
             <button type="button" data-action="back-chooser">Back</button>
@@ -190,12 +190,15 @@
     return "";
   }
 
-  function openAddAdapterEditor(protocol, implementation) {
+  function openAddAdapterEditor(protocol, implementation, transport) {
     state._chooser = null;
-    const opts =
-      implementation && (protocol === "profinet" || protocol === "profibus")
-        ? { implementation }
-        : {};
+    const opts = {};
+    if (implementation && (protocol === "profinet" || protocol === "profibus")) {
+      opts.implementation = implementation;
+    }
+    if (protocol === "modbus" && transport) {
+      opts.transport = transport;
+    }
     state._editingAdapter = Form.defaultAdapter(protocol, undefined, opts);
     state._editingAdapter._edit = false;
   }
@@ -580,6 +583,10 @@
 
   function readConnectionFromForm(adapter) {
     const connection = {};
+    if ((adapter.protocol || "") === "modbus") {
+      connection.transport =
+        (adapter.connection && adapter.connection.transport) || "tcp";
+    }
     const fields = Form.connectionFieldsFor(editorContext(adapter));
     fields.forEach((f) => {
       const el = document.getElementById("f-conn-" + f.key);
@@ -853,14 +860,27 @@
       html += `<div class="empty"><strong>No adapters configured</strong>Click <strong>+ Add Adapter</strong> to create one.</div>`;
     } else {
       html += `<div class="panel"><table><thead><tr>
-        <th>Adapter</th><th>Protocol</th><th>Implementation</th><th>State</th><th>Enabled</th><th>Equipment</th><th>Error</th><th>Actions</th>
+        <th>Adapter</th><th>Protocol</th><th>Transport</th><th>Implementation</th><th>State</th><th>Enabled</th><th>Equipment</th><th>Error</th><th>Actions</th>
       </tr></thead><tbody>`;
       html += adapters
-        .map(
-          (a) => `<tr>
+        .map((a) => {
+          const transportLabel =
+            a.protocol === "modbus"
+              ? a.transport === "rtu"
+                ? "RTU / RS-485"
+                : "TCP"
+              : "—";
+          const implLabel =
+            a.protocol === "modbus"
+              ? a.transport === "rtu"
+                ? "Modbus RTU"
+                : "Modbus TCP"
+              : implementationLabel(a.implementation);
+          return `<tr>
           <td><a href="#/adapters/${esc(a.adapterId)}">${esc(a.adapterId)}</a></td>
-          <td>${esc(a.protocol)}</td>
-          <td>${esc(implementationLabel(a.implementation))}</td>
+          <td>${esc(a.protocol === "modbus" ? "Modbus" : a.protocol)}</td>
+          <td>${esc(transportLabel)}</td>
+          <td>${esc(implLabel)}</td>
           <td>${adapterConnectionBadge(a)}</td>
           <td>${a.enabled ? "yes" : "no"}</td>
           <td>${esc(a.equipmentCount)}</td>
@@ -874,8 +894,8 @@
               a.adapterId
             )}">Remove</button>
           </td>
-        </tr>`
-        )
+        </tr>`;
+        })
         .join("");
       html += `</tbody></table></div>`;
     }
@@ -1108,19 +1128,26 @@
     if (!adapters || !adapters.length) {
       return `<p class="muted">No adapters in this implementation group.</p>`;
     }
-    return `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>Implementation</th><th>Endpoint</th><th>State</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
-      .map(
-        (a) => `<tr>
+    return `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>Transport</th><th>Implementation</th><th>Endpoint</th><th>State</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
+      .map((a) => {
+        const transportLabel =
+          a.protocol === "modbus"
+            ? a.transport === "rtu"
+              ? "RTU / RS-485"
+              : "TCP"
+            : "—";
+        return `<tr>
         <td>${esc(a.adapterId)}</td>
         <td>${esc(a.protocol)}</td>
+        <td>${esc(transportLabel)}</td>
         <td>${esc(implementationLabel(a.implementation))}</td>
         <td class="mono">${esc(a.connectionSummary || "")}</td>
         <td>${statusBadge(a.connectionStateDisplay || a.connectionState)}</td>
         <td>${a.runtimePresent ? "yes" : "no"}</td>
         <td>${esc(a.equipmentCount || 0)}</td>
         <td class="mono">${esc(a.lastError || "")}</td>
-      </tr>`
-      )
+      </tr>`;
+      })
       .join("")}</tbody></table>`;
   }
 
@@ -1236,11 +1263,18 @@
         ${
           !adapters.length
             ? `<p class="muted">No adapters.</p>`
-            : `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>Implementation</th><th>Endpoint</th><th>State</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
-                .map(
-                  (a) => `<tr>
+            : `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>Transport</th><th>Implementation</th><th>Endpoint</th><th>State</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
+                .map((a) => {
+                  const transportLabel =
+                    a.protocol === "modbus"
+                      ? a.transport === "rtu"
+                        ? "RTU / RS-485"
+                        : "TCP"
+                      : "—";
+                  return `<tr>
               <td>${esc(a.adapterId)}</td>
               <td>${esc(a.protocol)}</td>
+              <td>${esc(transportLabel)}</td>
               <td>${esc(implementationLabel(a.implementation))}</td>
               <td class="mono">${esc(a.connectionSummary || "")}</td>
               <td>${statusBadge(
@@ -1249,8 +1283,8 @@
               <td>${a.runtimePresent ? "yes" : "no"}</td>
               <td>${esc(a.equipmentCount || 0)}</td>
               <td class="mono">${esc(a.lastError || "")}</td>
-            </tr>`
-                )
+            </tr>`;
+                })
                 .join("")}</tbody></table>`
         }
       </div>
@@ -1463,14 +1497,18 @@
           (Form.MODBUS_TRANSPORT_INFO && Form.MODBUS_TRANSPORT_INFO[transport]) || null;
         if (!info) return;
         if (!info.available) {
-          flash("Modbus RTU / RS-485 is coming soon and is not available in this release.", "ok");
+          flash("Selected Modbus transport is not available in this release.", "ok");
           state._chooser = null;
           await render({ skipDraftCapture: true });
           return;
         }
-        openAddAdapterEditor("modbus");
+        openAddAdapterEditor("modbus", undefined, transport);
         await render({ skipDraftCapture: true });
-        flash("Modbus TCP adapter editor opened — configure and click Validate & Save adapter", "ok");
+        flash(
+          (transport === "rtu" ? "Modbus RTU / RS-485" : "Modbus TCP") +
+            " adapter editor opened — configure and click Validate & Save adapter",
+          "ok"
+        );
         return;
       }
       if (action === "choose-implementation") {

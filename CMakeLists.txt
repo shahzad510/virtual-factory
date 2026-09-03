@@ -64,6 +64,24 @@ if (VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS)
 endif()
 add_test(NAME modbus_adapter_test COMMAND modbus_adapter_test)
 
+add_executable(modbus_rtu_adapter_test
+    tests/modbus_rtu_adapter_test.cc
+    tests/modbus_rtu_test_bus.cc
+)
+target_include_directories(modbus_rtu_adapter_test
+    PRIVATE
+        tests
+        ${VIRTUAL_FACTORY_LIBMODBUS_INCLUDE_DIRS}
+)
+target_link_libraries(modbus_rtu_adapter_test PRIVATE virtual_factory_industrial pthread util)
+if (VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS)
+  set_property(
+      TARGET modbus_rtu_adapter_test
+      PROPERTY BUILD_RPATH "${VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS}")
+endif()
+add_test(NAME modbus_rtu_adapter_test COMMAND modbus_rtu_adapter_test)
+set_tests_properties(modbus_rtu_adapter_test PROPERTIES TIMEOUT 60)
+
 add_executable(rest_adapter_test
     tests/rest_adapter_test.cc
     tests/rest_test_server.cc
