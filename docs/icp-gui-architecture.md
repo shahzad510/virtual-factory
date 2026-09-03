@@ -130,12 +130,15 @@ This API is **ICP’s own GUI Application API**. It is **not** CIC (ICP-1C).
 
 ## 5. Configuration workflow
 
-1. Add/edit adapter in GUI (protocol-specific fields + equipment JSON).
-2. Backend `ConfigurationValidator` is authoritative.
-3. Save → `JsonFileConfigurationRepository` versioned JSON.
-4. Restart ICP → Load → same document.
-5. PROFINET/PROFIBUS: **Configure → Validate → Save** without hardware.
-6. Connect without hardware → clear error: `Hilscher hardware not detected. …`
+1. **Add Industrial Adapter** opens a protocol chooser (industrial wording; status badges reflect runtime reality: Supported / Gateway / Coming Soon).
+2. **Modbus** opens a transport step: Modbus TCP (Supported) or Modbus RTU / RS-485 (Coming Soon — disabled; no adapter created). RTU/RS-485 is **not** implemented in the backend.
+3. **PROFINET / PROFIBUS** open a Gateway Integration step. Gateway configures a northbound gateway endpoint (OPC UA by default). Native Hilscher/Softing remain Coming Soon in the GUI. Live communication for fieldbus via gateway uses a Supported OPC UA / Modbus / MQTT / REST adapter to that gateway.
+4. Editor connection fields expose only parameters the runtime uses (for example OPC UA shows endpoint URL only; unused TLS/timeout controls are not shown).
+5. Backend `ConfigurationValidator` is authoritative.
+6. Save → `JsonFileConfigurationRepository` versioned JSON.
+7. Restart ICP → Load → same document.
+8. PROFINET/PROFIBUS native records: **Configure → Validate → Save** without hardware when that path is enabled.
+9. Connect without hardware on Hilscher native → clear error: `Hilscher hardware not detected. …`
 
 ---
 

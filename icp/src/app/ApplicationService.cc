@@ -196,7 +196,7 @@ std::vector<ProtocolCapability> ApplicationService::protocols() const
   return {
       {"mock", "Mock", true, false},
       {"opcua", "OPC UA", true, false},
-      {"modbus", "Modbus TCP", true, false},
+      {"modbus", "Modbus", true, false},
       {"mqtt", "MQTT", true, false},
       {"rest", "REST", true, false},
       {"ethernetip", "EtherNet/IP", true, false},
@@ -868,6 +868,7 @@ std::unique_ptr<IndustrialAdapter> ApplicationService::createRuntimeAdapter(
   {
     EtherNetIpAdapterConfig config;
     config.host = record.connection.host;
+    config.port = record.connection.port == 0 ? 44818 : record.connection.port;
     config.path = record.connection.path.empty() ? "1,0" : record.connection.path;
     config.plcType =
         record.connection.plcType.empty() ? "controllogix" : record.connection.plcType;

@@ -99,11 +99,12 @@
         : Form.protocolsList();
       const items = catalog.map((id) => {
         const info = Form.PROTOCOL_INFO[id] || {};
-        const label =
+        const label = Form.PROTOCOL_LABELS[id] ||
           (state.protocols.find((p) => p.id === id) || {}).label ||
-          Form.PROTOCOL_LABELS[id] ||
           id;
-        const badgeClass = info.next === "implementation" ? "muted" : "ok";
+        let badgeClass = "ok";
+        if (info.support === "Gateway") badgeClass = "gateway";
+        else if (info.next === "implementation") badgeClass = "muted";
         return `<button type="button" class="chooser-item" data-action="choose-protocol" data-protocol="${esc(
           id
         )}">
@@ -117,9 +118,36 @@
       return `<div class="modal-backdrop" data-action="close-chooser">
         <div class="modal chooser-modal" role="dialog" aria-labelledby="chooser-title" data-action="stop-modal">
           <h2 id="chooser-title">Add Industrial Adapter</h2>
-          <p class="muted">Select a protocol. Nothing is preselected. PROFINET and PROFIBUS ask for an implementation next.</p>
+          <p class="muted">Select the industrial protocol for this connection.</p>
           <div class="chooser-grid">${items.join("")}</div>
           <div class="row-actions"><button type="button" data-action="close-chooser">Cancel</button></div>
+        </div>
+      </div>`;
+    }
+    if (state._chooser.step === "transport" && state._chooser.protocol === "modbus") {
+      const transports = Form.MODBUS_TRANSPORT_INFO || {};
+      const items = Object.keys(transports).map((key) => {
+        const info = transports[key];
+        const disabled = !info.available;
+        return `<button type="button" class="chooser-item${disabled ? " disabled" : ""}" data-action="choose-modbus-transport" data-transport="${esc(
+          key
+        )}" ${disabled ? "aria-disabled=\"true\"" : ""}>
+          <span class="chooser-item-head">
+            <span class="chooser-title">${esc(info.title)}</span>
+            <span class="badge ${info.available ? "ok" : "muted"}">${esc(info.support)}</span>
+          </span>
+          <span class="chooser-desc">${esc(info.description)}</span>
+        </button>`;
+      });
+      return `<div class="modal-backdrop" data-action="close-chooser">
+        <div class="modal chooser-modal" role="dialog" aria-labelledby="transport-title" data-action="stop-modal">
+          <h2 id="transport-title">Modbus</h2>
+          <p class="muted">Select the communication method.</p>
+          <div class="chooser-list">${items.join("")}</div>
+          <div class="row-actions">
+            <button type="button" data-action="back-chooser">Back</button>
+            <button type="button" data-action="close-chooser">Cancel</button>
+          </div>
         </div>
       </div>`;
     }
@@ -128,28 +156,28 @@
       return `<div class="modal-backdrop" data-action="close-chooser">
         <div class="modal chooser-modal" role="dialog" aria-labelledby="impl-title" data-action="stop-modal">
           <h2 id="impl-title">${esc(Form.PROTOCOL_LABELS[proto] || proto)}</h2>
-          <p class="muted">Choose how this adapter will be implemented. Protocol and implementation are separate.</p>
+          <p class="muted">Gateway Integration — ICP communicates with an industrial gateway over a supported northbound interface. Native fieldbus adapters are not available for live use in this release.</p>
           <div class="chooser-list">
             <button type="button" class="chooser-item" data-action="choose-implementation" data-implementation="gateway">
               <span class="chooser-item-head">
                 <span class="chooser-title">Gateway</span>
-                <span class="badge ok">AVAILABLE</span>
+                <span class="badge ok">Available</span>
               </span>
-              <span class="chooser-desc">Configure communication through a supported gateway architecture (OPC UA, Modbus, MQTT, or REST northbound).</span>
+              <span class="chooser-desc">Configure integration through a supported industrial gateway. ICP uses the gateway’s northbound interface (OPC UA by default).</span>
             </button>
             <button type="button" class="chooser-item disabled" data-action="choose-implementation" data-implementation="hilscher_native">
               <span class="chooser-item-head">
-                <span class="chooser-title">Hilscher</span>
-                <span class="badge muted">COMING SOON</span>
+                <span class="chooser-title">Hilscher native</span>
+                <span class="badge muted">Coming Soon</span>
               </span>
-              <span class="chooser-desc">Native fieldbus via Hilscher hardware. Not available in this GUI milestone.</span>
+              <span class="chooser-desc">Native fieldbus via Hilscher hardware. Not available for configuration in this GUI milestone.</span>
             </button>
             <button type="button" class="chooser-item disabled" data-action="choose-implementation" data-implementation="softing_native">
               <span class="chooser-item-head">
-                <span class="chooser-title">Softing</span>
-                <span class="badge muted">COMING SOON</span>
+                <span class="chooser-title">Softing native</span>
+                <span class="badge muted">Coming Soon</span>
               </span>
-              <span class="chooser-desc">Native fieldbus via Softing. Not available in this GUI milestone.</span>
+              <span class="chooser-desc">Native fieldbus via Softing. Not available in this ICP release.</span>
             </button>
           </div>
           <div class="row-actions">
@@ -250,12 +278,14 @@
       .map((f) => {
         const id = "f-conn-" + f.key;
         const req = f.required ? ' <span class="req">*</span>' : "";
+        const help = f.help ? `<span class="field-help">${esc(f.help)}</span>` : "";
         const val = connection && connection[f.key];
         let control;
         if (f.type === "bool") {
+          const on = val === true || val === "true";
           control = `<select id="${id}" data-conn="${esc(f.key)}"><option value="false" ${
-            !val ? "selected" : ""
-          }>false</option><option value="true" ${val ? "selected" : ""}>true</option></select>`;
+            !on ? "selected" : ""
+          }>No</option><option value="true" ${on ? "selected" : ""}>Yes</option></select>`;
         } else {
           control = `<input id="${id}" data-conn="${esc(f.key)}" type="${
             f.type === "number" ? "number" : "text"
@@ -263,7 +293,7 @@
             f.placeholder || ""
           )}"/>`;
         }
-        return `<label class="${fieldErrorClass(id, errorMap)}">${esc(f.label)}${req}${control}${fieldErrorMsg(
+        return `<label class="${fieldErrorClass(id, errorMap)}">${esc(f.label)}${req}${control}${help}${fieldErrorMsg(
           id,
           errorMap
         )}</label>`;
@@ -271,20 +301,48 @@
       .join("");
   }
 
+  function mappingFieldControl(f, id, value, dataAttr) {
+    if (f.options && Array.isArray(f.options)) {
+      const opts = f.options
+        .map((opt) => {
+          const v = typeof opt === "string" ? opt : opt.value;
+          const lab = typeof opt === "string" ? opt : opt.label;
+          const sel = String(value == null ? "" : value) === String(v) ? " selected" : "";
+          return `<option value="${esc(v)}"${sel}>${esc(lab)}</option>`;
+        })
+        .join("");
+      return `<select id="${id}" ${dataAttr}>${opts}</select>`;
+    }
+    return `<input id="${id}" ${dataAttr} type="${
+      f.type === "number" ? "number" : "text"
+    }" value="${esc(value == null ? "" : value)}" placeholder="${esc(f.placeholder || "")}"/>`;
+  }
+
   function telemetryRowHtml(adapter, tel, eqIdx, telIdx, errorMap) {
     const fields = Form.telemetryFieldsFor(editorContext(adapter));
+    const protocol = editorContext(adapter).protocol || "mock";
     const cells = fields
       .map((f) => {
         const id = `f-eq-${eqIdx}-tel-${telIdx}-${f.key}`;
         const req = f.required ? ' <span class="req">*</span>' : "";
-        return `<label class="${fieldErrorClass(id, errorMap)}">${esc(f.label)}${req}<input id="${id}" data-tel-field="${esc(
-          f.key
-        )}" type="${f.type === "number" ? "number" : "text"}" value="${esc(
-          inputVal(tel, f.key)
-        )}" placeholder="${esc(f.placeholder || "")}"/>${fieldErrorMsg(id, errorMap)}</label>`;
+        const help = f.help ? `<span class="field-help">${esc(f.help)}</span>` : "";
+        const control = mappingFieldControl(
+          f,
+          id,
+          tel[f.key],
+          `data-tel-field="${esc(f.key)}"`
+        );
+        return `<label class="${fieldErrorClass(id, errorMap)}">${esc(f.label)}${req}${control}${help}${fieldErrorMsg(
+          id,
+          errorMap
+        )}</label>`;
       })
       .join("");
-    return `<div class="tel-row" data-eq="${eqIdx}" data-tel="${telIdx}">${cells}
+    const addressingNote =
+      protocol === "modbus"
+        ? `<p class="field-help full">Addresses are 0-based protocol addresses. Vendor manuals may show 40001-style numbers; configure the zero-based wire address here.</p>`
+        : "";
+    return `<div class="tel-row" data-eq="${eqIdx}" data-tel="${telIdx}">${addressingNote}${cells}
       <div class="row-actions"><button type="button" data-action="remove-telemetry" data-eq="${eqIdx}" data-tel="${telIdx}">Remove telemetry</button></div>
     </div>`;
   }
@@ -295,11 +353,17 @@
       .map((f) => {
         const id = `f-eq-${eqIdx}-cmd-${cmdIdx}-${f.key}`;
         const req = f.required ? ' <span class="req">*</span>' : "";
-        return `<label class="${fieldErrorClass(id, errorMap)}">${esc(f.label)}${req}<input id="${id}" data-cmd-field="${esc(
-          f.key
-        )}" type="${f.type === "number" ? "number" : "text"}" value="${esc(
-          inputVal(cmd, f.key)
-        )}" placeholder="${esc(f.placeholder || "")}"/>${fieldErrorMsg(id, errorMap)}</label>`;
+        const help = f.help ? `<span class="field-help">${esc(f.help)}</span>` : "";
+        const control = mappingFieldControl(
+          f,
+          id,
+          cmd[f.key],
+          `data-cmd-field="${esc(f.key)}"`
+        );
+        return `<label class="${fieldErrorClass(id, errorMap)}">${esc(f.label)}${req}${control}${help}${fieldErrorMsg(
+          id,
+          errorMap
+        )}</label>`;
       })
       .join("");
     return `<div class="cmd-row" data-eq="${eqIdx}" data-cmd="${cmdIdx}">${cells}
@@ -393,7 +457,7 @@
       : "";
     const gatewayNote =
       showImpl && impl === "gateway"
-        ? `<p class="protocol-hint">Gateway configuration uses a northbound industrial protocol (OPC UA endpoint by default). A dedicated PROFINET/PROFIBUS gateway runtime is not available in this ICP build — save the record, then use OPC UA, Modbus, MQTT, or REST for live communication.</p>`
+        ? `<p class="protocol-hint">Gateway integration configures the industrial gateway’s northbound interface (OPC UA endpoint by default). ICP does not run a native PROFINET/PROFIBUS stack for this path. For live communication, use a Supported OPC UA, Modbus, MQTT, or REST adapter to that gateway.</p>`
         : "";
     return `
       <div id="adapter-editor">
@@ -426,29 +490,47 @@
           </div>
         </section>
         ${
-          protocol === "mock"
-            ? ""
-            : `<section class="editor-section">
+          (() => {
+            const credSupport = Form.credentialsSupport
+              ? Form.credentialsSupport(protocol)
+              : { username: true, passwordRef: true, tokenRef: true };
+            if (!credSupport.username && !credSupport.passwordRef && !credSupport.tokenRef) {
+              return "";
+            }
+            return `<section class="editor-section">
           <h3>Credentials</h3>
-          <p class="muted">References only (env:NAME, file:PATH, secret:NAME). Never paste passwords.</p>
+          <p class="muted">Optional identity for protocols that support it. Secret references are stored only; live secret resolution is not enabled in this release.</p>
           <div class="form-grid">
-          <label class="${fieldErrorClass("f-cred-username", errorMap)}">Username
+          ${
+            credSupport.username
+              ? `<label class="${fieldErrorClass("f-cred-username", errorMap)}">Username
             <input id="f-cred-username" value="${esc(creds.username || "")}"/>${fieldErrorMsg(
-              "f-cred-username",
-              errorMap
-            )}</label>
-          <label class="${fieldErrorClass("f-cred-passwordRef", errorMap)}">Password ref
+                  "f-cred-username",
+                  errorMap
+                )}</label>`
+              : ""
+          }
+          ${
+            credSupport.passwordRef
+              ? `<label class="${fieldErrorClass("f-cred-passwordRef", errorMap)}">Password ref
             <input id="f-cred-passwordRef" value="${esc(creds.passwordRef || "")}" placeholder="env:ICP_PASS"/>${fieldErrorMsg(
-              "f-cred-passwordRef",
-              errorMap
-            )}</label>
-          <label class="${fieldErrorClass("f-cred-tokenRef", errorMap)}">Token ref
+                  "f-cred-passwordRef",
+                  errorMap
+                )}</label>`
+              : ""
+          }
+          ${
+            credSupport.tokenRef
+              ? `<label class="${fieldErrorClass("f-cred-tokenRef", errorMap)}">Token ref
             <input id="f-cred-tokenRef" value="${esc(creds.tokenRef || "")}" placeholder="env:ICP_TOKEN"/>${fieldErrorMsg(
-              "f-cred-tokenRef",
-              errorMap
-            )}</label>
+                  "f-cred-tokenRef",
+                  errorMap
+                )}</label>`
+              : ""
+          }
           </div>
-        </section>`
+        </section>`;
+          })()
         }
         <section class="editor-section">
           <h3>Equipment</h3>
@@ -1359,14 +1441,36 @@
       if (action === "choose-protocol") {
         const protocol = el && el.dataset.protocol;
         if (!protocol) return;
-        if (protocol === "profinet" || protocol === "profibus") {
+        const info = Form.PROTOCOL_INFO[protocol] || {};
+        if (info.next === "implementation") {
           state._chooser = { step: "implementation", protocol };
+          await render({ skipDraftCapture: true });
+          return;
+        }
+        if (info.next === "transport") {
+          state._chooser = { step: "transport", protocol };
           await render({ skipDraftCapture: true });
           return;
         }
         openAddAdapterEditor(protocol);
         await render({ skipDraftCapture: true });
         flash("Adapter editor opened — configure and click Validate & Save adapter", "ok");
+        return;
+      }
+      if (action === "choose-modbus-transport") {
+        const transport = el && el.dataset.transport;
+        const info =
+          (Form.MODBUS_TRANSPORT_INFO && Form.MODBUS_TRANSPORT_INFO[transport]) || null;
+        if (!info) return;
+        if (!info.available) {
+          flash("Modbus RTU / RS-485 is coming soon and is not available in this release.", "ok");
+          state._chooser = null;
+          await render({ skipDraftCapture: true });
+          return;
+        }
+        openAddAdapterEditor("modbus");
+        await render({ skipDraftCapture: true });
+        flash("Modbus TCP adapter editor opened — configure and click Validate & Save adapter", "ok");
         return;
       }
       if (action === "choose-implementation") {
@@ -1386,7 +1490,7 @@
         if (impl === "gateway") {
           openAddAdapterEditor(protocol, "gateway");
           await render({ skipDraftCapture: true });
-          flash("Gateway adapter editor opened — configure northbound gateway connection", "ok");
+          flash("Gateway adapter editor opened — configure the gateway northbound endpoint", "ok");
           return;
         }
         return;

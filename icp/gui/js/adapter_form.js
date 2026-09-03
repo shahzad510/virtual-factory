@@ -14,7 +14,7 @@
   const PROTOCOL_LABELS = {
     mock: "Mock",
     opcua: "OPC UA",
-    modbus: "Modbus TCP",
+    modbus: "Modbus",
     mqtt: "MQTT",
     rest: "REST",
     ethernetip: "EtherNet/IP",
@@ -22,46 +22,78 @@
     profibus: "PROFIBUS",
   };
 
+  /**
+   * Chooser card metadata. support/next must match runtime reality:
+   * - Supported = live adapter exists
+   * - Gateway = fieldbus via industrial gateway (northbound), not native live stack
+   * - Coming Soon = not creatable in this product milestone
+   */
   const PROTOCOL_INFO = {
     mock: {
-      description: "In-process simulated source for tests and demonstrations.",
+      description:
+        "Simulated industrial data source for development, testing, and demonstrations.",
       support: "Supported",
       next: "editor",
     },
     opcua: {
-      description: "Connect to an OPC UA server (UaExpert, PLC, gateway).",
+      description:
+        "Connect to OPC UA servers, PLCs, and industrial automation systems.",
       support: "Supported",
       next: "editor",
     },
     modbus: {
-      description: "Modbus TCP to a PLC, RTU gateway, or simulator.",
+      description:
+        "Connect to PLCs, RTUs, gateways, drives, meters, and other Modbus devices.",
       support: "Supported",
-      next: "editor",
+      next: "transport",
     },
     mqtt: {
-      description: "MQTT broker session for topics and commands.",
+      description:
+        "Connect to industrial MQTT brokers for telemetry, commands, and machine data.",
       support: "Supported",
       next: "editor",
     },
     rest: {
-      description: "HTTP/JSON industrial origin (one adapter = one host).",
+      description:
+        "Connect to industrial equipment and systems through HTTP/REST interfaces.",
       support: "Supported",
       next: "editor",
     },
     ethernetip: {
-      description: "EtherNet/IP explicit messaging to a Logix-style PLC.",
+      description:
+        "Connect to EtherNet/IP-enabled PLCs and industrial automation devices.",
       support: "Supported",
       next: "editor",
     },
     profinet: {
-      description: "PROFINET field devices. An implementation is selected next.",
-      support: "Implementation required",
+      description:
+        "Integrate PROFINET devices through a supported industrial gateway.",
+      support: "Gateway",
       next: "implementation",
     },
     profibus: {
-      description: "PROFIBUS field devices. An implementation is selected next.",
-      support: "Implementation required",
+      description:
+        "Integrate PROFIBUS devices through a supported industrial gateway.",
+      support: "Gateway",
       next: "implementation",
+    },
+  };
+
+  /** Second-step Modbus transport choices (TCP live; RTU not implemented). */
+  const MODBUS_TRANSPORT_INFO = {
+    tcp: {
+      title: "Modbus TCP",
+      support: "Supported",
+      available: true,
+      description:
+        "Ethernet-based Modbus TCP communication with PLCs, gateways, RTUs, drives, meters, and other Modbus TCP devices.",
+    },
+    rtu: {
+      title: "Modbus RTU / RS-485",
+      support: "Coming Soon",
+      available: false,
+      description:
+        "Serial Modbus RTU communication over RS-485. Not available in this ICP release.",
     },
   };
 
@@ -74,43 +106,186 @@
 
   /** Gateway northbound connection for PROFINET/PROFIBUS (ADR-040: OPC UA default). */
   const GATEWAY_FIELD_CONNECTION = [
-    { key: "endpointUrl", label: "Gateway endpoint URL", type: "text", required: true, placeholder: "opc.tcp://gateway:4840" },
-    { key: "timeoutMs", label: "Timeout (ms)", type: "number" },
+    {
+      key: "endpointUrl",
+      label: "Gateway endpoint URL",
+      type: "text",
+      required: true,
+      placeholder: "opc.tcp://gateway:4840",
+      help: "Northbound OPC UA endpoint exposed by the industrial gateway.",
+    },
   ];
 
-  /** Connection fields required/useful per protocol (validator-aligned). */
+  /**
+   * Connection fields exposed in the GUI — only parameters the runtime uses
+   * (or that are required for native scaffolding when that path is selected).
+   */
   const CONNECTION_FIELDS = {
     mock: [],
     opcua: [
-      { key: "endpointUrl", label: "Endpoint URL", type: "text", required: true, placeholder: "opc.tcp://host:4840" },
-      { key: "timeoutMs", label: "Timeout (ms)", type: "number" },
-      { key: "useTls", label: "Use TLS", type: "bool" },
+      {
+        key: "endpointUrl",
+        label: "Endpoint URL",
+        type: "text",
+        required: true,
+        placeholder: "opc.tcp://host:4840",
+        help: "OPC UA endpoint of the PLC, controller, or server (opc.tcp://…).",
+      },
     ],
     modbus: [
-      { key: "host", label: "Host", type: "text", required: true },
-      { key: "port", label: "Port", type: "number", required: true },
-      { key: "timeoutMs", label: "Timeout (ms)", type: "number" },
+      {
+        key: "host",
+        label: "Host",
+        type: "text",
+        required: true,
+        placeholder: "192.168.1.10",
+        help: "IP address or hostname of the Modbus TCP device or gateway.",
+      },
+      {
+        key: "port",
+        label: "Port",
+        type: "number",
+        required: true,
+        placeholder: "502",
+        help: "Modbus TCP listening port. Default: 502.",
+      },
+      {
+        key: "timeoutMs",
+        label: "Timeout (ms)",
+        type: "number",
+        placeholder: "2000",
+        help: "Maximum time to wait for a Modbus response.",
+      },
     ],
     mqtt: [
-      { key: "host", label: "Broker host", type: "text", required: true },
-      { key: "port", label: "Port", type: "number", required: true },
-      { key: "clientId", label: "Client ID", type: "text" },
-      { key: "keepaliveSeconds", label: "Keepalive (s)", type: "number" },
-      { key: "useTls", label: "Use TLS", type: "bool" },
+      {
+        key: "host",
+        label: "Broker host",
+        type: "text",
+        required: true,
+        help: "Hostname or IP of the MQTT broker.",
+      },
+      {
+        key: "port",
+        label: "Port",
+        type: "number",
+        required: true,
+        placeholder: "1883",
+        help: "MQTT broker port. Default: 1883 (8883 commonly used with TLS).",
+      },
+      {
+        key: "clientId",
+        label: "Client ID",
+        type: "text",
+        help: "MQTT client identifier for this adapter session.",
+      },
+      {
+        key: "keepaliveSeconds",
+        label: "Keepalive (s)",
+        type: "number",
+        help: "MQTT keepalive interval in seconds.",
+      },
+      {
+        key: "pollTimeoutMs",
+        label: "Poll timeout (ms)",
+        type: "number",
+        help: "Maximum wait while draining MQTT messages during each poll.",
+      },
+      {
+        key: "useTls",
+        label: "Use TLS",
+        type: "bool",
+        help: "Enable TLS for the broker connection when the broker requires it.",
+      },
+      {
+        key: "tlsVerify",
+        label: "Verify TLS certificate",
+        type: "bool",
+        help: "Verify the broker TLS certificate (recommended for production).",
+      },
     ],
     rest: [
-      { key: "scheme", label: "Scheme", type: "text", required: true, placeholder: "http" },
-      { key: "host", label: "Host", type: "text", required: true },
-      { key: "port", label: "Port", type: "number", required: true },
-      { key: "basePath", label: "Base path", type: "text" },
-      { key: "timeoutMs", label: "Timeout (ms)", type: "number" },
+      {
+        key: "scheme",
+        label: "Scheme",
+        type: "text",
+        required: true,
+        placeholder: "http",
+        help: "http or https.",
+      },
+      {
+        key: "host",
+        label: "Host",
+        type: "text",
+        required: true,
+        help: "Hostname or IP of the HTTP/REST industrial interface.",
+      },
+      {
+        key: "port",
+        label: "Port",
+        type: "number",
+        required: true,
+        help: "TCP port for the HTTP service.",
+      },
+      {
+        key: "basePath",
+        label: "Base path",
+        type: "text",
+        placeholder: "/api",
+        help: "Optional base path prepended to equipment request paths.",
+      },
+      {
+        key: "healthPath",
+        label: "Health path",
+        type: "text",
+        placeholder: "/health",
+        help: "Optional path used to verify connectivity on connect.",
+      },
+      {
+        key: "timeoutMs",
+        label: "Timeout (ms)",
+        type: "number",
+        placeholder: "2000",
+        help: "Maximum time to wait for an HTTP response.",
+      },
     ],
     ethernetip: [
-      { key: "host", label: "PLC host", type: "text", required: true },
-      { key: "port", label: "Port", type: "number", required: true, placeholder: "44818" },
-      { key: "path", label: "CIP path", type: "text", placeholder: "1,0" },
-      { key: "plcType", label: "PLC type", type: "text", placeholder: "controllogix" },
-      { key: "timeoutMs", label: "Timeout (ms)", type: "number" },
+      {
+        key: "host",
+        label: "PLC host",
+        type: "text",
+        required: true,
+        help: "IP address or hostname of the EtherNet/IP device.",
+      },
+      {
+        key: "port",
+        label: "Port",
+        type: "number",
+        required: true,
+        placeholder: "44818",
+        help: "EtherNet/IP TCP port. Default: 44818.",
+      },
+      {
+        key: "path",
+        label: "CIP path",
+        type: "text",
+        placeholder: "1,0",
+        help: "CIP routing path to the PLC (for example 1,0).",
+      },
+      {
+        key: "plcType",
+        label: "PLC type",
+        type: "text",
+        placeholder: "controllogix",
+        help: "Device family for explicit messaging (for example controllogix).",
+      },
+      {
+        key: "timeoutMs",
+        label: "Timeout (ms)",
+        type: "number",
+        placeholder: "2000",
+        help: "Maximum time to wait for CIP tag operations.",
+      },
     ],
     profinet: [
       { key: "boardId", label: "Board ID", type: "text", required: true, placeholder: "cifx0" },
@@ -143,10 +318,30 @@
     modbus: [
       { key: "name", label: "Name", required: true },
       { key: "unit", label: "Unit" },
-      { key: "table", label: "Table", placeholder: "holdingRegister" },
-      { key: "registerAddress", label: "Register address", type: "number" },
-      { key: "address", label: "Address (alt)", placeholder: "optional if table/register set" },
-      { key: "unitId", label: "Unit ID", type: "number" },
+      {
+        key: "table",
+        label: "Data area",
+        placeholder: "holdingRegister",
+        help: "Coil, discrete input, input register, or holding register.",
+        options: [
+          { value: "holdingRegister", label: "Holding register" },
+          { value: "inputRegister", label: "Input register" },
+          { value: "coil", label: "Coil" },
+          { value: "discreteInput", label: "Discrete input" },
+        ],
+      },
+      {
+        key: "registerAddress",
+        label: "Address",
+        type: "number",
+        help: "0-based Modbus address on the wire (not 40001-style display addresses).",
+      },
+      {
+        key: "unitId",
+        label: "Unit ID",
+        type: "number",
+        help: "Modbus unit/slave ID for this mapping (often 1; required through some gateways).",
+      },
     ],
     mqtt: [
       { key: "name", label: "Name", required: true },
@@ -190,9 +385,26 @@
     ],
     modbus: [
       { key: "command", label: "Command", required: true },
-      { key: "table", label: "Table" },
-      { key: "registerAddress", label: "Register address", type: "number" },
-      { key: "address", label: "Address (alt)" },
+      {
+        key: "table",
+        label: "Data area",
+        options: [
+          { value: "holdingRegister", label: "Holding register" },
+          { value: "coil", label: "Coil" },
+        ],
+      },
+      {
+        key: "registerAddress",
+        label: "Address",
+        type: "number",
+        help: "0-based Modbus address used for the write.",
+      },
+      {
+        key: "unitId",
+        label: "Unit ID",
+        type: "number",
+        help: "Modbus unit/slave ID for this command mapping.",
+      },
     ],
     mqtt: [
       { key: "command", label: "Command", required: true },
@@ -292,7 +504,7 @@
         },
       ];
     } else if (protocol === "opcua") {
-      base.connection = { endpointUrl: "opc.tcp://127.0.0.1:4840", timeoutMs: 2000 };
+      base.connection = { endpointUrl: "opc.tcp://127.0.0.1:4840" };
       base.equipment = [
         {
           equipmentId: id + "-Device-01",
@@ -328,7 +540,15 @@
         },
       ];
     } else if (protocol === "mqtt") {
-      base.connection = { host: "127.0.0.1", port: 1883, clientId: id };
+      base.connection = {
+        host: "127.0.0.1",
+        port: 1883,
+        clientId: id,
+        keepaliveSeconds: 30,
+        pollTimeoutMs: 100,
+        useTls: false,
+        tlsVerify: true,
+      };
       base.equipment = [
         {
           equipmentId: id + "-Device-01",
@@ -384,7 +604,6 @@
         base.description = "PROFINET field devices via industrial gateway";
         base.connection = {
           endpointUrl: "opc.tcp://127.0.0.1:4840",
-          timeoutMs: 2000,
         };
         base.equipment = [
           {
@@ -433,7 +652,6 @@
         base.description = "PROFIBUS field devices via industrial gateway";
         base.connection = {
           endpointUrl: "opc.tcp://127.0.0.1:4840",
-          timeoutMs: 2000,
         };
         base.equipment = [
           {
@@ -648,6 +866,14 @@
     return Object.keys(CONNECTION_FIELDS);
   }
 
+  /** Credentials the runtime actually applies (password/token refs are stored only). */
+  function credentialsSupport(protocol) {
+    if (protocol === "mqtt" || protocol === "rest") {
+      return { username: true, passwordRef: false, tokenRef: false };
+    }
+    return { username: false, passwordRef: false, tokenRef: false };
+  }
+
   function adapterImplementation(adapterOrProtocol) {
     const record =
       typeof adapterOrProtocol === "string"
@@ -686,6 +912,7 @@
     PROTOCOL_LABELS,
     IMPLEMENTATION_LABELS,
     PROTOCOL_INFO,
+    MODBUS_TRANSPORT_INFO,
     CONNECTION_FIELDS,
     TELEMETRY_FIELDS,
     COMMAND_FIELDS,
@@ -704,6 +931,7 @@
     requiredConnectionKeys,
     equipmentExtraFields,
     protocolsList,
+    credentialsSupport,
     adapterImplementation,
   };
 });
