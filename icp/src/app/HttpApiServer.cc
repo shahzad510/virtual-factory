@@ -250,7 +250,8 @@ json adapterDiagnosticsJson(const RuntimeAdapterView &view)
                                             : view.connectionStateDisplay},
       {"lastError", view.lastError},
       {"enabled", view.enabled},
-      {"equipmentCount", view.equipmentCount}};
+      {"equipmentCount", view.equipmentCount},
+      {"connectionSummary", view.connectionSummary}};
 }
 
 }  // namespace
@@ -420,7 +421,8 @@ public:
              {"lastError", view.lastError},
              {"description", view.description},
              {"equipmentCount", view.equipmentCount},
-             {"implementation", view.implementation}});
+             {"implementation", view.implementation},
+             {"connectionSummary", view.connectionSummary}});
       }
       setJson(res, 200, {{"adapters", arr}});
     });
@@ -450,6 +452,7 @@ public:
               {"description", view->description},
               {"equipmentCount", view->equipmentCount},
               {"implementation", view->implementation},
+              {"connectionSummary", view->connectionSummary},
           };
           if (record != nullptr)
           {
@@ -753,9 +756,16 @@ public:
         {
           protocols.push_back(proto);
         }
+        std::string gatewayLabel =
+            "Industrial gateway (OPC UA / Modbus / MQTT / REST / EtherNet/IP";
+        if (gatewayProtocols.count("profinet") || gatewayProtocols.count("profibus"))
+        {
+          gatewayLabel += " / PROFINET / PROFIBUS via gateway";
+        }
+        gatewayLabel += ")";
         implementations["gateway"] =
             {{"active", true},
-             {"label", "Industrial gateway (OPC UA / Modbus / MQTT / REST / EtherNet/IP)"},
+             {"label", gatewayLabel},
              {"adapterCount", gatewayAdapters.size()},
              {"connectedCount", gatewayConnected},
              {"faultedCount", gatewayFaulted},

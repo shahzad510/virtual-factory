@@ -1,3 +1,4 @@
+#include <virtual_factory/icp/config/AdapterImplementation.hh>
 #include <virtual_factory/icp/config/ConfigurationCatalog.hh>
 #include <virtual_factory/icp/config/ConfigurationValidator.hh>
 #include <virtual_factory/icp/config/JsonFileConfigurationRepository.hh>
@@ -504,6 +505,50 @@ void testAtomicSaveFailure()
       "failed save did not replace original file");
 }
 
+void testImplementationFieldAndBackwardCompatibility()
+{
+  virtual_factory::icp::AdapterConfigRecord gatewayPn;
+  gatewayPn.adapterId = "pn-gateway";
+  gatewayPn.protocol = "profinet";
+  gatewayPn.implementation = "gateway";
+  gatewayPn.connection.endpointUrl = "opc.tcp://127.0.0.1:4840";
+  virtual_factory::icp::EquipmentMappingRecord eq;
+  eq.equipmentId = "PLC-01";
+  eq.type = "plc";
+  virtual_factory::icp::TelemetryMappingRecord tel;
+  tel.name = "speed";
+  tel.address = "ns=2;s=Speed";
+  tel.namespaceIndex = 2;
+  eq.telemetry.push_back(tel);
+  gatewayPn.equipment.push_back(eq);
+  expect(
+      virtual_factory::icp::ConfigurationValidator::validateAdapter(gatewayPn).ok,
+      "PROFINET gateway validates without boardId");
+
+  virtual_factory::icp::AdapterConfigRecord nativePn = profinetAdapter();
+  nativePn.implementation = "hilscher_native";
+  expect(
+      virtual_factory::icp::ConfigurationValidator::validateAdapter(nativePn).ok,
+      "PROFINET hilscher_native retains native validation");
+
+  virtual_factory::icp::AdapterConfigRecord legacyPn = profinetAdapter();
+  expect(legacyPn.implementation.empty(), "legacy fixture has no implementation field");
+  expect(
+      virtual_factory::icp::resolveAdapterImplementation(legacyPn) == "hilscher_native",
+      "legacy native PN inferred as hilscher_native");
+
+  virtual_factory::icp::IcpConfigurationDocument doc;
+  doc.adapters.push_back(gatewayPn);
+  const std::string jsonText =
+      virtual_factory::icp::JsonFileConfigurationRepository::toJsonText(doc);
+  virtual_factory::icp::IcpConfigurationDocument parsed;
+  const virtual_factory::icp::ConfigResult loaded =
+      virtual_factory::icp::JsonFileConfigurationRepository::parseText(jsonText, &parsed);
+  expect(loaded.ok, "implementation JSON parses");
+  expect(parsed.adapters.size() == 1, "one adapter parsed");
+  expect(parsed.adapters[0].implementation == "gateway", "implementation persisted in JSON");
+}
+
 void testAllProtocolsRepresented()
 {
   expect(virtual_factory::icp::ConfigurationValidator::isSupportedProtocol("mock"), "mock");
@@ -528,6 +573,7 @@ int main()
   testRoundTripAndRestart();
   testMalformedAndUnsupportedVersion();
   testAtomicSaveFailure();
+  testImplementationFieldAndBackwardCompatibility();
   testAllProtocolsRepresented();
 
   if (failures == 0)

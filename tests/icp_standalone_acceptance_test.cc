@@ -449,20 +449,49 @@ void testMockConnectionDisplaySemantics()
 
 void testAdapterImplementationClassification()
 {
+  virtual_factory::icp::AdapterConfigRecord mock;
+  mock.protocol = "mock";
   expect(
-      virtual_factory::icp::ApplicationService::adapterImplementation("mock") == "simulated",
+      virtual_factory::icp::ApplicationService::adapterImplementation(mock) == "simulated",
       "mock implementation is simulated");
+
+  virtual_factory::icp::AdapterConfigRecord opcua;
+  opcua.protocol = "opcua";
   expect(
-      virtual_factory::icp::ApplicationService::adapterImplementation("opcua") == "gateway",
+      virtual_factory::icp::ApplicationService::adapterImplementation(opcua) == "gateway",
       "opcua implementation is gateway");
+
+  virtual_factory::icp::AdapterConfigRecord pnNative;
+  pnNative.protocol = "profinet";
+  pnNative.connection.boardId = "cifx0";
   expect(
-      virtual_factory::icp::ApplicationService::adapterImplementation("profinet")
+      virtual_factory::icp::ApplicationService::adapterImplementation(pnNative)
           == "hilscher_native",
-      "profinet implementation is hilscher_native");
+      "profinet with boardId is hilscher_native");
+
+  virtual_factory::icp::AdapterConfigRecord pbNative;
+  pbNative.protocol = "profibus";
+  pbNative.connection.boardId = "cifx0";
   expect(
-      virtual_factory::icp::ApplicationService::adapterImplementation("profibus")
+      virtual_factory::icp::ApplicationService::adapterImplementation(pbNative)
           == "hilscher_native",
-      "profibus implementation is hilscher_native");
+      "profibus with boardId is hilscher_native");
+
+  virtual_factory::icp::AdapterConfigRecord pnGateway;
+  pnGateway.protocol = "profinet";
+  pnGateway.implementation = "gateway";
+  pnGateway.connection.endpointUrl = "opc.tcp://127.0.0.1:4840";
+  expect(
+      virtual_factory::icp::ApplicationService::adapterImplementation(pnGateway) == "gateway",
+      "profinet with gateway implementation is gateway");
+
+  virtual_factory::icp::AdapterConfigRecord pbGateway;
+  pbGateway.protocol = "profibus";
+  pbGateway.implementation = "gateway";
+  pbGateway.connection.host = "127.0.0.1";
+  expect(
+      virtual_factory::icp::ApplicationService::adapterImplementation(pbGateway) == "gateway",
+      "profibus with gateway implementation is gateway");
 }
 
 void testMultiProtocolAdapterCoexistence()

@@ -1,5 +1,6 @@
 #include <virtual_factory/icp/config/JsonFileConfigurationRepository.hh>
 
+#include <virtual_factory/icp/config/AdapterImplementation.hh>
 #include <virtual_factory/icp/config/ConfigurationValidator.hh>
 
 #include <nlohmann/json.hpp>
@@ -535,11 +536,12 @@ AdapterConfigRecord parseAdapter(
   rejectUnknownKeys(
       result,
       object,
-      {"adapterId", "protocol", "enabled", "description", "connection",
+      {"adapterId", "protocol", "implementation", "enabled", "description", "connection",
        "credentials", "equipment"},
       path);
   record.adapterId = asString(result, object, "adapterId", path);
   record.protocol = asString(result, object, "protocol", path);
+  record.implementation = asString(result, object, "implementation", path);
   record.enabled = asBool(result, object, "enabled", path, true);
   record.description = asString(result, object, "description", path);
   if (object.contains("connection"))
@@ -562,6 +564,7 @@ AdapterConfigRecord parseAdapter(
           parseEquipment(result, object["equipment"][i], path + "/equipment/" + std::to_string(i)));
     }
   }
+  normalizeLegacyAdapterImplementation(&record);
   return record;
 }
 
@@ -735,6 +738,7 @@ json adapterToJson(const AdapterConfigRecord &record)
   return json{
       {"adapterId", record.adapterId},
       {"protocol", record.protocol},
+      {"implementation", record.implementation},
       {"enabled", record.enabled},
       {"description", record.description},
       {"connection", connectionToJson(record.connection)},

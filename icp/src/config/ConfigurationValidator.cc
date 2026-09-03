@@ -1,5 +1,7 @@
 #include <virtual_factory/icp/config/ConfigurationValidator.hh>
 
+#include <virtual_factory/icp/config/AdapterImplementation.hh>
+
 #include <sstream>
 #include <unordered_set>
 
@@ -115,6 +117,24 @@ ConfigResult ConfigurationValidator::validate(
                 "profinet, or profibus");
     }
 
+    if (!adapter.implementation.empty() && !isKnownImplementation(adapter.implementation))
+    {
+      addIssue(
+          &result,
+          base + "/implementation",
+          "invalid implementation '" + adapter.implementation
+              + "'; expected gateway, hilscher_native, softing_native, or simulated");
+    }
+
+    const std::string impl = resolveAdapterImplementation(adapter);
+    if (impl == "softing_native")
+    {
+      addIssue(
+          &result,
+          base + "/implementation",
+          "Softing native implementation is not available in this ICP release");
+    }
+
     if (looksLikePlainSecret(adapter.credentials.passwordRef))
     {
       addIssue(
@@ -196,29 +216,55 @@ ConfigResult ConfigurationValidator::validate(
     }
     else if (adapter.protocol == "profinet")
     {
-      if (c.boardId.empty())
+      if (impl == "hilscher_native")
       {
-        addIssue(
-            &result,
-            base + "/connection/boardId",
-            "PROFINET boardId is required");
+        if (c.boardId.empty())
+        {
+          addIssue(
+              &result,
+              base + "/connection/boardId",
+              "PROFINET boardId is required for Hilscher native implementation");
+        }
+      }
+      else if (impl == "gateway")
+      {
+        if (c.endpointUrl.empty() && c.host.empty())
+        {
+          addIssue(
+              &result,
+              base + "/connection/endpointUrl",
+              "PROFINET gateway endpointUrl or host is required");
+        }
       }
     }
     else if (adapter.protocol == "profibus")
     {
-      if (c.boardId.empty())
+      if (impl == "hilscher_native")
       {
-        addIssue(
-            &result,
-            base + "/connection/boardId",
-            "PROFIBUS boardId is required");
+        if (c.boardId.empty())
+        {
+          addIssue(
+              &result,
+              base + "/connection/boardId",
+              "PROFIBUS boardId is required for Hilscher native implementation");
+        }
+        if (c.baudRateKbps == 0)
+        {
+          addIssue(
+              &result,
+              base + "/connection/baudRateKbps",
+              "PROFIBUS baudRateKbps is required");
+        }
       }
-      if (c.baudRateKbps == 0)
+      else if (impl == "gateway")
       {
-        addIssue(
-            &result,
-            base + "/connection/baudRateKbps",
-            "PROFIBUS baudRateKbps is required");
+        if (c.endpointUrl.empty() && c.host.empty())
+        {
+          addIssue(
+              &result,
+              base + "/connection/endpointUrl",
+              "PROFIBUS gateway endpointUrl or host is required");
+        }
       }
     }
 
@@ -308,6 +354,26 @@ ConfigResult ConfigurationValidator::validate(
               tpath,
               "REST telemetry requires jsonPointer or address");
         }
+        if ((adapter.protocol == "profinet" || adapter.protocol == "profibus")
+            && impl == "gateway")
+        {
+          const AdapterConnectionRecord &c = adapter.connection;
+          if (!c.endpointUrl.empty() && tel.address.empty())
+          {
+            addIssue(
+                &result,
+                tpath + "/address",
+                "Gateway PROFINET/PROFIBUS via OPC UA requires telemetry address (NodeId)");
+          }
+          if (c.endpointUrl.empty() && !c.host.empty() && tel.address.empty()
+              && tel.registerAddress == 0 && tel.table.empty())
+          {
+            addIssue(
+                &result,
+                tpath,
+                "Gateway PROFINET/PROFIBUS via Modbus requires table or registerAddress");
+          }
+        }
       }
       std::unordered_set<std::string> commandNames;
       for (std::size_t cmd = 0; cmd < eq.commands.size(); ++cmd)
@@ -327,14 +393,15 @@ ConfigResult ConfigurationValidator::validate(
         }
       }
 
-      if (adapter.protocol == "profinet" && eq.stationName.empty())
+      if (adapter.protocol == "profinet" && impl == "hilscher_native"
+          && eq.stationName.empty())
       {
         addIssue(
             &result,
             epath + "/stationName",
             "PROFINET stationName is required");
       }
-      if (adapter.protocol == "profibus"
+      if (adapter.protocol == "profibus" && impl == "hilscher_native"
           && (eq.stationAddress == 0 || eq.stationAddress > 126))
       {
         addIssue(

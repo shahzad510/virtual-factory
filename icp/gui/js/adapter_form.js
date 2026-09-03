@@ -22,6 +22,62 @@
     profibus: "PROFIBUS",
   };
 
+  const PROTOCOL_INFO = {
+    mock: {
+      description: "In-process simulated source for tests and demonstrations.",
+      support: "Supported",
+      next: "editor",
+    },
+    opcua: {
+      description: "Connect to an OPC UA server (UaExpert, PLC, gateway).",
+      support: "Supported",
+      next: "editor",
+    },
+    modbus: {
+      description: "Modbus TCP to a PLC, RTU gateway, or simulator.",
+      support: "Supported",
+      next: "editor",
+    },
+    mqtt: {
+      description: "MQTT broker session for topics and commands.",
+      support: "Supported",
+      next: "editor",
+    },
+    rest: {
+      description: "HTTP/JSON industrial origin (one adapter = one host).",
+      support: "Supported",
+      next: "editor",
+    },
+    ethernetip: {
+      description: "EtherNet/IP explicit messaging to a Logix-style PLC.",
+      support: "Supported",
+      next: "editor",
+    },
+    profinet: {
+      description: "PROFINET field devices. An implementation is selected next.",
+      support: "Implementation required",
+      next: "implementation",
+    },
+    profibus: {
+      description: "PROFIBUS field devices. An implementation is selected next.",
+      support: "Implementation required",
+      next: "implementation",
+    },
+  };
+
+  const IMPLEMENTATION_LABELS = {
+    gateway: "Gateway",
+    hilscher_native: "Hilscher native",
+    softing_native: "Softing native",
+    simulated: "Simulated",
+  };
+
+  /** Gateway northbound connection for PROFINET/PROFIBUS (ADR-040: OPC UA default). */
+  const GATEWAY_FIELD_CONNECTION = [
+    { key: "endpointUrl", label: "Gateway endpoint URL", type: "text", required: true, placeholder: "opc.tcp://gateway:4840" },
+    { key: "timeoutMs", label: "Timeout (ms)", type: "number" },
+  ];
+
   /** Connection fields required/useful per protocol (validator-aligned). */
   const CONNECTION_FIELDS = {
     mock: [],
@@ -169,12 +225,49 @@
     return JSON.parse(JSON.stringify(obj == null ? {} : obj));
   }
 
-  function defaultAdapter(protocol, preferredId) {
+  function resolveImplementation(adapter) {
+    if (typeof adapter === "string") {
+      return adapterImplementation({ protocol: adapter, connection: {}, implementation: "" });
+    }
+    return adapterImplementation(adapter || {});
+  }
+
+  function connectionFieldsFor(adapter) {
+    const protocol = typeof adapter === "string" ? adapter : adapter.protocol;
+    const impl = typeof adapter === "string" ? "" : resolveImplementation(adapter);
+    if ((protocol === "profinet" || protocol === "profibus") && impl === "gateway") {
+      return GATEWAY_FIELD_CONNECTION;
+    }
+    return CONNECTION_FIELDS[protocol] || [];
+  }
+
+  function telemetryFieldsFor(adapter) {
+    const protocol = typeof adapter === "string" ? adapter : adapter.protocol;
+    const impl = typeof adapter === "string" ? "" : resolveImplementation(adapter);
+    if ((protocol === "profinet" || protocol === "profibus") && impl === "gateway") {
+      return TELEMETRY_FIELDS.opcua;
+    }
+    return TELEMETRY_FIELDS[protocol] || TELEMETRY_FIELDS.mock;
+  }
+
+  function commandFieldsFor(adapter) {
+    const protocol = typeof adapter === "string" ? adapter : adapter.protocol;
+    const impl = typeof adapter === "string" ? "" : resolveImplementation(adapter);
+    if ((protocol === "profinet" || protocol === "profibus") && impl === "gateway") {
+      return COMMAND_FIELDS.opcua;
+    }
+    return COMMAND_FIELDS[protocol] || COMMAND_FIELDS.mock;
+  }
+
+  function defaultAdapter(protocol, preferredId, options) {
+    const opts = options || {};
+    const implementation = opts.implementation || "";
     const id =
       preferredId || protocol + "-" + Date.now().toString(36).slice(-4);
     const base = {
       adapterId: id,
       protocol: protocol,
+      implementation: implementation,
       enabled: true,
       description: "",
       connection: {},
@@ -286,54 +379,100 @@
         },
       ];
     } else if (protocol === "profinet") {
-      base.connection = {
-        boardId: "cifx0",
-        channel: 0,
-        interfaceName: "eth0",
-        stationName: "icp-controller",
-        processImageBytes: 64,
-      };
-      base.equipment = [
-        {
-          equipmentId: id + "-IO-01",
-          type: "io_device",
-          stationName: "device-01",
-          ipAddress: "192.168.0.10",
-          vendorId: 0,
-          deviceId: 0,
-          capabilities: [],
-          telemetry: [
-            { name: "input0", inputByteOffset: 0, bitOffset: 0, valueType: "UINT8" },
-          ],
-          commands: [],
-          state: { mapped: false },
-          fault: { mapped: false },
-          submodules: [{ slot: 0, subslot: 1, inputLength: 8, outputLength: 8 }],
-        },
-      ];
+      if (implementation === "gateway") {
+        base.implementation = "gateway";
+        base.description = "PROFINET field devices via industrial gateway";
+        base.connection = {
+          endpointUrl: "opc.tcp://127.0.0.1:4840",
+          timeoutMs: 2000,
+        };
+        base.equipment = [
+          {
+            equipmentId: id + "-PLC-01",
+            type: "plc",
+            capabilities: [],
+            telemetry: [
+              { name: "speed", unit: "rpm", address: "ns=2;s=Speed", namespaceIndex: 2 },
+            ],
+            commands: [],
+            state: { mapped: false },
+            fault: { mapped: false },
+          },
+        ];
+      } else {
+        base.implementation = "hilscher_native";
+        base.connection = {
+          boardId: "cifx0",
+          channel: 0,
+          interfaceName: "eth0",
+          stationName: "icp-controller",
+          processImageBytes: 64,
+        };
+        base.equipment = [
+          {
+            equipmentId: id + "-IO-01",
+            type: "io_device",
+            stationName: "device-01",
+            ipAddress: "192.168.0.10",
+            vendorId: 0,
+            deviceId: 0,
+            capabilities: [],
+            telemetry: [
+              { name: "input0", inputByteOffset: 0, bitOffset: 0, valueType: "UINT8" },
+            ],
+            commands: [],
+            state: { mapped: false },
+            fault: { mapped: false },
+            submodules: [{ slot: 0, subslot: 1, inputLength: 8, outputLength: 8 }],
+          },
+        ];
+      }
     } else if (protocol === "profibus") {
-      base.connection = {
-        boardId: "cifx0",
-        channel: 0,
-        masterAddress: 1,
-        baudRateKbps: 1500,
-        processImageBytes: 64,
-      };
-      base.equipment = [
-        {
-          equipmentId: id + "-Slave-01",
-          type: "dp_slave",
-          stationAddress: 3,
-          capabilities: [],
-          telemetry: [
-            { name: "input0", inputByteOffset: 0, bitOffset: 0, valueType: "UINT8" },
-          ],
-          commands: [],
-          state: { mapped: false },
-          fault: { mapped: false },
-          modules: [{ slot: 0, ident: "module-0", inputLength: 8, outputLength: 8 }],
-        },
-      ];
+      if (implementation === "gateway") {
+        base.implementation = "gateway";
+        base.description = "PROFIBUS field devices via industrial gateway";
+        base.connection = {
+          endpointUrl: "opc.tcp://127.0.0.1:4840",
+          timeoutMs: 2000,
+        };
+        base.equipment = [
+          {
+            equipmentId: id + "-PLC-01",
+            type: "plc",
+            capabilities: [],
+            telemetry: [
+              { name: "speed", unit: "rpm", address: "ns=2;s=Speed", namespaceIndex: 2 },
+            ],
+            commands: [],
+            state: { mapped: false },
+            fault: { mapped: false },
+          },
+        ];
+      } else {
+        base.implementation = "hilscher_native";
+        base.connection = {
+          boardId: "cifx0",
+          channel: 0,
+          masterAddress: 1,
+          baudRateKbps: 1500,
+          processImageBytes: 64,
+        };
+        base.equipment = [
+          {
+            equipmentId: id + "-Slave-01",
+            type: "dp_slave",
+            stationAddress: 3,
+            capabilities: [],
+            telemetry: [
+              { name: "input0", inputByteOffset: 0, bitOffset: 0, valueType: "UINT8" },
+            ],
+            commands: [],
+            state: { mapped: false },
+            fault: { mapped: false },
+            modules: [{ slot: 0, ident: "module-0", inputLength: 8, outputLength: 8 }],
+          },
+        ];
+      }
     }
     return base;
   }
@@ -348,7 +487,13 @@
     if (prev.protocol === newProtocol) {
       return prev;
     }
-    const next = defaultAdapter(newProtocol, prev.adapterId);
+    const impl =
+      newProtocol === "profinet" || newProtocol === "profibus"
+        ? prev.implementation === "hilscher_native"
+          ? "hilscher_native"
+          : "gateway"
+        : "";
+    const next = defaultAdapter(newProtocol, prev.adapterId, { implementation: impl });
     next.description = prev.description || next.description;
     next.enabled = prev.enabled !== false;
     next.credentials = clone(prev.credentials || {});
@@ -368,6 +513,12 @@
       credentials: clone(adapter.credentials || {}),
       equipment: clone(adapter.equipment || []),
     };
+    const impl = (adapter.implementation || "").trim();
+    if (impl) {
+      out.implementation = impl;
+    } else if (adapter.protocol === "profinet" || adapter.protocol === "profibus") {
+      out.implementation = resolveImplementation(adapter);
+    }
     return out;
   }
 
@@ -385,6 +536,7 @@
     const adapter = {
       adapterId: parsed.adapterId || "",
       protocol: parsed.protocol,
+      implementation: parsed.implementation || "",
       enabled: parsed.enabled !== false,
       description: parsed.description || "",
       connection: parsed.connection || {},
@@ -449,19 +601,21 @@
     return map;
   }
 
-  function requiredTelemetryKeys(protocol) {
-    return (TELEMETRY_FIELDS[protocol] || [])
+  function requiredTelemetryKeys(adapter) {
+    return telemetryFieldsFor(adapter)
       .filter((f) => f.required)
       .map((f) => f.key);
   }
 
-  function requiredConnectionKeys(protocol) {
-    return (CONNECTION_FIELDS[protocol] || [])
+  function requiredConnectionKeys(adapter) {
+    return connectionFieldsFor(adapter)
       .filter((f) => f.required)
       .map((f) => f.key);
   }
 
-  function equipmentExtraFields(protocol) {
+  function equipmentExtraFields(adapter) {
+    const protocol = typeof adapter === "string" ? adapter : adapter.protocol;
+    const impl = typeof adapter === "string" ? "" : resolveImplementation(adapter);
     if (protocol === "rest") {
       return [
         { key: "telemetryPath", label: "Telemetry path", placeholder: "/api/device" },
@@ -469,7 +623,7 @@
         { key: "faultPointer", label: "Fault JSON pointer" },
       ];
     }
-    if (protocol === "profinet") {
+    if (protocol === "profinet" && impl === "hilscher_native") {
       return [
         { key: "stationName", label: "Station name", required: true },
         { key: "ipAddress", label: "IP address" },
@@ -477,7 +631,7 @@
         { key: "deviceId", label: "Device ID", type: "number" },
       ];
     }
-    if (protocol === "profibus") {
+    if (protocol === "profibus" && impl === "hilscher_native") {
       return [
         {
           key: "stationAddress",
@@ -494,9 +648,22 @@
     return Object.keys(CONNECTION_FIELDS);
   }
 
-  function adapterImplementation(protocol) {
+  function adapterImplementation(adapterOrProtocol) {
+    const record =
+      typeof adapterOrProtocol === "string"
+        ? { protocol: adapterOrProtocol, connection: {}, implementation: "" }
+        : adapterOrProtocol || {};
+    const protocol = record.protocol || "";
+    const impl = (record.implementation || "").trim();
+    if (
+      impl === "gateway" ||
+      impl === "hilscher_native" ||
+      impl === "softing_native" ||
+      impl === "simulated"
+    ) {
+      return impl;
+    }
     if (protocol === "mock") return "simulated";
-    if (protocol === "profinet" || protocol === "profibus") return "hilscher_native";
     if (
       protocol === "opcua" ||
       protocol === "modbus" ||
@@ -506,14 +673,26 @@
     ) {
       return "gateway";
     }
+    if (protocol === "profinet" || protocol === "profibus") {
+      const c = record.connection || {};
+      if (c.boardId || c.configArtifactPath) return "hilscher_native";
+      if (c.endpointUrl || c.host) return "gateway";
+      return "hilscher_native";
+    }
     return "gateway";
   }
 
   return {
     PROTOCOL_LABELS,
+    IMPLEMENTATION_LABELS,
+    PROTOCOL_INFO,
     CONNECTION_FIELDS,
     TELEMETRY_FIELDS,
     COMMAND_FIELDS,
+    connectionFieldsFor,
+    telemetryFieldsFor,
+    commandFieldsFor,
+    resolveImplementation,
     clone,
     defaultAdapter,
     applyProtocolChange,
@@ -524,7 +703,7 @@
     requiredTelemetryKeys,
     requiredConnectionKeys,
     equipmentExtraFields,
-  protocolsList,
-  adapterImplementation,
-};
+    protocolsList,
+    adapterImplementation,
+  };
 });

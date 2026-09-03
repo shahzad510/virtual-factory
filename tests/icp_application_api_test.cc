@@ -232,8 +232,134 @@ int main()
 
   {
     json adapter = {
+        {"adapterId", "pn-gateway"},
+        {"protocol", "profinet"},
+        {"implementation", "gateway"},
+        {"enabled", true},
+        {"description", "PROFINET field devices via industrial gateway"},
+        {"connection",
+         {{"endpointUrl", "opc.tcp://127.0.0.1:4840"}, {"timeoutMs", 2000}}},
+        {"credentials", json::object()},
+        {"equipment",
+         json::array(
+             {{{"equipmentId", "PN-GW-01"},
+               {"type", "plc"},
+               {"capabilities", json::array()},
+               {"telemetry",
+                json::array({{{"name", "speed"},
+                              {"unit", "rpm"},
+                              {"address", "ns=2;s=Speed"},
+                              {"namespaceIndex", 2}}})},
+               {"commands", json::array()},
+               {"state", {{"mapped", false}}},
+               {"fault", {{"mapped", false}}}}})}};
+    auto post = client.Post("/api/v1/adapters", adapter.dump(), "application/json");
+    expect(
+        post && post->status == 200,
+        "configure PROFINET gateway adapter: " + (post ? post->body : ""));
+    auto validate = client.Post("/api/v1/configuration/validate");
+    expect(validate && validate->status == 200, "validate PROFINET gateway");
+  }
+
+  {
+    json adapter = {
+        {"adapterId", "pb-gateway"},
+        {"protocol", "profibus"},
+        {"implementation", "gateway"},
+        {"enabled", true},
+        {"description", "PROFIBUS field devices via industrial gateway"},
+        {"connection", {{"host", "127.0.0.1"}, {"port", 502}, {"timeoutMs", 2000}}},
+        {"credentials", json::object()},
+        {"equipment",
+         json::array(
+             {{{"equipmentId", "PB-GW-01"},
+               {"type", "plc"},
+               {"capabilities", json::array()},
+               {"telemetry",
+                json::array({{{"name", "reg"},
+                              {"table", "holdingRegister"},
+                              {"registerAddress", 1}}})},
+               {"commands", json::array()},
+               {"state", {{"mapped", false}}},
+               {"fault", {{"mapped", false}}}}})}};
+    auto post = client.Post("/api/v1/adapters", adapter.dump(), "application/json");
+    expect(
+        post && post->status == 200,
+        "configure PROFIBUS gateway adapter: " + (post ? post->body : ""));
+  }
+
+  {
+    auto diag = client.Get("/api/v1/diagnostics");
+    expect(diag && diag->status == 200, "GET diagnostics with gateway fieldbus only");
+    if (diag)
+    {
+      auto body = json::parse(diag->body);
+      expect(
+          body["implementations"].contains("gateway"),
+          "gateway section when PROFINET/PROFIBUS use gateway implementation");
+      expect(
+          !body["implementations"].contains("hilscher_native"),
+          "no Hilscher section for gateway PROFINET/PROFIBUS");
+      if (body["implementations"].contains("gateway"))
+      {
+        const auto &gw = body["implementations"]["gateway"];
+        const auto &adapters = gw["adapters"];
+        bool pnGateway = false;
+        bool pbGateway = false;
+        for (const auto &item : adapters)
+        {
+          if (item["adapterId"] == "pn-gateway"
+              && item["implementation"] == "gateway")
+          {
+            pnGateway = true;
+          }
+          if (item["adapterId"] == "pb-gateway"
+              && item["implementation"] == "gateway")
+          {
+            pbGateway = true;
+          }
+        }
+        expect(pnGateway, "PROFINET gateway adapter listed under gateway implementation");
+        expect(pbGateway, "PROFIBUS gateway adapter listed under gateway implementation");
+      }
+    }
+  }
+
+  {
+    auto connect = client.Post("/api/v1/adapters/pn-gateway/connect");
+    expect(static_cast<bool>(connect), "connect PROFINET gateway response");
+    if (connect)
+    {
+      const std::string body = connect->body;
+      expect(
+          body.find("Hilscher") == std::string::npos,
+          "PROFINET gateway connect error must not mention Hilscher: " + body);
+      expect(
+          body.find("Gateway runtime for PROFINET is not currently available") != std::string::npos,
+          "PROFINET gateway connect reports product-level gateway limitation: " + body);
+    }
+  }
+
+  {
+    auto connect = client.Post("/api/v1/adapters/pb-gateway/connect");
+    expect(static_cast<bool>(connect), "connect PROFIBUS gateway response");
+    if (connect)
+    {
+      const std::string body = connect->body;
+      expect(
+          body.find("Hilscher") == std::string::npos,
+          "PROFIBUS gateway connect error must not mention Hilscher: " + body);
+      expect(
+          body.find("Gateway runtime for PROFIBUS is not currently available") != std::string::npos,
+          "PROFIBUS gateway connect reports product-level gateway limitation: " + body);
+    }
+  }
+
+  {
+    json adapter = {
         {"adapterId", "pn-cfg"},
         {"protocol", "profinet"},
+        {"implementation", "hilscher_native"},
         {"enabled", true},
         {"description", "pn without hardware"},
         {"connection",
@@ -307,6 +433,7 @@ int main()
     json adapter = {
         {"adapterId", "pb-cfg"},
         {"protocol", "profibus"},
+        {"implementation", "hilscher_native"},
         {"enabled", true},
         {"connection",
          {{"boardId", "cifx0"},
@@ -352,17 +479,41 @@ int main()
           body.contains("implementations") && body["implementations"].is_object(),
           "diagnostics: contextual implementations object");
       expect(
-          !body["implementations"].contains("gateway"),
-          "no gateway section when only mock + native fieldbus (no OPC UA/Modbus/etc.)");
+          body["implementations"].contains("gateway"),
+          "gateway section when gateway PROFINET/PROFIBUS adapters configured");
       expect(
           body["implementations"].contains("hilscher_native"),
-          "hilscher section when PROFINET/PROFIBUS configured");
+          "hilscher section when Hilscher native PROFINET/PROFIBUS configured");
       if (body["implementations"].contains("hilscher_native"))
       {
         const auto &hw = body["implementations"]["hilscher_native"]["hardware"];
         expect(
             hw["hardware"] == "NOT DETECTED" || hw["boardCount"] == 0,
             "Hilscher hardware not falsely READY");
+        const auto &adapters = body["implementations"]["hilscher_native"]["adapters"];
+        bool nativePn = false;
+        bool nativePb = false;
+        for (const auto &item : adapters)
+        {
+          if (item["adapterId"] == "pn-cfg"
+              && item["implementation"] == "hilscher_native")
+          {
+            nativePn = true;
+          }
+          if (item["adapterId"] == "pb-cfg"
+              && item["implementation"] == "hilscher_native")
+          {
+            nativePb = true;
+          }
+        }
+        expect(nativePn, "native PROFINET adapter under hilscher implementation");
+        expect(nativePb, "native PROFIBUS adapter under hilscher implementation");
+      }
+      if (body["implementations"].contains("gateway"))
+      {
+        expect(
+            body["implementations"]["gateway"].contains("adapters"),
+            "gateway section still present alongside native fieldbus");
       }
       expect(!body.contains("hilscher"), "no global permanent hilscher block");
     }

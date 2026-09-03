@@ -84,6 +84,8 @@ struct RuntimeAdapterView
   std::size_t equipmentCount{0};
   /// Active stack for this adapter: gateway | hilscher_native | softing_native | simulated
   std::string implementation;
+  /// Non-secret connection summary for diagnostics (endpoint, host:port, boardId).
+  std::string connectionSummary;
 };
 
 struct HilscherDiagnosticsView
@@ -148,7 +150,7 @@ public:
   std::vector<ApplicationEvent> events(std::size_t limit = 100) const;
 
   /// Classifies configured adapter stack for contextual diagnostics (GUI/API).
-  static std::string adapterImplementation(const std::string &protocol);
+  static std::string adapterImplementation(const AdapterConfigRecord &record);
 
   ConfigurationCatalog &catalog();
   const ConfigurationCatalog &catalog() const;
@@ -169,6 +171,7 @@ private:
   static std::string connectionStateName(ConnectionState state);
   static std::string connectionStateDisplay(
       const std::string &protocol, const std::string &connectionState);
+  static std::string connectionSummary(const AdapterConfigRecord &record);
 
   mutable std::mutex mutex_;
   std::string configuration_path_;

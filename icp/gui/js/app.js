@@ -23,6 +23,7 @@
     _cfgEditorDirty: false,
     _lastRefreshAt: null,
     _renderGeneration: 0,
+    _chooser: null,
   };
 
   let renderChain = Promise.resolve();
@@ -82,11 +83,93 @@
 
   const Form = window.IcpAdapterForm;
 
-  function syncToolbarProtocol(protocol) {
-    const sel = document.getElementById("new-protocol");
-    if (sel && protocol) {
-      sel.value = protocol;
+  function editorContext(adapter) {
+    return adapter || state._editingAdapter || { protocol: "mock", connection: {} };
+  }
+
+  function implementationLabel(impl) {
+    return Form.IMPLEMENTATION_LABELS[impl] || impl || "—";
+  }
+
+  function renderChooserOverlay() {
+    if (!state._chooser) return "";
+    if (state._chooser.step === "protocol") {
+      const catalog = state.protocols.length
+        ? state.protocols.map((p) => p.id)
+        : Form.protocolsList();
+      const items = catalog.map((id) => {
+        const info = Form.PROTOCOL_INFO[id] || {};
+        const label =
+          (state.protocols.find((p) => p.id === id) || {}).label ||
+          Form.PROTOCOL_LABELS[id] ||
+          id;
+        const badgeClass = info.next === "implementation" ? "muted" : "ok";
+        return `<button type="button" class="chooser-item" data-action="choose-protocol" data-protocol="${esc(
+          id
+        )}">
+          <span class="chooser-item-head">
+            <span class="chooser-title">${esc(label)}</span>
+            <span class="badge ${badgeClass}">${esc(info.support || "Supported")}</span>
+          </span>
+          <span class="chooser-desc">${esc(info.description || "")}</span>
+        </button>`;
+      });
+      return `<div class="modal-backdrop" data-action="close-chooser">
+        <div class="modal chooser-modal" role="dialog" aria-labelledby="chooser-title" data-action="stop-modal">
+          <h2 id="chooser-title">Add Industrial Adapter</h2>
+          <p class="muted">Select a protocol. Nothing is preselected. PROFINET and PROFIBUS ask for an implementation next.</p>
+          <div class="chooser-grid">${items.join("")}</div>
+          <div class="row-actions"><button type="button" data-action="close-chooser">Cancel</button></div>
+        </div>
+      </div>`;
     }
+    if (state._chooser.step === "implementation") {
+      const proto = state._chooser.protocol;
+      return `<div class="modal-backdrop" data-action="close-chooser">
+        <div class="modal chooser-modal" role="dialog" aria-labelledby="impl-title" data-action="stop-modal">
+          <h2 id="impl-title">${esc(Form.PROTOCOL_LABELS[proto] || proto)}</h2>
+          <p class="muted">Choose how this adapter will be implemented. Protocol and implementation are separate.</p>
+          <div class="chooser-list">
+            <button type="button" class="chooser-item" data-action="choose-implementation" data-implementation="gateway">
+              <span class="chooser-item-head">
+                <span class="chooser-title">Gateway</span>
+                <span class="badge ok">AVAILABLE</span>
+              </span>
+              <span class="chooser-desc">Configure communication through a supported gateway architecture (OPC UA, Modbus, MQTT, or REST northbound).</span>
+            </button>
+            <button type="button" class="chooser-item disabled" data-action="choose-implementation" data-implementation="hilscher_native">
+              <span class="chooser-item-head">
+                <span class="chooser-title">Hilscher</span>
+                <span class="badge muted">COMING SOON</span>
+              </span>
+              <span class="chooser-desc">Native fieldbus via Hilscher hardware. Not available in this GUI milestone.</span>
+            </button>
+            <button type="button" class="chooser-item disabled" data-action="choose-implementation" data-implementation="softing_native">
+              <span class="chooser-item-head">
+                <span class="chooser-title">Softing</span>
+                <span class="badge muted">COMING SOON</span>
+              </span>
+              <span class="chooser-desc">Native fieldbus via Softing. Not available in this GUI milestone.</span>
+            </button>
+          </div>
+          <div class="row-actions">
+            <button type="button" data-action="back-chooser">Back</button>
+            <button type="button" data-action="close-chooser">Cancel</button>
+          </div>
+        </div>
+      </div>`;
+    }
+    return "";
+  }
+
+  function openAddAdapterEditor(protocol, implementation) {
+    state._chooser = null;
+    const opts =
+      implementation && (protocol === "profinet" || protocol === "profibus")
+        ? { implementation }
+        : {};
+    state._editingAdapter = Form.defaultAdapter(protocol, undefined, opts);
+    state._editingAdapter._edit = false;
   }
 
   function fieldErrorClass(fieldId, errorMap) {
@@ -118,7 +201,6 @@
       draft._validationIssues = state._editingAdapter._validationIssues;
       draft._advancedOpen = state._editingAdapter._advancedOpen;
       state._editingAdapter = draft;
-      syncToolbarProtocol(draft.protocol);
     } catch (_) {
       /* keep prior draft if form temporarily invalid */
     }
@@ -150,7 +232,6 @@
       newProtocol
     );
     state._editingAdapter = merged;
-    syncToolbarProtocol(newProtocol);
   }
 
   function captureConfigurationDraft() {
@@ -160,8 +241,8 @@
     }
   }
 
-  function connectionFieldsHtml(protocol, connection, errorMap) {
-    const fields = Form.CONNECTION_FIELDS[protocol] || [];
+  function connectionFieldsHtml(adapter, connection, errorMap) {
+    const fields = Form.connectionFieldsFor(editorContext(adapter));
     if (!fields.length) {
       return `<p class="protocol-hint full">Mock adapters have no external connection parameters (simulation).</p>`;
     }
@@ -190,8 +271,8 @@
       .join("");
   }
 
-  function telemetryRowHtml(protocol, tel, eqIdx, telIdx, errorMap) {
-    const fields = Form.TELEMETRY_FIELDS[protocol] || Form.TELEMETRY_FIELDS.mock;
+  function telemetryRowHtml(adapter, tel, eqIdx, telIdx, errorMap) {
+    const fields = Form.telemetryFieldsFor(editorContext(adapter));
     const cells = fields
       .map((f) => {
         const id = `f-eq-${eqIdx}-tel-${telIdx}-${f.key}`;
@@ -208,8 +289,8 @@
     </div>`;
   }
 
-  function commandRowHtml(protocol, cmd, eqIdx, cmdIdx, errorMap) {
-    const fields = Form.COMMAND_FIELDS[protocol] || Form.COMMAND_FIELDS.mock;
+  function commandRowHtml(adapter, cmd, eqIdx, cmdIdx, errorMap) {
+    const fields = Form.commandFieldsFor(editorContext(adapter));
     const cells = fields
       .map((f) => {
         const id = `f-eq-${eqIdx}-cmd-${cmdIdx}-${f.key}`;
@@ -226,8 +307,11 @@
     </div>`;
   }
 
-  function equipmentCardHtml(protocol, eq, eqIdx, errorMap) {
-    const extras = Form.equipmentExtraFields(protocol);
+  function equipmentCardHtml(adapter, eq, eqIdx, errorMap) {
+    const ctx = editorContext(adapter);
+    const protocol = ctx.protocol || "mock";
+    const impl = Form.resolveImplementation(ctx);
+    const extras = Form.equipmentExtraFields(ctx);
     const extraHtml = extras
       .map((f) => {
         const id = `f-eq-${eqIdx}-${f.key}`;
@@ -243,17 +327,17 @@
     const idType = `f-eq-${eqIdx}-type`;
     const idCaps = `f-eq-${eqIdx}-capabilities`;
     const tel = (eq.telemetry || [])
-      .map((t, i) => telemetryRowHtml(protocol, t, eqIdx, i, errorMap))
+      .map((t, i) => telemetryRowHtml(adapter, t, eqIdx, i, errorMap))
       .join("");
     const cmds = (eq.commands || [])
-      .map((c, i) => commandRowHtml(protocol, c, eqIdx, i, errorMap))
+      .map((c, i) => commandRowHtml(adapter, c, eqIdx, i, errorMap))
       .join("");
     let modulesHtml = "";
-    if (protocol === "profinet") {
+    if (protocol === "profinet" && impl === "hilscher_native") {
       modulesHtml = `<label class="full">Submodules JSON<textarea id="f-eq-${eqIdx}-submodules" class="mono" rows="3">${esc(
         JSON.stringify(eq.submodules || [], null, 2)
       )}</textarea></label>`;
-    } else if (protocol === "profibus") {
+    } else if (protocol === "profibus" && impl === "hilscher_native") {
       modulesHtml = `<label class="full">Modules JSON<textarea id="f-eq-${eqIdx}-modules" class="mono" rows="3">${esc(
         JSON.stringify(eq.modules || [], null, 2)
       )}</textarea></label>`;
@@ -273,10 +357,10 @@
         ${modulesHtml}
       </div>
       <h4>Telemetry</h4>
-      ${tel || '<p class="muted">No telemetry points.</p>'}
+      ${tel || '<p class="muted">No telemetry mappings. Add points that this equipment should publish.</p>'}
       <div class="row-actions"><button type="button" data-action="add-telemetry" data-eq="${eqIdx}">Add telemetry</button></div>
       <h4>Commands</h4>
-      ${cmds || '<p class="muted">No commands.</p>'}
+      ${cmds || '<p class="muted">No commands. Add commands this equipment can execute.</p>'}
       <div class="row-actions">
         <button type="button" data-action="add-command" data-eq="${eqIdx}">Add command</button>
         <button type="button" class="danger" data-action="remove-equipment" data-eq="${eqIdx}">Remove equipment</button>
@@ -292,80 +376,111 @@
         (p) =>
           `<option value="${esc(p.id)}" ${
             adapter.protocol === p.id ? "selected" : ""
-          }>${esc(p.label)}${
-            p.requiresHilscherHardware ? " (HW optional to configure)" : ""
-          }</option>`
+          }>${esc(p.label)}</option>`
       )
       .join("");
     const protocol = adapter.protocol || "mock";
+    const impl = Form.resolveImplementation(adapter);
     const equipment = adapter.equipment || [];
     const advancedOpen = !!adapter._advancedOpen;
     const creds = adapter.credentials || {};
+    const showImpl = protocol === "profinet" || protocol === "profibus";
+    const implHtml = showImpl
+      ? `<label>Implementation<input id="f-implementation" readonly value="${esc(
+          implementationLabel(impl)
+        )}"/></label>
+         <input type="hidden" id="f-implementation-value" value="${esc(impl)}"/>`
+      : "";
+    const gatewayNote =
+      showImpl && impl === "gateway"
+        ? `<p class="protocol-hint">Gateway configuration uses a northbound industrial protocol (OPC UA endpoint by default). A dedicated PROFINET/PROFIBUS gateway runtime is not available in this ICP build — save the record, then use OPC UA, Modbus, MQTT, or REST for live communication.</p>`
+        : "";
     return `
-      <div class="panel" id="adapter-editor">
-        <h2>${adapter._edit ? "Edit adapter" : "Add adapter"}</h2>
-        <p class="protocol-hint">Protocol is authoritative: the toolbar selector and this editor stay synchronized. Fields below match ICP-1B validation for <strong>${esc(
-          Form.PROTOCOL_LABELS[protocol] || protocol
-        )}</strong>.</p>
-        <div class="form-grid">
-          <label class="${fieldErrorClass("f-id", errorMap)}">Adapter ID <span class="req">*</span>
-            <input id="f-id" value="${esc(adapter.adapterId)}" ${
-              adapter._edit ? "readonly" : ""
-            }/>${fieldErrorMsg("f-id", errorMap)}</label>
-          <label class="${fieldErrorClass("f-protocol", errorMap)}">Protocol <span class="req">*</span>
-            <select id="f-protocol">${options}</select>${fieldErrorMsg("f-protocol", errorMap)}</label>
-          <label>Description<input id="f-desc" value="${esc(adapter.description || "")}"/></label>
-          <label>Enabled<select id="f-enabled"><option value="true" ${
-            adapter.enabled !== false ? "selected" : ""
-          }>true</option><option value="false" ${
-            adapter.enabled === false ? "selected" : ""
-          }>false</option></select></label>
-          <div class="section-title">Connection</div>
-          ${connectionFieldsHtml(protocol, adapter.connection || {}, errorMap)}
-          <div class="section-title">Credentials (refs only: env: / file: / secret:)</div>
+      <div id="adapter-editor">
+        <h2>${adapter._edit ? "Edit Adapter" : "Add Adapter"}</h2>
+        <section class="editor-section">
+          <h3>Basic Information</h3>
+          <div class="form-grid">
+            <label class="${fieldErrorClass("f-id", errorMap)}">Adapter name <span class="req">*</span>
+              <input id="f-id" value="${esc(adapter.adapterId)}" ${
+                adapter._edit ? "readonly" : ""
+              }/>${fieldErrorMsg("f-id", errorMap)}</label>
+            <label>Enabled<select id="f-enabled"><option value="true" ${
+              adapter.enabled !== false ? "selected" : ""
+            }>true</option><option value="false" ${
+              adapter.enabled === false ? "selected" : ""
+            }>false</option></select></label>
+            <label class="${fieldErrorClass("f-protocol", errorMap)}">Protocol <span class="req">*</span>
+              <select id="f-protocol">${options}</select>${fieldErrorMsg("f-protocol", errorMap)}</label>
+            ${implHtml}
+            <label class="full">Description<input id="f-desc" value="${esc(
+              adapter.description || ""
+            )}"/></label>
+          </div>
+          ${gatewayNote}
+        </section>
+        <section class="editor-section">
+          <h3>Connection</h3>
+          <div class="form-grid">
+            ${connectionFieldsHtml(adapter, adapter.connection || {}, errorMap)}
+          </div>
+        </section>
+        ${
+          protocol === "mock"
+            ? ""
+            : `<section class="editor-section">
+          <h3>Credentials</h3>
+          <p class="muted">References only (env:NAME, file:PATH, secret:NAME). Never paste passwords.</p>
+          <div class="form-grid">
           <label class="${fieldErrorClass("f-cred-username", errorMap)}">Username
             <input id="f-cred-username" value="${esc(creds.username || "")}"/>${fieldErrorMsg(
-      "f-cred-username",
-      errorMap
-    )}</label>
+              "f-cred-username",
+              errorMap
+            )}</label>
           <label class="${fieldErrorClass("f-cred-passwordRef", errorMap)}">Password ref
             <input id="f-cred-passwordRef" value="${esc(creds.passwordRef || "")}" placeholder="env:ICP_PASS"/>${fieldErrorMsg(
-      "f-cred-passwordRef",
-      errorMap
-    )}</label>
+              "f-cred-passwordRef",
+              errorMap
+            )}</label>
           <label class="${fieldErrorClass("f-cred-tokenRef", errorMap)}">Token ref
             <input id="f-cred-tokenRef" value="${esc(creds.tokenRef || "")}" placeholder="env:ICP_TOKEN"/>${fieldErrorMsg(
-      "f-cred-tokenRef",
-      errorMap
-    )}</label>
-          <div class="section-title">Equipment</div>
-        </div>
-        ${
-          equipment.length
-            ? equipment.map((eq, i) => equipmentCardHtml(protocol, eq, i, errorMap)).join("")
-            : '<p class="muted">No equipment configured.</p>'
+              "f-cred-tokenRef",
+              errorMap
+            )}</label>
+          </div>
+        </section>`
         }
-        <div class="row-actions" style="margin-top:0.5rem">
-          <button type="button" data-action="add-equipment">Add equipment</button>
-        </div>
-        <div class="advanced-json panel" style="margin-top:1rem">
-          <h3>Advanced JSON <button type="button" data-action="toggle-advanced">${
-            advancedOpen ? "Hide" : "Show"
-          }</button></h3>
-          <div id="advanced-json-body" style="${advancedOpen ? "" : "display:none"}">
-            <p class="muted">Expert edit of the ICP-1B adapter record. Use Sync to push GUI → JSON or Apply to import JSON → GUI.</p>
+        <section class="editor-section">
+          <h3>Equipment</h3>
+          ${
+            equipment.length
+              ? equipment.map((eq, i) => equipmentCardHtml(adapter, eq, i, errorMap)).join("")
+              : '<p class="muted">No equipment configured. Add equipment, then telemetry and commands on each card.</p>'
+          }
+          <div class="row-actions">
+            <button type="button" data-action="add-equipment">Add equipment</button>
+          </div>
+        </section>
+        <section class="editor-section advanced-json">
+          <h3>Advanced Configuration
+            <button type="button" data-action="toggle-advanced">${
+              advancedOpen ? "Hide JSON" : "Show JSON"
+            }</button>
+          </h3>
+          <div id="advanced-json-body" class="${advancedOpen ? "" : "hidden"}">
+            <p class="muted">Expert view of the same adapter record the backend stores. Use GUI fields for normal setup.</p>
             <textarea id="f-advanced-json" class="mono" rows="14">${esc(
               JSON.stringify(Form.adapterToConfigJson(adapter), null, 2)
             )}</textarea>
-            <div class="toolbar" style="margin-top:0.5rem">
+            <div class="toolbar">
               <button type="button" data-action="gui-to-json">GUI → JSON</button>
-              <button type="button" data-action="json-to-gui">Apply JSON → GUI</button>
+              <button type="button" data-action="json-to-gui">JSON → GUI</button>
             </div>
           </div>
-        </div>
-        <div class="toolbar" style="margin-top:0.75rem">
-          <button class="primary" data-action="save-adapter">Validate &amp; Save adapter</button>
+        </section>
+        <div class="editor-actions">
           <button data-action="cancel-editor">Cancel</button>
+          <button class="primary" data-action="save-adapter">Save Adapter</button>
         </div>
         <div id="editor-result" class="muted"></div>
       </div>`;
@@ -381,9 +496,9 @@
     return v === "" ? undefined : v;
   }
 
-  function readConnectionFromForm(protocol) {
+  function readConnectionFromForm(adapter) {
     const connection = {};
-    const fields = Form.CONNECTION_FIELDS[protocol] || [];
+    const fields = Form.connectionFieldsFor(editorContext(adapter));
     fields.forEach((f) => {
       const el = document.getElementById("f-conn-" + f.key);
       if (!el) return;
@@ -400,7 +515,10 @@
     return connection;
   }
 
-  function readEquipmentFromForm(protocol) {
+  function readEquipmentFromForm(adapter) {
+    const ctx = editorContext(adapter);
+    const protocol = ctx.protocol || "mock";
+    const impl = Form.resolveImplementation(ctx);
     const cards = [...document.querySelectorAll(".eq-card")];
     return cards.map((card, eqIdx) => {
       const eq = {
@@ -423,7 +541,7 @@
           .map((s) => s.trim())
           .filter(Boolean);
       }
-      Form.equipmentExtraFields(protocol).forEach((f) => {
+      Form.equipmentExtraFields(ctx).forEach((f) => {
         const el = document.getElementById(`f-eq-${eqIdx}-${f.key}`);
         if (!el) return;
         if (f.type === "number") {
@@ -434,7 +552,7 @@
           if (v) eq[f.key] = v;
         }
       });
-      if (protocol === "profinet") {
+      if (protocol === "profinet" && impl === "hilscher_native") {
         const sub = document.getElementById(`f-eq-${eqIdx}-submodules`);
         if (sub) {
           try {
@@ -444,7 +562,7 @@
           }
         }
       }
-      if (protocol === "profibus") {
+      if (protocol === "profibus" && impl === "hilscher_native") {
         const mod = document.getElementById(`f-eq-${eqIdx}-modules`);
         if (mod) {
           try {
@@ -454,7 +572,7 @@
           }
         }
       }
-      const telFields = Form.TELEMETRY_FIELDS[protocol] || [];
+      const telFields = Form.telemetryFieldsFor(ctx);
       const telRows = card.querySelectorAll(".tel-row");
       telRows.forEach((row, telIdx) => {
         const t = {};
@@ -465,7 +583,7 @@
         });
         eq.telemetry.push(t);
       });
-      const cmdFields = Form.COMMAND_FIELDS[protocol] || [];
+      const cmdFields = Form.commandFieldsFor(ctx);
       const cmdRows = card.querySelectorAll(".cmd-row");
       cmdRows.forEach((row, cmdIdx) => {
         const c = {};
@@ -482,15 +600,19 @@
 
   function readAdapterForm() {
     const protocol = ($("#f-protocol") && $("#f-protocol").value) || "mock";
+    const implEl = document.getElementById("f-implementation-value");
     const adapter = {
       adapterId: ($("#f-id") && $("#f-id").value.trim()) || "",
       protocol: protocol,
+      implementation: implEl ? implEl.value : "",
       description: ($("#f-desc") && $("#f-desc").value) || "",
       enabled: !$("#f-enabled") || $("#f-enabled").value === "true",
-      connection: readConnectionFromForm(protocol),
+      connection: {},
       credentials: {},
-      equipment: readEquipmentFromForm(protocol),
+      equipment: [],
     };
+    adapter.connection = readConnectionFromForm(adapter);
+    adapter.equipment = readEquipmentFromForm(adapter);
     const user = document.getElementById("f-cred-username");
     const pass = document.getElementById("f-cred-passwordRef");
     const tok = document.getElementById("f-cred-tokenRef");
@@ -511,21 +633,13 @@
       });
     }
 
-    const toolbarProto = document.getElementById("new-protocol");
-    if (toolbarProto) {
-      if (state._editingAdapter) {
-        toolbarProto.value = state._editingAdapter.protocol;
-      }
-      if (!toolbarProto.dataset.bound) {
-        toolbarProto.dataset.bound = "1";
-        toolbarProto.addEventListener("change", async () => {
-          if (state._editingAdapter) {
-            applyProtocolChange(toolbarProto.value);
-            await render({ skipDraftCapture: true });
-            flash("Protocol changed to " + toolbarProto.value, "ok");
-          }
-        });
-      }
+    if (protoEl && !protoEl.dataset.bound) {
+      protoEl.dataset.bound = "1";
+      protoEl.addEventListener("change", async () => {
+        applyProtocolChange(protoEl.value);
+        await render({ skipDraftCapture: true });
+        flash("Protocol changed to " + protoEl.value + " — connection/equipment reset to defaults", "ok");
+      });
     }
 
     const editor = document.getElementById("adapter-editor");
@@ -606,7 +720,7 @@
       body += `<div class="panel"><div class="empty">
         <strong>No adapters configured</strong>
         Add an industrial adapter to begin.
-        <div style="margin-top:0.75rem"><button class="primary" data-action="goto-adapters">Add Adapter</button></div>
+        <div class="row-actions"><button class="primary" data-action="goto-adapters">+ Add Adapter</button></div>
       </div></div>`;
     } else {
       const dist = s.protocolDistribution || {};
@@ -648,34 +762,23 @@
     const [ad, proto] = await Promise.all([IcpApi.adapters(), IcpApi.protocols()]);
     state.protocols = (proto.data && proto.data.protocols) || [];
     const adapters = (ad.data && ad.data.adapters) || [];
-    const selectedProtocol =
-      (state._editingAdapter && state._editingAdapter.protocol) ||
-      (state.protocols[0] && state.protocols[0].id) ||
-      "mock";
     let html = `<div class="toolbar">
-      <button class="primary" data-action="add-adapter">Add Adapter</button>
-      <select id="new-protocol" title="Authoritative protocol for new/open editor">${state.protocols
-        .map(
-          (p) =>
-            `<option value="${esc(p.id)}" ${
-              p.id === selectedProtocol ? "selected" : ""
-            }>${esc(p.label)}</option>`
-        )
-        .join("")}</select>
-      <span class="muted">Protocol selector stays synchronized with the editor below.</span>
+      <button class="primary" data-action="open-add-chooser">+ Add Adapter</button>
+      <span class="muted">Choose protocol and implementation from the Add Industrial Adapter dialog.</span>
     </div>`;
 
     if (!adapters.length) {
-      html += `<div class="empty"><strong>No adapters configured</strong>Choose a protocol and click Add Adapter.</div>`;
+      html += `<div class="empty"><strong>No adapters configured</strong>Click <strong>+ Add Adapter</strong> to create one.</div>`;
     } else {
       html += `<div class="panel"><table><thead><tr>
-        <th>Adapter</th><th>Protocol</th><th>State</th><th>Enabled</th><th>Equipment</th><th>Error</th><th>Actions</th>
+        <th>Adapter</th><th>Protocol</th><th>Implementation</th><th>State</th><th>Enabled</th><th>Equipment</th><th>Error</th><th>Actions</th>
       </tr></thead><tbody>`;
       html += adapters
         .map(
           (a) => `<tr>
           <td><a href="#/adapters/${esc(a.adapterId)}">${esc(a.adapterId)}</a></td>
           <td>${esc(a.protocol)}</td>
+          <td>${esc(implementationLabel(a.implementation))}</td>
           <td>${adapterConnectionBadge(a)}</td>
           <td>${a.enabled ? "yes" : "no"}</td>
           <td>${esc(a.equipmentCount)}</td>
@@ -698,6 +801,7 @@
     if (state._editingAdapter) {
       html += adapterFormHtml(state._editingAdapter, state.protocols);
     }
+    html += renderChooserOverlay();
     return html;
   }
 
@@ -718,7 +822,7 @@
                 t.unit || ""
               )}</td></tr>`
           )
-          .join("") || `<tr><td colspan="3" class="muted">No telemetry from backend</td></tr>`;
+          .join("") || `<tr><td colspan="3" class="muted">No telemetry received yet</td></tr>`;
       const canCommand =
         (e.communicationState === "CONNECTED" ||
           e.communicationStateDisplay === "SIMULATED_ACTIVE") &&
@@ -805,41 +909,70 @@
   }
 
   async function renderConfiguration() {
-    const [cfg, val] = await Promise.all([
+    const [cfg, val, st] = await Promise.all([
       IcpApi.configuration(),
       IcpApi.validateConfiguration(),
+      IcpApi.status(),
     ]);
+    const status = (st.ok && st.data) || {};
     const text =
       state._cfgEditorDirty && state._cfgDraft != null
         ? state._cfgDraft
         : JSON.stringify(cfg.data || {}, null, 2);
-    return `<div class="toolbar">
-      <button class="primary" data-action="cfg-validate">Validate</button>
-      <button data-action="cfg-save">Save</button>
-      <button data-action="cfg-load">Load</button>
-      <button data-action="cfg-apply">Apply editor</button>
-      <button data-action="cfg-export">Export</button>
+    const loaded = !!status.configurationLoaded;
+    const path = status.configurationPath || "";
+    const name = status.configurationName || "(unnamed)";
+    const loadState = status.configurationLoadState || (loaded ? "loaded" : "not loaded");
+    return `<div class="panel">
+      <h2>Configuration</h2>
+      <p class="muted">This page manages the ICP configuration document — adapters, equipment mappings, and connection settings. It is not MES and not CIC.</p>
+      <dl class="kv">
+        <dt>Current configuration</dt><dd class="mono">${esc(path || name)}</dd>
+        <dt>Name</dt><dd>${esc(name)}</dd>
+        <dt>Status</dt><dd>${loaded ? statusBadge("ok") : statusBadge("NOT_CONFIGURED")} ${esc(
+          loadState
+        )}</dd>
+      </dl>
     </div>
-    <div class="split">
+    <div class="config-actions">
       <div class="panel">
-        <h2>Configuration document</h2>
-        <textarea id="cfg-editor" class="mono" rows="28" style="width:100%">${esc(
-          text
-        )}</textarea>
+        <h3>Save configuration</h3>
+        <p class="muted">Persist the currently active configuration to the file shown above.</p>
+        <button class="primary" data-action="cfg-save">Save Configuration</button>
       </div>
       <div class="panel">
-        <h2>Validation</h2>
-        <div id="cfg-validation">${
-          val.data && val.data.ok
-            ? statusBadge("ok") + " " + esc(val.data.message || "ok")
-            : formatIssues(val.data)
-        }</div>
-        <h3>Import</h3>
-        <textarea id="cfg-import" class="mono" rows="8" style="width:100%" placeholder="Paste ICP-1B JSON"></textarea>
-        <div class="toolbar"><button data-action="cfg-import">Import</button></div>
-        <p class="muted">Backend validation is authoritative. Persistence uses the existing versioned JSON format.</p>
+        <h3>Load configuration</h3>
+        <p class="muted">Load the configured configuration file from disk into the application.</p>
+        <button data-action="cfg-load">Load Configuration</button>
       </div>
-    </div>`;
+      <div class="panel">
+        <h3>Import configuration</h3>
+        <p class="muted">Bring a configuration JSON document into the application (replaces the in-memory document after validation).</p>
+        <textarea id="cfg-import" class="mono" rows="6" placeholder="Paste ICP configuration JSON"></textarea>
+        <div class="row-actions"><button data-action="cfg-import">Import Configuration</button></div>
+      </div>
+      <div class="panel">
+        <h3>Export configuration</h3>
+        <p class="muted">Download or copy the current configuration as JSON. Secrets are stored as references only.</p>
+        <button data-action="cfg-export">Export Configuration</button>
+      </div>
+    </div>
+    <section class="editor-section">
+      <h3>Validate</h3>
+      <p class="muted">Check the active configuration against ICP-1B rules without writing to disk.</p>
+      <div class="row-actions"><button data-action="cfg-validate">Validate</button></div>
+      <div id="cfg-validation">${
+        val.data && val.data.ok
+          ? statusBadge("ok") + " " + esc(val.data.message || "Configuration is valid.")
+          : formatIssues(val.data)
+      }</div>
+    </section>
+    <section class="editor-section advanced-json">
+      <h3>Advanced document editor</h3>
+      <p class="muted">Direct JSON of the whole configuration. Prefer the Adapters page for normal edits. Apply editor writes the JSON into memory after validation; Save writes it to disk.</p>
+      <textarea id="cfg-editor" class="mono" rows="18">${esc(text)}</textarea>
+      <div class="row-actions"><button data-action="cfg-apply">Apply editor</button></div>
+    </section>`;
   }
 
   async function renderMappings() {
@@ -889,27 +1022,18 @@
     return html;
   }
 
-  function implementationLabel(impl) {
-    const labels = {
-      gateway: "Gateway",
-      hilscher_native: "Hilscher native",
-      softing_native: "Softing native",
-      simulated: "Simulated",
-    };
-    return labels[impl] || impl || "—";
-  }
-
   function renderImplementationAdapterTable(adapters, title) {
     if (!adapters || !adapters.length) {
       return `<p class="muted">No adapters in this implementation group.</p>`;
     }
-    return `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>State</th><th>Enabled</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
+    return `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>Implementation</th><th>Endpoint</th><th>State</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
       .map(
         (a) => `<tr>
         <td>${esc(a.adapterId)}</td>
         <td>${esc(a.protocol)}</td>
+        <td>${esc(implementationLabel(a.implementation))}</td>
+        <td class="mono">${esc(a.connectionSummary || "")}</td>
         <td>${statusBadge(a.connectionStateDisplay || a.connectionState)}</td>
-        <td>${a.enabled ? "yes" : "no"}</td>
         <td>${a.runtimePresent ? "yes" : "no"}</td>
         <td>${esc(a.equipmentCount || 0)}</td>
         <td class="mono">${esc(a.lastError || "")}</td>
@@ -1013,7 +1137,7 @@
           <dt>Firmware</dt><dd>${esc(hw.selectedFirmware || "")}</dd>
           <dt>Summary</dt><dd>${esc(hw.summary || "")}</dd>
         </dl>
-        <p class="muted">Shown because PROFINET or PROFIBUS adapters are configured in this runtime.</p>
+        <p class="muted">Shown because a Hilscher native adapter is configured.</p>
       </div>`;
     }
 
@@ -1030,16 +1154,16 @@
         ${
           !adapters.length
             ? `<p class="muted">No adapters.</p>`
-            : `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>Implementation</th><th>State</th><th>Enabled</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
+            : `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>Implementation</th><th>Endpoint</th><th>State</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
                 .map(
                   (a) => `<tr>
               <td>${esc(a.adapterId)}</td>
               <td>${esc(a.protocol)}</td>
               <td>${esc(implementationLabel(a.implementation))}</td>
+              <td class="mono">${esc(a.connectionSummary || "")}</td>
               <td>${statusBadge(
                 a.connectionStateDisplay || a.connectionState
               )}</td>
-              <td>${a.enabled ? "yes" : "no"}</td>
               <td>${a.runtimePresent ? "yes" : "no"}</td>
               <td>${esc(a.equipmentCount || 0)}</td>
               <td class="mono">${esc(a.lastError || "")}</td>
@@ -1052,7 +1176,7 @@
         <h2>Equipment communication</h2>
         ${
           !equipment.length
-            ? `<p class="muted">No equipment in live cache.</p>`
+            ? `<p class="muted">No equipment in live cache. Connect an adapter to receive telemetry.</p>`
             : `<table><thead><tr><th>Equipment</th><th>Adapter</th><th>Comm</th><th>Machine</th><th>Stale</th><th>Last telemetry</th><th>Error</th></tr></thead><tbody>${equipment
                 .map(
                   (e) => `<tr>
@@ -1066,7 +1190,7 @@
                   }</td>
               <td>${e.stale ? "yes" : "no"}</td>
               <td class="mono">${esc(
-                e.lastSuccessfulTelemetryUtc || e.observedAtUtc || ""
+                e.lastSuccessfulTelemetryUtc || e.observedAtUtc || "No telemetry received yet"
               )}</td>
               <td class="mono">${esc(e.lastError || "")}</td>
             </tr>`
@@ -1210,20 +1334,66 @@
   async function onAction(action, id, el) {
     flash("");
     try {
+      if (action === "stop-modal") {
+        return;
+      }
       if (action === "goto-adapters") {
         location.hash = "#/adapters";
         return;
       }
-      if (action === "add-adapter") {
-        const protocol = ($("#new-protocol") && $("#new-protocol").value) || "mock";
-        state._editingAdapter = defaultAdapter(protocol);
-        state._editingAdapter._edit = false;
-        await render();
-        const editor = document.getElementById("adapter-editor");
-        if (editor) {
-          editor.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (action === "open-add-chooser") {
+        state._chooser = { step: "protocol" };
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "close-chooser") {
+        state._chooser = null;
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "back-chooser") {
+        state._chooser = { step: "protocol" };
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "choose-protocol") {
+        const protocol = el && el.dataset.protocol;
+        if (!protocol) return;
+        if (protocol === "profinet" || protocol === "profibus") {
+          state._chooser = { step: "implementation", protocol };
+          await render({ skipDraftCapture: true });
+          return;
         }
+        openAddAdapterEditor(protocol);
+        await render({ skipDraftCapture: true });
         flash("Adapter editor opened — configure and click Validate & Save adapter", "ok");
+        return;
+      }
+      if (action === "choose-implementation") {
+        const impl = el && el.dataset.implementation;
+        const protocol = state._chooser && state._chooser.protocol;
+        if (!protocol || !impl) return;
+        if (impl === "hilscher_native" || impl === "softing_native") {
+          flash(
+            (impl === "hilscher_native" ? "Hilscher" : "Softing") +
+              " native implementation is coming soon.",
+            "ok"
+          );
+          state._chooser = null;
+          await render({ skipDraftCapture: true });
+          return;
+        }
+        if (impl === "gateway") {
+          openAddAdapterEditor(protocol, "gateway");
+          await render({ skipDraftCapture: true });
+          flash("Gateway adapter editor opened — configure northbound gateway connection", "ok");
+          return;
+        }
+        return;
+      }
+      if (action === "add-adapter") {
+        state._chooser = { step: "protocol" };
+        await render({ skipDraftCapture: true });
         return;
       }
       if (action === "cancel-editor") {
@@ -1240,6 +1410,7 @@
         state._editingAdapter = detail.data.configuration || {
           adapterId: id,
           protocol: detail.data.protocol,
+          implementation: detail.data.implementation || "",
           enabled: detail.data.enabled,
           description: detail.data.description,
           connection: {},
@@ -1289,7 +1460,11 @@
         if (!a) return;
         a.equipment = a.equipment || [];
         const proto = a.protocol || "mock";
-        const sample = Form.defaultAdapter(proto).equipment[0] || {
+        const impl = Form.resolveImplementation(a);
+        const sample =
+          Form.defaultAdapter(proto, a.adapterId, {
+            implementation: impl === "gateway" ? "gateway" : "",
+          }).equipment[0] || {
           equipmentId: a.adapterId + "-EQ-" + (a.equipment.length + 1),
           type: "device",
           capabilities: [],
@@ -1318,7 +1493,7 @@
         const eqIdx = parseInt(el && el.dataset.eq, 10);
         const a = state._editingAdapter;
         if (!a || !a.equipment[eqIdx]) return;
-        const fields = Form.TELEMETRY_FIELDS[a.protocol] || [];
+        const fields = Form.telemetryFieldsFor(a);
         const tel = {};
         fields.forEach((f) => {
           if (f.key === "name") tel.name = "point" + ((a.equipment[eqIdx].telemetry || []).length + 1);
@@ -1364,10 +1539,10 @@
         const body = document.getElementById("advanced-json-body");
         const btn = el;
         if (body) {
-          body.style.display = state._editingAdapter._advancedOpen ? "" : "none";
+          body.classList.toggle("hidden", !state._editingAdapter._advancedOpen);
         }
         if (btn) {
-          btn.textContent = state._editingAdapter._advancedOpen ? "Hide" : "Show";
+          btn.textContent = state._editingAdapter._advancedOpen ? "Hide JSON" : "Show JSON";
         }
         const ta = document.getElementById("f-advanced-json");
         if (ta && state._editingAdapter._advancedOpen) {
@@ -1401,7 +1576,6 @@
           parsed._advancedOpen = true;
           parsed._validationIssues = undefined;
           state._editingAdapter = parsed;
-          syncToolbarProtocol(parsed.protocol);
           await render({ skipDraftCapture: true });
           flash("Advanced JSON applied to GUI fields", "ok");
         } catch (e) {
@@ -1485,8 +1659,17 @@
       }
       if (action === "cfg-export") {
         const res = await IcpApi.exportConfiguration();
-        $("#cfg-editor").value = JSON.stringify(res.data, null, 2);
-        flash("Exported into editor", "ok");
+        const jsonText = JSON.stringify(res.data, null, 2);
+        const editor = $("#cfg-editor");
+        if (editor) editor.value = jsonText;
+        const blob = new Blob([jsonText], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "icp-config.json";
+        a.click();
+        URL.revokeObjectURL(url);
+        flash("Configuration exported", "ok");
         return;
       }
     } catch (e) {

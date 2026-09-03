@@ -74,12 +74,26 @@ Protocol-neutral records (not Siemens/Allen-Bradley/Pump/Robot C++ types):
 
 | Record | Role |
 | --- | --- |
-| `AdapterConfigRecord` | `adapterId`, `protocol`, `enabled`, connection, credential **references**, equipment mappings, metadata |
+| `AdapterConfigRecord` | `adapterId`, `protocol`, optional `implementation`, `enabled`, connection, credential **references**, equipment mappings, metadata |
 | `EquipmentMappingRecord` | `equipmentId`, optional `adapterId`, type, telemetry/command/state/fault mappings, protocol-specific mapping data |
 | `ProfinetSubmoduleRecord` | Future native IO: slot / subslot / process-data lengths |
 | `ProfibusModuleRecord` | Future native IO: slot / ident / process-data lengths |
 
 Supported `protocol` values: `mock`, `opcua`, `modbus`, `mqtt`, `rest`, `ethernetip`, `profinet`, `profibus`.
+
+### Protocol vs implementation (PROFINET / PROFIBUS)
+
+`protocol` names the field protocol. `implementation` names the active stack:
+
+| `implementation` | Meaning |
+| --- | --- |
+| `gateway` | Field devices reached via industrial gateway northbound protocol (OPC UA, Modbus, MQTT, REST — ADR-040). **Configuration/validation supported.** Dedicated `protocol=profinet\|profibus` gateway runtime is **not** implemented; live gateway use configures `protocol=opcua\|modbus\|mqtt\|rest`. |
+| `hilscher_native` | Native Hilscher CIFX path (existing scaffolding). Requires native connection fields (`boardId`, etc.). |
+| `softing_native` | Reserved — **not available** in this release. |
+
+Legacy files without `implementation` remain loadable. Native PN/PB records with `boardId` or `configArtifactPath` normalize to `hilscher_native` on load/upsert.
+
+Diagnostics and connection errors are **implementation-contextual**: Hilscher hardware/readiness appears only when at least one configured adapter has `implementation=hilscher_native`.
 
 Loading a file **does not** require the Hilscher SDK. Native PROFINET/PROFIBUS fields describe **intended topology**. On the isolated Hilscher branch, `NativeFieldbusConfigMapper` converts catalog records into `ProfinetIndustrialAdapter::AdapterConfig` / `ProfibusIndustrialAdapter::AdapterConfig`. Runtime still determines hardware availability. Plant IO remains **HARDWARE VALIDATION PENDING**.
 

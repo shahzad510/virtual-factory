@@ -166,6 +166,8 @@ struct AdapterConfigRecord
 {
   std::string adapterId;
   std::string protocol;
+  /// Active stack: gateway | hilscher_native | softing_native | simulated (optional; inferred when empty).
+  std::string implementation;
   bool enabled{true};
   std::string description;
   AdapterConnectionRecord connection;

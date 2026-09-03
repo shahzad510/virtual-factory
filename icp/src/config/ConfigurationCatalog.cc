@@ -1,5 +1,6 @@
 #include <virtual_factory/icp/config/ConfigurationCatalog.hh>
 
+#include <virtual_factory/icp/config/AdapterImplementation.hh>
 #include <virtual_factory/icp/config/ConfigurationValidator.hh>
 
 #include <utility>
@@ -8,6 +9,23 @@ namespace virtual_factory
 {
 namespace icp
 {
+
+namespace
+{
+
+void normalizeDocumentAdapters(IcpConfigurationDocument *document)
+{
+  if (document == nullptr)
+  {
+    return;
+  }
+  for (AdapterConfigRecord &adapter : document->adapters)
+  {
+    normalizeLegacyAdapterImplementation(&adapter);
+  }
+}
+
+}  // namespace
 
 const IcpConfigurationDocument &ConfigurationCatalog::document() const
 {
@@ -28,6 +46,7 @@ ConfigResult ConfigurationCatalog::load(ConfigurationRepository &repository)
     return parsed;
   }
   document_ = std::move(loaded);
+  normalizeDocumentAdapters(&document_);
   ConfigResult result = ConfigurationValidator::validate(document_);
   if (result.ok && parsed.message != "ok")
   {
@@ -61,6 +80,7 @@ ConfigResult ConfigurationCatalog::upsertAdapter(AdapterConfigRecord adapter)
     result.issues.push_back({"/adapterId", result.message});
     return result;
   }
+  normalizeLegacyAdapterImplementation(&adapter);
 
   IcpConfigurationDocument candidate = document_;
   bool replaced = false;
@@ -97,6 +117,7 @@ ConfigResult ConfigurationCatalog::replaceDocument(IcpConfigurationDocument docu
   {
     document.version = IcpConfigurationDocument::kCurrentVersion;
   }
+  normalizeDocumentAdapters(&document);
   const ConfigResult validated = ConfigurationValidator::validate(document);
   if (!validated.ok)
   {

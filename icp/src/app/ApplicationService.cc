@@ -1,6 +1,7 @@
 #include <virtual_factory/icp/app/ApplicationService.hh>
 
 #include <virtual_factory/icp/AdapterFactory.hh>
+#include <virtual_factory/icp/config/AdapterImplementation.hh>
 #include <virtual_factory/icp/config/JsonFileConfigurationRepository.hh>
 #include <virtual_factory/icp/config/NativeFieldbusConfigMapper.hh>
 #include <virtual_factory/equipment/Equipment.hh>
@@ -199,8 +200,8 @@ std::vector<ProtocolCapability> ApplicationService::protocols() const
       {"mqtt", "MQTT", true, false},
       {"rest", "REST", true, false},
       {"ethernetip", "EtherNet/IP", true, false},
-      {"profinet", "PROFINET", true, true},
-      {"profibus", "PROFIBUS", true, true},
+      {"profinet", "PROFINET", true, false},
+      {"profibus", "PROFIBUS", true, false},
   };
 }
 
@@ -349,7 +350,8 @@ std::vector<RuntimeAdapterView> ApplicationService::adapters() const
       view.connectionState = "DISCONNECTED";
     }
     view.connectionStateDisplay = connectionStateDisplay(view.protocol, view.connectionState);
-    view.implementation = adapterImplementation(record.protocol);
+    view.implementation = adapterImplementation(record);
+    view.connectionSummary = connectionSummary(record);
     out.push_back(std::move(view));
   }
   return out;
@@ -409,7 +411,7 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
       this->cache_.markAdapterCommunication(
           adapterId, runtime->connectionState(), runtime->lastError());
       std::string message = connected.message;
-      if (record->protocol == "profinet" || record->protocol == "profibus")
+      if (adapterImplementation(*record) == "hilscher_native")
       {
         const HilscherDiagnosticsView hilscher = this->hilscherDiagnostics();
         if (hilscher.boardCount == 0 || !hilscher.compiledIn
@@ -902,19 +904,48 @@ std::unique_ptr<IndustrialAdapter> ApplicationService::createRuntimeAdapter(
     return AdapterFactory::createEtherNetIp(record.adapterId, std::move(config));
   }
 
-  if (record.protocol == "profinet")
+  if (record.protocol == "profinet" || record.protocol == "profibus")
   {
-    ConfigResult mapped;
-    auto adapter = AdapterFactory::createProfinetFromRecord(record, &mapped);
-    if (!adapter && error != nullptr)
+    const std::string impl = resolveAdapterImplementation(record);
+    if (impl == "gateway")
     {
-      *error = mapped.message.empty() ? "invalid PROFINET configuration" : mapped.message;
+      if (error != nullptr)
+      {
+        const std::string protoLabel =
+            record.protocol == "profibus" ? "PROFIBUS" : "PROFINET";
+        *error =
+            "Gateway runtime for " + protoLabel
+            + " is not currently available. Configure a supported gateway path using "
+              "OPC UA, Modbus, MQTT or REST.";
+      }
+      return nullptr;
     }
-    return adapter;
-  }
-
-  if (record.protocol == "profibus")
-  {
+    if (impl == "softing_native")
+    {
+      if (error != nullptr)
+      {
+        *error = "Softing native implementation is not available in this ICP release";
+      }
+      return nullptr;
+    }
+    if (impl != "hilscher_native")
+    {
+      if (error != nullptr)
+      {
+        *error = "invalid implementation '" + impl + "' for protocol '" + record.protocol + "'";
+      }
+      return nullptr;
+    }
+    if (record.protocol == "profinet")
+    {
+      ConfigResult mapped;
+      auto adapter = AdapterFactory::createProfinetFromRecord(record, &mapped);
+      if (!adapter && error != nullptr)
+      {
+        *error = mapped.message.empty() ? "invalid PROFINET configuration" : mapped.message;
+      }
+      return adapter;
+    }
     ConfigResult mapped;
     auto adapter = AdapterFactory::createProfibusFromRecord(record, &mapped);
     if (!adapter && error != nullptr)
@@ -955,24 +986,46 @@ std::string ApplicationService::connectionStateDisplay(
   return connectionState;
 }
 
-std::string ApplicationService::adapterImplementation(const std::string &protocol)
+std::string ApplicationService::connectionSummary(const AdapterConfigRecord &record)
 {
-  if (protocol == "mock")
+  const AdapterConnectionRecord &c = record.connection;
+  const std::string impl = resolveAdapterImplementation(record);
+  if (record.protocol == "mock")
   {
-    return "simulated";
+    return "in-process simulation";
   }
-  if (protocol == "profinet" || protocol == "profibus")
+  if (impl == "hilscher_native")
   {
-    // Native fieldbus adapters in this build use the Hilscher CIFX stack.
-    // Future Softing adapters would use softing_native (not creatable yet).
-    return "hilscher_native";
+    if (!c.boardId.empty())
+    {
+      return "board " + c.boardId;
+    }
+    return "native fieldbus";
   }
-  if (protocol == "opcua" || protocol == "modbus" || protocol == "mqtt"
-      || protocol == "rest" || protocol == "ethernetip")
+  if (!c.endpointUrl.empty())
   {
-    return "gateway";
+    return c.endpointUrl;
   }
-  return "gateway";
+  if (!c.host.empty())
+  {
+    std::string summary = c.host;
+    if (c.port != 0)
+    {
+      summary += ":" + std::to_string(c.port);
+    }
+    return summary;
+  }
+  if (!c.scheme.empty() && !c.host.empty())
+  {
+    return c.scheme + "://" + c.host;
+  }
+  return "";
+}
+
+std::string ApplicationService::adapterImplementation(
+    const AdapterConfigRecord &record)
+{
+  return resolveAdapterImplementation(record);
 }
 
 }  // namespace icp
