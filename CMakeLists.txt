@@ -228,3 +228,102 @@ target_link_libraries(native_fieldbus_scaffolding_test
 add_test(NAME native_fieldbus_scaffolding_test
     COMMAND native_fieldbus_scaffolding_test)
 set_tests_properties(native_fieldbus_scaffolding_test PROPERTIES TIMEOUT 60)
+
+add_executable(process_image_codec_test
+    tests/process_image_codec_test.cc
+)
+target_include_directories(process_image_codec_test
+    PRIVATE ${CMAKE_SOURCE_DIR}/industrial/src)
+target_link_libraries(process_image_codec_test
+    PRIVATE virtual_factory_equipment)
+add_test(NAME process_image_codec_test COMMAND process_image_codec_test)
+set_tests_properties(process_image_codec_test PROPERTIES TIMEOUT 30)
+
+add_executable(native_fieldbus_software_integration_test
+    tests/native_fieldbus_software_integration_test.cc
+)
+target_include_directories(native_fieldbus_software_integration_test
+    PRIVATE ${CMAKE_SOURCE_DIR}/industrial/src)
+target_link_libraries(native_fieldbus_software_integration_test
+    PRIVATE virtual_factory_industrial virtual_factory_icp pthread)
+add_test(NAME native_fieldbus_software_integration_test
+    COMMAND native_fieldbus_software_integration_test)
+set_tests_properties(native_fieldbus_software_integration_test PROPERTIES TIMEOUT 60)
+
+add_executable(icp_configuration_test
+    tests/icp_configuration_test.cc
+)
+target_link_libraries(icp_configuration_test PRIVATE virtual_factory_icp)
+add_test(NAME icp_configuration_test COMMAND icp_configuration_test)
+set_tests_properties(icp_configuration_test PROPERTIES TIMEOUT 60)
+
+add_executable(icp_application_api_test
+    tests/icp_application_api_test.cc
+)
+target_include_directories(icp_application_api_test
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/cpp-httplib
+)
+find_path(_VF_NLOHMANN_FOR_ICP_API nlohmann/json.hpp
+    PATHS
+        /usr/include
+        "${CMAKE_SOURCE_DIR}/.deps/nlohmann-json/usr/include"
+)
+if (_VF_NLOHMANN_FOR_ICP_API)
+  target_include_directories(icp_application_api_test PRIVATE ${_VF_NLOHMANN_FOR_ICP_API})
+endif()
+target_compile_definitions(icp_application_api_test
+    PRIVATE VF_ICP_GUI_ROOT="${CMAKE_SOURCE_DIR}/icp/gui")
+target_link_libraries(icp_application_api_test PRIVATE virtual_factory_icp pthread)
+add_test(NAME icp_application_api_test COMMAND icp_application_api_test)
+set_tests_properties(icp_application_api_test PROPERTIES TIMEOUT 120)
+
+add_executable(icp_standalone_acceptance_test
+    tests/icp_standalone_acceptance_test.cc
+    tests/opcua_test_server.cc
+    tests/modbus_test_server.cc
+)
+target_include_directories(icp_standalone_acceptance_test
+    PRIVATE
+        tests
+        ${CMAKE_SOURCE_DIR}/third_party/cpp-httplib
+        ${VIRTUAL_FACTORY_LIBMODBUS_INCLUDE_DIRS}
+)
+if (_VF_NLOHMANN_FOR_ICP_API)
+  target_include_directories(icp_standalone_acceptance_test PRIVATE ${_VF_NLOHMANN_FOR_ICP_API})
+endif()
+target_link_libraries(icp_standalone_acceptance_test
+    PRIVATE
+        virtual_factory_icp
+        virtual_factory_industrial
+        pthread
+)
+if (VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS)
+  set_property(
+      TARGET icp_standalone_acceptance_test
+      PROPERTY BUILD_RPATH "${VIRTUAL_FACTORY_LIBMODBUS_LIBRARY_DIRS}")
+endif()
+add_test(NAME icp_standalone_acceptance_test COMMAND icp_standalone_acceptance_test)
+set_tests_properties(icp_standalone_acceptance_test PROPERTIES TIMEOUT 180)
+
+find_program(VIRTUAL_FACTORY_NODE_EXECUTABLE NAMES node)
+if (VIRTUAL_FACTORY_NODE_EXECUTABLE)
+  add_test(
+      NAME icp_gui_adapter_form_test
+      COMMAND ${VIRTUAL_FACTORY_NODE_EXECUTABLE}
+              ${CMAKE_SOURCE_DIR}/tests/gui_adapter_form_test.mjs)
+  set_tests_properties(icp_gui_adapter_form_test PROPERTIES TIMEOUT 30)
+endif()
+
+add_executable(hilscher_hardware_readiness_test
+    tests/hilscher_hardware_readiness_test.cc
+)
+target_include_directories(hilscher_hardware_readiness_test
+    PRIVATE ${CMAKE_SOURCE_DIR}/industrial/src)
+target_compile_definitions(hilscher_hardware_readiness_test
+    PRIVATE VF_ICP_NATIVE_EXAMPLE_DIR="${CMAKE_SOURCE_DIR}/icp/examples/native-fieldbus")
+target_link_libraries(hilscher_hardware_readiness_test
+    PRIVATE virtual_factory_industrial virtual_factory_icp pthread)
+add_test(NAME hilscher_hardware_readiness_test
+    COMMAND hilscher_hardware_readiness_test)
+set_tests_properties(hilscher_hardware_readiness_test PROPERTIES TIMEOUT 60)

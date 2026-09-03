@@ -83,6 +83,9 @@ add_library(virtual_factory_industrial STATIC
     src/EtherNetIpIndustrialAdapter.cc
     src/eip_session.cc
     src/hilscher/hilscher_availability.cc
+    src/hilscher/cifx_runtime.cc
+    src/hilscher/hilscher_hardware_readiness.cc
+    src/hilscher/hilscher_hardware_test_harness.cc
     src/hilscher/profinet_session.cc
     src/hilscher/profibus_session.cc
     src/ProfinetIndustrialAdapter.cc
@@ -102,12 +105,25 @@ target_include_directories(virtual_factory_industrial
 )
 
 if (VF_HILSCHER_CIFX_AVAILABLE)
+  get_filename_component(_vf_cifx_include_parent
+      "${HILSCHER_CIFX_INCLUDE_DIR}" DIRECTORY)
+  get_filename_component(_vf_cifx_library_dir
+      "${HILSCHER_CIFX_LIBRARY}" DIRECTORY)
   target_include_directories(virtual_factory_industrial
-      PRIVATE ${HILSCHER_CIFX_INCLUDE_DIR})
+      PRIVATE
+          ${HILSCHER_CIFX_INCLUDE_DIR}
+          ${_vf_cifx_include_parent})
   target_compile_definitions(virtual_factory_industrial
       PRIVATE VF_HILSCHER_CIFX_AVAILABLE=1)
   target_link_libraries(virtual_factory_industrial
       PRIVATE ${HILSCHER_CIFX_LIBRARY})
+  target_link_libraries(virtual_factory_industrial
+      INTERFACE ${HILSCHER_CIFX_LIBRARY})
+  target_link_directories(virtual_factory_industrial
+      INTERFACE ${_vf_cifx_library_dir})
+  set_property(
+      TARGET virtual_factory_industrial
+      APPEND PROPERTY BUILD_RPATH "${_vf_cifx_library_dir}")
 else()
   target_compile_definitions(virtual_factory_industrial
       PRIVATE VF_HILSCHER_CIFX_AVAILABLE=0)

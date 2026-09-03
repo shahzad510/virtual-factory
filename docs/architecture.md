@@ -40,7 +40,7 @@ PHYSICAL FACTORY
               .NET / Blazor
 ```
 
-**Phase 6 / ICP-1A today:** ICP **adapter foundation** COMPLETE (`virtual_factory_equipment` + `virtual_factory_industrial`). **ICP-1A** runtime (`AdapterManager`, `PollScheduler`, `LiveStateCache` in `virtual_factory_icp`) **IMPLEMENTED** / **TESTED**. CIC, Designer, MES Core remain **PLANNED**.
+**Phase 6 / ICP today:** ICP **adapter foundation** COMPLETE. **ICP-1A** runtime **IMPLEMENTED** / **TESTED**. **ICP-1B** persistent configuration **IMPLEMENTED** / **TESTED**. **ICP standalone GUI / Application API IMPLEMENTED** / **TESTED** (isolated branch; `docs/icp-gui-architecture.md`). **ICP-1C CIC NOT STARTED.** **ICP Designer NOT STARTED.** **MES Core NOT STARTED.**
 
 Legacy layer view (still valid inside ICP):
 
@@ -70,6 +70,7 @@ Industrial Adapter          PARTIALLY IMPLEMENTED
   MQTT IMPLEMENTED
   EtherNet/IP IMPLEMENTED
   PROFINET SUPPORTED VIA GATEWAY (6H; ADR-040)
+  Native PN IMPLEMENTED TO SOFTWARE BOUNDARY (HARDWARE VALIDATION PENDING)
         │
 Equipment abstraction       IMPLEMENTED
         │
@@ -103,6 +104,7 @@ Industrial Adapters                          ConveyorSystem
   MQTT IMPLEMENTED
   EtherNet/IP IMPLEMENTED
   PROFINET SUPPORTED VIA GATEWAY (6H; ADR-040)
+  Native PN IMPLEMENTED TO SOFTWARE BOUNDARY (HARDWARE VALIDATION PENDING)
         │
 Normalized Equipment Model  IMPLEMENTED
         │
@@ -179,7 +181,7 @@ IndustrialAdapter           IMPLEMENTED (contract)
 
 Library `virtual_factory_industrial` links `virtual_factory_equipment`, **open62541** (OPC UA client), **libmodbus** (Modbus TCP client), **libcurl** (REST HTTP client), **Paho MQTT C** (`libpaho-mqtt3as`, MQTT 3.1.1), and **libplctag** (EtherNet/IP explicit messaging). nlohmann/json is adapter-private. `IndustrialAdapter.hh` does not include open62541, libmodbus, curl, nlohmann/json, Paho, or libplctag types. The Gazebo plugin does not link industrial, open62541, libmodbus, libcurl, Paho, or libplctag.
 
-**One adapter instance = one industrial source/session.** Several OPC UA servers ⇒ several `OpcUaIndustrialAdapter` instances (ADR-026). Several Modbus TCP endpoints ⇒ several `ModbusIndustrialAdapter` instances (ADR-036). Several REST origins ⇒ several `RestIndustrialAdapter` instances (ADR-037). Several MQTT brokers ⇒ several `MqttIndustrialAdapter` instances (ADR-038). Several EtherNet/IP devices ⇒ several `EtherNetIpIndustrialAdapter` instances (ADR-039). `connectionState()` is per-source. A faulted source does not take down equipment on other adapters. **An adapter manager** is **ICP-1A** (`virtual_factory::icp::AdapterManager`) — not Phase 6 and not MES Core.
+**One adapter instance = one industrial source/session.** Several OPC UA servers ⇒ several `OpcUaIndustrialAdapter` instances (ADR-026). Several Modbus TCP endpoints ⇒ several `ModbusIndustrialAdapter` instances (ADR-036). Several REST origins ⇒ several `RestIndustrialAdapter` instances (ADR-037). Several MQTT brokers ⇒ several `MqttIndustrialAdapter` instances (ADR-038). Several EtherNet/IP devices ⇒ several `EtherNetIpIndustrialAdapter` instances (ADR-039). `connectionState()` is per-source. A faulted source does not take down equipment on other adapters. **An adapter manager** is **ICP-1A** (`virtual_factory::icp::AdapterManager`) — not Phase 6 and not MES Core. **Persistent configuration** is **ICP-1B** (`ConfigurationCatalog` + JSON repository; ADR-047) — not MES and not CIC.
 
 Measured in-process validation (not production proof): [`opcua-scalability-test.md`](opcua-scalability-test.md). Validated at 100 and 200 simulated servers under those test conditions. Do not treat that as “unlimited PLCs” or production hardware certification.
 
@@ -654,6 +656,8 @@ Enterprise services, API, orchestration. C++ remains for simulation and industri
 ---
 
 ## 14. Blazor GUI — PLANNED
+
+Long-term ADR-011 hint for product GUIs. **ICP standalone browser GUI** (vanilla SPA + `/api/v1`) is **IMPLEMENTED** / **TESTED** on the isolated GUI branch — see `docs/icp-gui-architecture.md`. That GUI is not Blazor and not ICP Designer.
 
 Preferred web UI (SoT §12, ADR-011). **NOT IMPLEMENTED.**
 
