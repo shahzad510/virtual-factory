@@ -110,6 +110,10 @@ private:
   std::string last_error_;
   std::unique_ptr<ClientHandle> client_;
   std::vector<std::unique_ptr<BoundEquipment>> bound_;
+
+  /// Temporary poll diagnostics context (set by BoundEquipment::refreshFromServer).
+  std::string debug_equipment_id_;
+  std::string debug_point_name_;
 };
 
 }  // namespace virtual_factory

@@ -4,6 +4,7 @@
 
 #include <open62541.h>
 
+#include <cstdio>
 #include <string>
 #include <utility>
 
@@ -16,6 +17,86 @@ namespace
 UA_NodeId makeNodeId(const OpcUaNodeRef &node)
 {
   return UA_NODEID_STRING_ALLOC(node.namespaceIndex, node.identifier.c_str());
+}
+
+/// Diagnostic label for a configured string NodeId (ns=N;s=Identifier).
+std::string formatNodeId(const OpcUaNodeRef &node)
+{
+  return "ns=" + std::to_string(static_cast<unsigned>(node.namespaceIndex))
+      + ";s=" + node.identifier;
+}
+
+std::string statusCodeName(UA_StatusCode status)
+{
+  const char *name = UA_StatusCode_name(status);
+  if (name == nullptr || name[0] == '\0')
+  {
+    return "StatusCode=0x" + std::to_string(static_cast<unsigned long>(status));
+  }
+  return std::string(name);
+}
+
+const char *variantTypeName(const UA_Variant &variant)
+{
+  if (UA_Variant_isEmpty(&variant) || variant.type == nullptr)
+  {
+    return "(empty)";
+  }
+  if (variant.type->typeName != nullptr)
+  {
+    return variant.type->typeName;
+  }
+  return "(unknown)";
+}
+
+/// Temporary stderr diagnostics at the OPC UA read boundary.
+void logOpcUaReadDebug(
+    const std::string &equipmentId,
+    const std::string &pointName,
+    const OpcUaNodeRef &node,
+    UA_StatusCode status,
+    const UA_Variant &variant,
+    bool converted,
+    double doubleValue,
+    bool boolValue,
+    bool isBoolean)
+{
+  std::fprintf(
+      stderr,
+      "OPC UA DEBUG:\n"
+      "equipment=%s\n"
+      "telemetry=%s\n"
+      "node=%s\n"
+      "namespaceIndex=%u\n"
+      "identifier=%s\n"
+      "generated_UA_NodeId=ns=%u;s=%s\n"
+      "read status=0x%08x %s\n"
+      "variant empty=%s\n"
+      "variant type=%s\n",
+      equipmentId.empty() ? "(unknown)" : equipmentId.c_str(),
+      pointName.empty() ? "(unknown)" : pointName.c_str(),
+      formatNodeId(node).c_str(),
+      static_cast<unsigned>(node.namespaceIndex),
+      node.identifier.c_str(),
+      static_cast<unsigned>(node.namespaceIndex),
+      node.identifier.c_str(),
+      static_cast<unsigned>(status),
+      statusCodeName(status).c_str(),
+      UA_Variant_isEmpty(&variant) ? "true" : "false",
+      variantTypeName(variant));
+
+  if (status == UA_STATUSCODE_GOOD && converted)
+  {
+    if (isBoolean)
+    {
+      std::fprintf(stderr, "value=%s\n", boolValue ? "true" : "false");
+    }
+    else
+    {
+      std::fprintf(stderr, "value=%.6f\n", doubleValue);
+    }
+  }
+  std::fflush(stderr);
 }
 
 bool variantAsBool(const UA_Variant &value, bool *out)
@@ -201,6 +282,8 @@ public:
   {
     for (const auto &point : this->mapping_->telemetry)
     {
+      this->adapter_->debug_equipment_id_ = this->id();
+      this->adapter_->debug_point_name_ = point.name;
       double value = 0.0;
       if (!this->adapter_->readDouble(point.node, &value))
       {
@@ -211,6 +294,8 @@ public:
 
     if (!this->mapping_->stateNode.identifier.empty())
     {
+      this->adapter_->debug_equipment_id_ = this->id();
+      this->adapter_->debug_point_name_ = "state";
       bool running = false;
       if (!this->adapter_->readBoolean(this->mapping_->stateNode, &running))
       {
@@ -222,6 +307,8 @@ public:
 
     if (!this->mapping_->faultNode.identifier.empty())
     {
+      this->adapter_->debug_equipment_id_ = this->id();
+      this->adapter_->debug_point_name_ = "fault";
       bool fault = false;
       if (!this->adapter_->readBoolean(this->mapping_->faultNode, &fault))
       {
@@ -385,7 +472,12 @@ void OpcUaIndustrialAdapter::poll()
   {
     if (!item->refreshFromServer())
     {
-      this->enterFault("OPC UA read failed during poll");
+      // Keep the detailed StatusCode / type error from readDouble/readBoolean.
+      // Previously this always overwrote last_error_ with the generic string.
+      const std::string detail =
+          this->last_error_.empty() ? "OPC UA read failed during poll"
+                                    : this->last_error_;
+      this->enterFault(detail);
       return;
     }
   }
@@ -410,6 +502,14 @@ bool OpcUaIndustrialAdapter::readBoolean(const OpcUaNodeRef &node, bool *value)
 {
   if (this->client_->client == nullptr || node.identifier.empty())
   {
+    this->last_error_ =
+        "OPC UA read failed for " + formatNodeId(node)
+        + ": invalid client or empty NodeId";
+    UA_Variant empty;
+    UA_Variant_init(&empty);
+    logOpcUaReadDebug(
+        this->debug_equipment_id_, this->debug_point_name_, node,
+        UA_STATUSCODE_BADINVALIDARGUMENT, empty, false, 0.0, false, true);
     return false;
   }
 
@@ -420,19 +520,47 @@ bool OpcUaIndustrialAdapter::readBoolean(const OpcUaNodeRef &node, bool *value)
       UA_Client_readValueAttribute(this->client_->client, nodeId, &variant);
   UA_NodeId_clear(&nodeId);
 
-  bool ok = false;
-  if (status == UA_STATUSCODE_GOOD)
+  if (status != UA_STATUSCODE_GOOD)
   {
-    ok = variantAsBool(variant, value);
+    this->last_error_ =
+        "OPC UA read failed for " + formatNodeId(node) + ": "
+        + statusCodeName(status);
+    logOpcUaReadDebug(
+        this->debug_equipment_id_, this->debug_point_name_, node, status,
+        variant, false, 0.0, false, true);
+    UA_Variant_clear(&variant);
+    return false;
   }
+
+  bool converted = variantAsBool(variant, value);
+  logOpcUaReadDebug(
+      this->debug_equipment_id_, this->debug_point_name_, node, status, variant,
+      converted, 0.0, converted && value != nullptr ? *value : false, true);
+
+  if (!converted)
+  {
+    this->last_error_ =
+        "OPC UA value type unsupported for " + formatNodeId(node);
+    UA_Variant_clear(&variant);
+    return false;
+  }
+
   UA_Variant_clear(&variant);
-  return ok;
+  return true;
 }
 
 bool OpcUaIndustrialAdapter::readDouble(const OpcUaNodeRef &node, double *value)
 {
   if (this->client_->client == nullptr || node.identifier.empty())
   {
+    this->last_error_ =
+        "OPC UA read failed for " + formatNodeId(node)
+        + ": invalid client or empty NodeId";
+    UA_Variant empty;
+    UA_Variant_init(&empty);
+    logOpcUaReadDebug(
+        this->debug_equipment_id_, this->debug_point_name_, node,
+        UA_STATUSCODE_BADINVALIDARGUMENT, empty, false, 0.0, false, false);
     return false;
   }
 
@@ -443,13 +571,33 @@ bool OpcUaIndustrialAdapter::readDouble(const OpcUaNodeRef &node, double *value)
       UA_Client_readValueAttribute(this->client_->client, nodeId, &variant);
   UA_NodeId_clear(&nodeId);
 
-  bool ok = false;
-  if (status == UA_STATUSCODE_GOOD)
+  if (status != UA_STATUSCODE_GOOD)
   {
-    ok = variantAsDouble(variant, value);
+    this->last_error_ =
+        "OPC UA read failed for " + formatNodeId(node) + ": "
+        + statusCodeName(status);
+    logOpcUaReadDebug(
+        this->debug_equipment_id_, this->debug_point_name_, node, status,
+        variant, false, 0.0, false, false);
+    UA_Variant_clear(&variant);
+    return false;
   }
+
+  bool converted = variantAsDouble(variant, value);
+  logOpcUaReadDebug(
+      this->debug_equipment_id_, this->debug_point_name_, node, status, variant,
+      converted, converted && value != nullptr ? *value : 0.0, false, false);
+
+  if (!converted)
+  {
+    this->last_error_ =
+        "OPC UA value type unsupported for " + formatNodeId(node);
+    UA_Variant_clear(&variant);
+    return false;
+  }
+
   UA_Variant_clear(&variant);
-  return ok;
+  return true;
 }
 
 bool OpcUaIndustrialAdapter::writeBoolean(const OpcUaNodeRef &node, bool value)
