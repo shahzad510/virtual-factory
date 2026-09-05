@@ -424,6 +424,26 @@ void testMalformedAndUnsupportedVersion()
       &out);
   expect(!unknownField.ok && contains(unknownField, "unknown field"), "unknown field rejected");
 
+  const auto withImplementation =
+      virtual_factory::icp::JsonFileConfigurationRepository::parseText(
+          R"({
+        "schema": "virtual-factory.icp.config",
+        "version": 1,
+        "name": "x",
+        "adapters": [{
+          "adapterId": "opcua-1",
+          "protocol": "opcua",
+          "implementation": "gateway",
+          "connection": {"endpointUrl": "opc.tcp://127.0.0.1:4840"},
+          "equipment": []
+        }]
+      })",
+          &out);
+  expect(
+      withImplementation.ok && out.adapters.size() == 1
+          && out.adapters.front().implementation == "gateway",
+      "optional implementation field accepted and stored");
+
   const auto plaintext = virtual_factory::icp::JsonFileConfigurationRepository::parseText(
       R"({
         "schema": "virtual-factory.icp.config",
