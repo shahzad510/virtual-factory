@@ -329,6 +329,16 @@ void useAsMes(virtual_factory::IndustrialAdapter &adapter)
 
 int main()
 {
+  {
+    using virtual_factory::opcUaNodeRefFromConfig;
+    const auto expanded = opcUaNodeRefFromConfig(2, "ns=2;s=MotorSpeed");
+    expect(expanded.namespaceIndex == 2, "expanded NodeId namespaceIndex");
+    expect(expanded.identifier == "MotorSpeed", "expanded NodeId identifier stripped");
+    const auto bare = opcUaNodeRefFromConfig(2, "MotorSpeed");
+    expect(bare.namespaceIndex == 2, "bare identifier keeps namespaceIndex");
+    expect(bare.identifier == "MotorSpeed", "bare identifier preserved");
+  }
+
   virtual_factory::test::OpcUaTestServer server;
   expect(server.start(), "test OPC UA server starts");
   if (!server.start())

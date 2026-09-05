@@ -25,6 +25,55 @@ std::string formatNodeId(const OpcUaNodeRef &node)
       + ";s=" + node.identifier;
 }
 
+}  // namespace
+
+OpcUaNodeRef opcUaNodeRefFromConfig(
+    std::uint16_t namespaceIndex, const std::string &address)
+{
+  // Expanded string NodeId: ns=<digits>;s=<identifier>
+  // Example: "ns=2;s=MotorSpeed" → {2, "MotorSpeed"}
+  if (address.size() >= 6 && address.compare(0, 3, "ns=") == 0)
+  {
+    const std::size_t semi = address.find(";s=");
+    if (semi != std::string::npos && semi > 3)
+    {
+      unsigned long parsedNs = 0;
+      bool numeric = true;
+      for (std::size_t i = 3; i < semi; ++i)
+      {
+        const char ch = address[i];
+        if (ch < '0' || ch > '9')
+        {
+          numeric = false;
+          break;
+        }
+        parsedNs = parsedNs * 10UL + static_cast<unsigned long>(ch - '0');
+        if (parsedNs > 65535UL)
+        {
+          numeric = false;
+          break;
+        }
+      }
+      const std::string ident = address.substr(semi + 3);
+      if (numeric && !ident.empty())
+      {
+        OpcUaNodeRef node;
+        node.namespaceIndex = static_cast<std::uint16_t>(parsedNs);
+        node.identifier = ident;
+        return node;
+      }
+    }
+  }
+
+  OpcUaNodeRef node;
+  node.namespaceIndex = namespaceIndex;
+  node.identifier = address;
+  return node;
+}
+
+namespace
+{
+
 std::string statusCodeName(UA_StatusCode status)
 {
   const char *name = UA_StatusCode_name(status);
@@ -81,7 +130,7 @@ void logOpcUaReadDebug(
 
   std::fprintf(
       stderr,
-      "OPC UA DEBUG READ\n"
+      "OPC UA DEBUG READ:\n"
       "equipment=%s\n"
       "telemetry=%s\n"
       "namespaceIndex=%u\n"

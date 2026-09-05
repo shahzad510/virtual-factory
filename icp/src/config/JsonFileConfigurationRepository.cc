@@ -750,7 +750,7 @@ json adapterToJson(const AdapterConfigRecord &record)
   {
     equipment.push_back(equipmentToJson(item));
   }
-  return json{
+  json out = {
       {"adapterId", record.adapterId},
       {"protocol", record.protocol},
       {"implementation", record.implementation},
@@ -765,6 +765,13 @@ json adapterToJson(const AdapterConfigRecord &record)
        }},
       {"equipment", equipment},
   };
+  // Persist only when set so legacy docs stay unchanged; UI may send this for
+  // PROFINET/PROFIBUS stack selection (and must not fail unknown-field checks).
+  if (!record.implementation.empty())
+  {
+    out["implementation"] = record.implementation;
+  }
+  return out;
 }
 
 }  // namespace
