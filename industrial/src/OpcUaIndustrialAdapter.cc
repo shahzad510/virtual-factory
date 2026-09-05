@@ -19,7 +19,6 @@ UA_NodeId makeNodeId(const OpcUaNodeRef &node)
   return UA_NODEID_STRING_ALLOC(node.namespaceIndex, node.identifier.c_str());
 }
 
-/// Diagnostic label for a configured string NodeId (ns=N;s=Identifier).
 std::string formatNodeId(const OpcUaNodeRef &node)
 {
   return "ns=" + std::to_string(static_cast<unsigned>(node.namespaceIndex))
@@ -36,6 +35,20 @@ std::string statusCodeName(UA_StatusCode status)
   return std::string(name);
 }
 
+std::string nodeIdToString(const UA_NodeId &nodeId)
+{
+  UA_String printed = UA_STRING_NULL;
+  const UA_StatusCode printStatus = UA_NodeId_print(&nodeId, &printed);
+  if (printStatus != UA_STATUSCODE_GOOD || printed.data == nullptr)
+  {
+    UA_String_clear(&printed);
+    return "(UA_NodeId_print failed)";
+  }
+  std::string out(reinterpret_cast<const char *>(printed.data), printed.length);
+  UA_String_clear(&printed);
+  return out;
+}
+
 const char *variantTypeName(const UA_Variant &variant)
 {
   if (UA_Variant_isEmpty(&variant) || variant.type == nullptr)
@@ -50,10 +63,12 @@ const char *variantTypeName(const UA_Variant &variant)
 }
 
 /// Temporary stderr diagnostics at the OPC UA read boundary.
+/// Prints runtime OpcUaNodeRef fields and the real UA_NodeId via UA_NodeId_print.
 void logOpcUaReadDebug(
     const std::string &equipmentId,
     const std::string &pointName,
     const OpcUaNodeRef &node,
+    const UA_NodeId *nodeId,
     UA_StatusCode status,
     const UA_Variant &variant,
     bool converted,
@@ -61,40 +76,54 @@ void logOpcUaReadDebug(
     bool boolValue,
     bool isBoolean)
 {
+  const std::string printedNodeId =
+      nodeId != nullptr ? nodeIdToString(*nodeId) : "(null)";
+
   std::fprintf(
       stderr,
-      "OPC UA DEBUG:\n"
+      "OPC UA DEBUG READ\n"
       "equipment=%s\n"
       "telemetry=%s\n"
-      "node=%s\n"
       "namespaceIndex=%u\n"
       "identifier=%s\n"
-      "generated_UA_NodeId=ns=%u;s=%s\n"
-      "read status=0x%08x %s\n"
-      "variant empty=%s\n"
-      "variant type=%s\n",
+      "nodeId=%s\n"
+      "status=0x%08x\n"
+      "statusName=%s\n",
       equipmentId.empty() ? "(unknown)" : equipmentId.c_str(),
       pointName.empty() ? "(unknown)" : pointName.c_str(),
-      formatNodeId(node).c_str(),
       static_cast<unsigned>(node.namespaceIndex),
       node.identifier.c_str(),
-      static_cast<unsigned>(node.namespaceIndex),
-      node.identifier.c_str(),
+      printedNodeId.c_str(),
       static_cast<unsigned>(status),
-      statusCodeName(status).c_str(),
-      UA_Variant_isEmpty(&variant) ? "true" : "false",
-      variantTypeName(variant));
+      statusCodeName(status).c_str());
 
-  if (status == UA_STATUSCODE_GOOD && converted)
+  if (status == UA_STATUSCODE_GOOD)
   {
-    if (isBoolean)
+    const bool empty = UA_Variant_isEmpty(&variant);
+    std::fprintf(
+        stderr,
+        "variantEmpty=%s\n"
+        "variantType=%s\n",
+        empty ? "true" : "false",
+        variantTypeName(variant));
+    if (converted)
     {
-      std::fprintf(stderr, "value=%s\n", boolValue ? "true" : "false");
+      if (isBoolean)
+      {
+        std::fprintf(stderr, "value=%s\n", boolValue ? "true" : "false");
+      }
+      else
+      {
+        std::fprintf(stderr, "value=%.6f\n", doubleValue);
+      }
     }
-    else
-    {
-      std::fprintf(stderr, "value=%.6f\n", doubleValue);
-    }
+  }
+  else
+  {
+    std::fprintf(
+        stderr,
+        "variantEmpty=%s\n",
+        UA_Variant_isEmpty(&variant) ? "true" : "false");
   }
   std::fflush(stderr);
 }
@@ -284,6 +313,15 @@ public:
     {
       this->adapter_->debug_equipment_id_ = this->id();
       this->adapter_->debug_point_name_ = point.name;
+      std::fprintf(
+          stderr,
+          "OPC UA DEBUG refreshFromServer: equipment=%s telemetry=%s "
+          "namespaceIndex=%u identifier=%s\n",
+          this->id().c_str(),
+          point.name.c_str(),
+          static_cast<unsigned>(point.node.namespaceIndex),
+          point.node.identifier.c_str());
+      std::fflush(stderr);
       double value = 0.0;
       if (!this->adapter_->readDouble(point.node, &value))
       {
@@ -296,6 +334,14 @@ public:
     {
       this->adapter_->debug_equipment_id_ = this->id();
       this->adapter_->debug_point_name_ = "state";
+      std::fprintf(
+          stderr,
+          "OPC UA DEBUG refreshFromServer: equipment=%s telemetry=state "
+          "namespaceIndex=%u identifier=%s\n",
+          this->id().c_str(),
+          static_cast<unsigned>(this->mapping_->stateNode.namespaceIndex),
+          this->mapping_->stateNode.identifier.c_str());
+      std::fflush(stderr);
       bool running = false;
       if (!this->adapter_->readBoolean(this->mapping_->stateNode, &running))
       {
@@ -309,6 +355,14 @@ public:
     {
       this->adapter_->debug_equipment_id_ = this->id();
       this->adapter_->debug_point_name_ = "fault";
+      std::fprintf(
+          stderr,
+          "OPC UA DEBUG refreshFromServer: equipment=%s telemetry=fault "
+          "namespaceIndex=%u identifier=%s\n",
+          this->id().c_str(),
+          static_cast<unsigned>(this->mapping_->faultNode.namespaceIndex),
+          this->mapping_->faultNode.identifier.c_str());
+      std::fflush(stderr);
       bool fault = false;
       if (!this->adapter_->readBoolean(this->mapping_->faultNode, &fault))
       {
@@ -508,7 +562,7 @@ bool OpcUaIndustrialAdapter::readBoolean(const OpcUaNodeRef &node, bool *value)
     UA_Variant empty;
     UA_Variant_init(&empty);
     logOpcUaReadDebug(
-        this->debug_equipment_id_, this->debug_point_name_, node,
+        this->debug_equipment_id_, this->debug_point_name_, node, nullptr,
         UA_STATUSCODE_BADINVALIDARGUMENT, empty, false, 0.0, false, true);
     return false;
   }
@@ -516,9 +570,26 @@ bool OpcUaIndustrialAdapter::readBoolean(const OpcUaNodeRef &node, bool *value)
   UA_Variant variant;
   UA_Variant_init(&variant);
   UA_NodeId nodeId = makeNodeId(node);
+
+  std::fprintf(
+      stderr,
+      "OPC UA DEBUG READ (before UA_Client_readValueAttribute)\n"
+      "equipment=%s\n"
+      "telemetry=%s\n"
+      "namespaceIndex=%u\n"
+      "identifier=%s\n"
+      "nodeId=%s\n",
+      this->debug_equipment_id_.empty() ? "(unknown)"
+                                        : this->debug_equipment_id_.c_str(),
+      this->debug_point_name_.empty() ? "(unknown)"
+                                      : this->debug_point_name_.c_str(),
+      static_cast<unsigned>(node.namespaceIndex),
+      node.identifier.c_str(),
+      nodeIdToString(nodeId).c_str());
+  std::fflush(stderr);
+
   const UA_StatusCode status =
       UA_Client_readValueAttribute(this->client_->client, nodeId, &variant);
-  UA_NodeId_clear(&nodeId);
 
   if (status != UA_STATUSCODE_GOOD)
   {
@@ -526,16 +597,19 @@ bool OpcUaIndustrialAdapter::readBoolean(const OpcUaNodeRef &node, bool *value)
         "OPC UA read failed for " + formatNodeId(node) + ": "
         + statusCodeName(status);
     logOpcUaReadDebug(
-        this->debug_equipment_id_, this->debug_point_name_, node, status,
-        variant, false, 0.0, false, true);
+        this->debug_equipment_id_, this->debug_point_name_, node, &nodeId,
+        status, variant, false, 0.0, false, true);
+    UA_NodeId_clear(&nodeId);
     UA_Variant_clear(&variant);
     return false;
   }
 
   bool converted = variantAsBool(variant, value);
   logOpcUaReadDebug(
-      this->debug_equipment_id_, this->debug_point_name_, node, status, variant,
-      converted, 0.0, converted && value != nullptr ? *value : false, true);
+      this->debug_equipment_id_, this->debug_point_name_, node, &nodeId, status,
+      variant, converted, 0.0,
+      converted && value != nullptr ? *value : false, true);
+  UA_NodeId_clear(&nodeId);
 
   if (!converted)
   {
@@ -559,7 +633,7 @@ bool OpcUaIndustrialAdapter::readDouble(const OpcUaNodeRef &node, double *value)
     UA_Variant empty;
     UA_Variant_init(&empty);
     logOpcUaReadDebug(
-        this->debug_equipment_id_, this->debug_point_name_, node,
+        this->debug_equipment_id_, this->debug_point_name_, node, nullptr,
         UA_STATUSCODE_BADINVALIDARGUMENT, empty, false, 0.0, false, false);
     return false;
   }
@@ -567,9 +641,26 @@ bool OpcUaIndustrialAdapter::readDouble(const OpcUaNodeRef &node, double *value)
   UA_Variant variant;
   UA_Variant_init(&variant);
   UA_NodeId nodeId = makeNodeId(node);
+
+  std::fprintf(
+      stderr,
+      "OPC UA DEBUG READ (before UA_Client_readValueAttribute)\n"
+      "equipment=%s\n"
+      "telemetry=%s\n"
+      "namespaceIndex=%u\n"
+      "identifier=%s\n"
+      "nodeId=%s\n",
+      this->debug_equipment_id_.empty() ? "(unknown)"
+                                        : this->debug_equipment_id_.c_str(),
+      this->debug_point_name_.empty() ? "(unknown)"
+                                      : this->debug_point_name_.c_str(),
+      static_cast<unsigned>(node.namespaceIndex),
+      node.identifier.c_str(),
+      nodeIdToString(nodeId).c_str());
+  std::fflush(stderr);
+
   const UA_StatusCode status =
       UA_Client_readValueAttribute(this->client_->client, nodeId, &variant);
-  UA_NodeId_clear(&nodeId);
 
   if (status != UA_STATUSCODE_GOOD)
   {
@@ -577,16 +668,19 @@ bool OpcUaIndustrialAdapter::readDouble(const OpcUaNodeRef &node, double *value)
         "OPC UA read failed for " + formatNodeId(node) + ": "
         + statusCodeName(status);
     logOpcUaReadDebug(
-        this->debug_equipment_id_, this->debug_point_name_, node, status,
-        variant, false, 0.0, false, false);
+        this->debug_equipment_id_, this->debug_point_name_, node, &nodeId,
+        status, variant, false, 0.0, false, false);
+    UA_NodeId_clear(&nodeId);
     UA_Variant_clear(&variant);
     return false;
   }
 
   bool converted = variantAsDouble(variant, value);
   logOpcUaReadDebug(
-      this->debug_equipment_id_, this->debug_point_name_, node, status, variant,
-      converted, converted && value != nullptr ? *value : 0.0, false, false);
+      this->debug_equipment_id_, this->debug_point_name_, node, &nodeId, status,
+      variant, converted, converted && value != nullptr ? *value : 0.0,
+      false, false);
+  UA_NodeId_clear(&nodeId);
 
   if (!converted)
   {
