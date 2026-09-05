@@ -20,6 +20,17 @@ struct OpcUaNodeRef
   std::string identifier;
 };
 
+/// Map ICP config fields into an OpcUaNodeRef.
+///
+/// ICP configuration stores OPC UA addresses as NodeId text in `address`
+/// (see configuration tests: "ns=1;s=Mixer.SpeedActual") plus optional
+/// `namespaceIndex`. The open62541 string NodeId constructor expects the
+/// bare identifier only. If `address` is already an expanded string NodeId
+/// (`ns=N;s=Ident`), this splits it; otherwise `address` is treated as the
+/// identifier and `namespaceIndex` is used as-is.
+OpcUaNodeRef opcUaNodeRefFromConfig(
+    std::uint16_t namespaceIndex, const std::string &address);
+
 /// Named command → node write. Boolean pulse commands write `true`.
 /// Commands whose names start with `set_` write the execute() double parameter.
 struct OpcUaCommandMapping

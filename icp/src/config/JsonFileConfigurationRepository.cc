@@ -535,11 +535,12 @@ AdapterConfigRecord parseAdapter(
   rejectUnknownKeys(
       result,
       object,
-      {"adapterId", "protocol", "enabled", "description", "connection",
-       "credentials", "equipment"},
+      {"adapterId", "protocol", "implementation", "enabled", "description",
+       "connection", "credentials", "equipment"},
       path);
   record.adapterId = asString(result, object, "adapterId", path);
   record.protocol = asString(result, object, "protocol", path);
+  record.implementation = asString(result, object, "implementation", path);
   record.enabled = asBool(result, object, "enabled", path, true);
   record.description = asString(result, object, "description", path);
   if (object.contains("connection"))
@@ -732,7 +733,7 @@ json adapterToJson(const AdapterConfigRecord &record)
   {
     equipment.push_back(equipmentToJson(item));
   }
-  return json{
+  json out = {
       {"adapterId", record.adapterId},
       {"protocol", record.protocol},
       {"enabled", record.enabled},
@@ -746,6 +747,13 @@ json adapterToJson(const AdapterConfigRecord &record)
        }},
       {"equipment", equipment},
   };
+  // Persist only when set so legacy docs stay unchanged; UI may send this for
+  // PROFINET/PROFIBUS stack selection (and must not fail unknown-field checks).
+  if (!record.implementation.empty())
+  {
+    out["implementation"] = record.implementation;
+  }
+  return out;
 }
 
 }  // namespace

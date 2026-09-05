@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <utility>
 
 namespace virtual_factory
@@ -83,6 +84,33 @@ RestHttpMethod parseRestMethod(const std::string &method)
     return RestHttpMethod::Get;
   }
   return RestHttpMethod::Post;
+}
+
+OpcUaNodeRef mapOpcUaAddress(
+    const std::string &equipmentId,
+    const std::string &pointName,
+    std::uint16_t namespaceIndex,
+    const std::string &address)
+{
+  const OpcUaNodeRef mapped =
+      opcUaNodeRefFromConfig(namespaceIndex, address);
+  std::fprintf(
+      stderr,
+      "OPC UA DEBUG CONFIG MAP\n"
+      "equipment=%s\n"
+      "telemetry=%s\n"
+      "config.address=%s\n"
+      "config.namespaceIndex=%u\n"
+      "mapped.namespaceIndex=%u\n"
+      "mapped.identifier=%s\n",
+      equipmentId.c_str(),
+      pointName.c_str(),
+      address.c_str(),
+      static_cast<unsigned>(namespaceIndex),
+      static_cast<unsigned>(mapped.namespaceIndex),
+      mapped.identifier.c_str());
+  std::fflush(stderr);
+  return mapped;
 }
 
 }  // namespace
@@ -607,22 +635,28 @@ std::unique_ptr<IndustrialAdapter> ApplicationService::createRuntimeAdapter(
       for (const TelemetryMappingRecord &tel : eq.telemetry)
       {
         mapped.telemetry.push_back(
-            {tel.name, OpcUaNodeRef{tel.namespaceIndex, tel.address}, tel.unit});
+            {tel.name,
+             mapOpcUaAddress(
+                 eq.equipmentId, tel.name, tel.namespaceIndex, tel.address),
+             tel.unit});
       }
       for (const CommandMappingRecord &command : eq.commands)
       {
         mapped.commands.push_back(
             {command.command,
-             OpcUaNodeRef{command.namespaceIndex, command.address}});
+             mapOpcUaAddress(
+                 eq.equipmentId, command.command, command.namespaceIndex,
+                 command.address)});
       }
       if (eq.state.mapped)
       {
-        mapped.stateNode = OpcUaNodeRef{eq.state.namespaceIndex, eq.state.address};
+        mapped.stateNode = mapOpcUaAddress(
+            eq.equipmentId, "state", eq.state.namespaceIndex, eq.state.address);
       }
       if (eq.fault.mapped)
       {
-        mapped.faultNode =
-            OpcUaNodeRef{eq.fault.namespaceIndex, eq.fault.address};
+        mapped.faultNode = mapOpcUaAddress(
+            eq.equipmentId, "fault", eq.fault.namespaceIndex, eq.fault.address);
       }
       config.equipment.push_back(std::move(mapped));
     }
