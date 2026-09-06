@@ -161,6 +161,19 @@ void logOpcUaReadDebug(
       {
         std::fprintf(stderr, "value=%s\n", boolValue ? "true" : "false");
       }
+      else if (
+          variant.type == &UA_TYPES[UA_TYPES_INT32]
+          || variant.type == &UA_TYPES[UA_TYPES_INT16]
+          || variant.type == &UA_TYPES[UA_TYPES_SBYTE]
+          || variant.type == &UA_TYPES[UA_TYPES_BYTE]
+          || variant.type == &UA_TYPES[UA_TYPES_UINT16]
+          || variant.type == &UA_TYPES[UA_TYPES_UINT32]
+          || variant.type == &UA_TYPES[UA_TYPES_INT64]
+          || variant.type == &UA_TYPES[UA_TYPES_UINT64])
+      {
+        // Preserve integer OPC UA types in diagnostics (e.g. Int32 → 1450).
+        std::fprintf(stderr, "value=%.0f\n", doubleValue);
+      }
       else
       {
         std::fprintf(stderr, "value=%.6f\n", doubleValue);
