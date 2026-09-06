@@ -277,9 +277,11 @@ set_tests_properties(icp_configuration_test PROPERTIES TIMEOUT 60)
 
 add_executable(icp_application_api_test
     tests/icp_application_api_test.cc
+    tests/opcua_test_server.cc
 )
 target_include_directories(icp_application_api_test
     PRIVATE
+        tests
         ${CMAKE_SOURCE_DIR}/third_party/cpp-httplib
 )
 find_path(_VF_NLOHMANN_FOR_ICP_API nlohmann/json.hpp
