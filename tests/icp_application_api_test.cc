@@ -1,5 +1,9 @@
+#include "opcua_test_server.hh"
+
 #include <virtual_factory/icp/app/ApplicationService.hh>
 #include <virtual_factory/icp/app/HttpApiServer.hh>
+#include <virtual_factory/industrial/IndustrialAdapter.hh>
+#include <virtual_factory/industrial/OpcUaIndustrialAdapter.hh>
 
 #include <chrono>
 #include <cstdlib>
@@ -348,6 +352,117 @@ int main()
 
   api.stop();
   httpService.stop();
+
+  // --- ApplicationService GUI/config OPC UA NodeId mapping path ---
+  // JSON stores address as expanded NodeId text; createRuntimeAdapter must
+  // map to bare identifier so the adapter reads ns=1;s=<id>, not ns=1;s=ns=1;s=<id>.
+  {
+    using virtual_factory::ConnectionState;
+    using virtual_factory::opcUaNodeRefFromConfig;
+
+    // Exact GUI regression: address="ns=2;s=MotorSpeed", namespaceIndex=2.
+    {
+      const auto mapped = opcUaNodeRefFromConfig(2, "ns=2;s=MotorSpeed");
+      expect(mapped.namespaceIndex == 2,
+             "ApplicationService boundary: MotorSpeed namespaceIndex==2");
+      expect(mapped.identifier == "MotorSpeed",
+             "ApplicationService boundary: MotorSpeed identifier is bare");
+      const std::string constructed =
+          "ns=" + std::to_string(static_cast<unsigned>(mapped.namespaceIndex))
+          + ";s=" + mapped.identifier;
+      expect(constructed == "ns=2;s=MotorSpeed",
+             "ApplicationService boundary: constructs ns=2;s=MotorSpeed");
+      expect(constructed != "ns=2;s=ns=2;s=MotorSpeed",
+             "ApplicationService boundary: must not double-encode NodeId");
+    }
+
+    virtual_factory::test::OpcUaTestServer opcuaServer;
+    expect(opcuaServer.start(), "ApplicationService OPC UA fixture starts");
+    if (opcuaServer.start())
+    {
+      const std::string opcuaConfigPath =
+          "/tmp/icp-opcua-gui-map-" + std::to_string(::getpid()) + ".json";
+      ::unlink(opcuaConfigPath.c_str());
+
+      ApplicationService opcuaService(opcuaConfigPath);
+      opcuaService.start();
+
+      virtual_factory::icp::AdapterConfigRecord opcua;
+      opcua.adapterId = "opcua-gui-map";
+      opcua.protocol = "opcua";
+      opcua.enabled = true;
+      opcua.connection.endpointUrl = opcuaServer.endpointUrl();
+      virtual_factory::icp::EquipmentMappingRecord eq;
+      eq.equipmentId = virtual_factory::test::OpcUaTestServer::kMixerId;
+      eq.type = "mixer";
+      eq.capabilities = {"start", "stop"};
+      virtual_factory::icp::TelemetryMappingRecord speed;
+      speed.name = "speed";
+      speed.unit = "rpm";
+      speed.namespaceIndex = 1;
+      speed.address = std::string("ns=1;s=")
+          + virtual_factory::test::OpcUaTestServer::kMixerSpeedActual;
+      eq.telemetry.push_back(speed);
+      virtual_factory::icp::SignalMappingRecord state;
+      state.mapped = true;
+      state.namespaceIndex = 1;
+      state.address = std::string("ns=1;s=")
+          + virtual_factory::test::OpcUaTestServer::kMixerRunning;
+      eq.state = state;
+      virtual_factory::icp::SignalMappingRecord fault;
+      fault.mapped = true;
+      fault.namespaceIndex = 1;
+      fault.address = std::string("ns=1;s=")
+          + virtual_factory::test::OpcUaTestServer::kMixerFault;
+      eq.fault = fault;
+      opcua.equipment.push_back(eq);
+
+      auto upserted = opcuaService.upsertAdapterConfig(opcua);
+      expect(upserted.ok, "upsert OPC UA GUI-style adapter: " + upserted.message);
+      auto connected = opcuaService.connectAdapter("opcua-gui-map");
+      expect(connected.ok, "connect OPC UA GUI-style adapter: " + connected.message);
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+      auto adapterView = opcuaService.adapter("opcua-gui-map");
+      expect(adapterView.has_value(), "GUI-map adapter view present");
+      if (adapterView)
+      {
+        expect(adapterView->connectionState == "CONNECTED",
+               "GUI-map adapter CONNECTED (not FAULTED from BadNodeId): "
+                   + adapterView->connectionState
+                   + " err=" + adapterView->lastError);
+      }
+
+      bool found = false;
+      for (const auto &snap : opcuaService.equipment())
+      {
+        if (snap.equipmentId == virtual_factory::test::OpcUaTestServer::kMixerId)
+        {
+          found = true;
+          expect(snap.protocol == "opcua", "GUI-map equipment protocol opcua");
+          expect(snap.communicationState == ConnectionState::Connected,
+                 "GUI-map equipment Connected (NodeId not double-encoded)");
+          expect(snap.lastError.empty(),
+                 "GUI-map equipment has no lastError: " + snap.lastError);
+          bool hasSpeed = false;
+          for (const auto &tel : snap.telemetry)
+          {
+            if (tel.name == "speed")
+            {
+              hasSpeed = true;
+              expect(tel.value > 0.0, "GUI-map speed telemetry populated");
+            }
+          }
+          expect(hasSpeed, "GUI-map speed telemetry present after poll");
+        }
+      }
+      expect(found, "GUI-map mixer equipment present");
+
+      opcuaService.disconnectAdapter("opcua-gui-map");
+      opcuaService.stop();
+      ::unlink(opcuaConfigPath.c_str());
+    }
+  }
 
   if (failures == 0)
   {

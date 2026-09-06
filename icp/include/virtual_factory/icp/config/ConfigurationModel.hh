@@ -166,6 +166,10 @@ struct AdapterConfigRecord
 {
   std::string adapterId;
   std::string protocol;
+  /// Optional stack selector (e.g. gateway / hilscher_native for fieldbus).
+  /// Present so UI/API round-trips do not trip unknown-field rejection.
+  /// Unused by OPC UA / Modbus / MQTT / REST / EtherNet/IP connect paths.
+  std::string implementation;
   bool enabled{true};
   std::string description;
   AdapterConnectionRecord connection;

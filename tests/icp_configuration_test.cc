@@ -1,6 +1,7 @@
 #include <virtual_factory/icp/config/ConfigurationCatalog.hh>
 #include <virtual_factory/icp/config/ConfigurationValidator.hh>
 #include <virtual_factory/icp/config/JsonFileConfigurationRepository.hh>
+#include <virtual_factory/industrial/OpcUaIndustrialAdapter.hh>
 
 #include <cerrno>
 #include <cstring>
@@ -424,6 +425,26 @@ void testMalformedAndUnsupportedVersion()
       &out);
   expect(!unknownField.ok && contains(unknownField, "unknown field"), "unknown field rejected");
 
+  const auto withImplementation =
+      virtual_factory::icp::JsonFileConfigurationRepository::parseText(
+          R"({
+        "schema": "virtual-factory.icp.config",
+        "version": 1,
+        "name": "x",
+        "adapters": [{
+          "adapterId": "opcua-1",
+          "protocol": "opcua",
+          "implementation": "gateway",
+          "connection": {"endpointUrl": "opc.tcp://127.0.0.1:4840"},
+          "equipment": []
+        }]
+      })",
+          &out);
+  expect(
+      withImplementation.ok && out.adapters.size() == 1
+          && out.adapters.front().implementation == "gateway",
+      "optional implementation field accepted and stored");
+
   const auto plaintext = virtual_factory::icp::JsonFileConfigurationRepository::parseText(
       R"({
         "schema": "virtual-factory.icp.config",
@@ -519,6 +540,38 @@ void testAllProtocolsRepresented()
       "vendor protocol class not accepted");
 }
 
+/// GUI/JSON stores expanded NodeId text in address; mapping to OpcUaNodeRef
+/// must strip to a bare identifier (config → adapter boundary).
+void testOpcUaGuiAddressToNodeRefMapping()
+{
+  using virtual_factory::opcUaNodeRefFromConfig;
+
+  // Exact GUI regression case from the live fault.
+  const auto motor = opcUaNodeRefFromConfig(2, "ns=2;s=MotorSpeed");
+  expect(motor.namespaceIndex == 2, "MotorSpeed namespaceIndex == 2");
+  expect(motor.identifier == "MotorSpeed", "MotorSpeed identifier is bare");
+  const std::string constructed =
+      "ns=" + std::to_string(static_cast<unsigned>(motor.namespaceIndex))
+      + ";s=" + motor.identifier;
+  expect(constructed == "ns=2;s=MotorSpeed",
+         "MotorSpeed constructs ns=2;s=MotorSpeed");
+  expect(constructed != "ns=2;s=ns=2;s=MotorSpeed",
+         "MotorSpeed must not double-encode");
+
+  // Existing configuration fixture style (opcuaAdapter()).
+  const auto sample = opcuaAdapter();
+  const auto &tel = sample.equipment.front().telemetry.front();
+  const auto mapped = opcUaNodeRefFromConfig(tel.namespaceIndex, tel.address);
+  expect(mapped.namespaceIndex == 1, "fixture speed namespaceIndex");
+  expect(mapped.identifier == "Mixer.SpeedActual",
+         "fixture speed bare identifier from ns=1;s=Mixer.SpeedActual");
+
+  // Bare identifier path remains valid for pre-GUI / unit tests.
+  const auto bare = opcUaNodeRefFromConfig(2, "MotorSpeed");
+  expect(bare.namespaceIndex == 2 && bare.identifier == "MotorSpeed",
+         "bare identifier preserved with explicit namespaceIndex");
+}
+
 }  // namespace
 
 int main()
@@ -529,6 +582,7 @@ int main()
   testMalformedAndUnsupportedVersion();
   testAtomicSaveFailure();
   testAllProtocolsRepresented();
+  testOpcUaGuiAddressToNodeRefMapping();
 
   if (failures == 0)
   {
