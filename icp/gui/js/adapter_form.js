@@ -388,10 +388,16 @@
       { key: "unit", label: "Unit" },
     ],
     opcua: [
-      { key: "name", label: "Name", required: true },
-      { key: "unit", label: "Unit" },
-      { key: "address", label: "NodeId", required: true, placeholder: "ns=1;s=Speed" },
-      { key: "namespaceIndex", label: "Namespace index", type: "number" },
+      { key: "name", label: "Name", required: true, placeholder: "speed" },
+      { key: "unit", label: "Unit", placeholder: "rpm" },
+      {
+        key: "address",
+        label: "NodeId",
+        required: true,
+        placeholder: "ns=2;s=MotorSpeed",
+        help: "Expanded NodeId (ns=N;s=Identifier). Namespace is taken from the NodeId.",
+        wide: true,
+      },
     ],
     modbus: [
       { key: "name", label: "Name", required: true },
@@ -457,9 +463,14 @@
   const COMMAND_FIELDS = {
     mock: [{ key: "command", label: "Command", required: true }],
     opcua: [
-      { key: "command", label: "Command", required: true },
-      { key: "address", label: "NodeId" },
-      { key: "namespaceIndex", label: "Namespace index", type: "number" },
+      { key: "command", label: "Command", required: true, placeholder: "start" },
+      {
+        key: "address",
+        label: "NodeId",
+        placeholder: "ns=2;s=Start",
+        help: "Expanded NodeId (ns=N;s=Identifier). Namespace is taken from the NodeId.",
+        wide: true,
+      },
     ],
     modbus: [
       { key: "command", label: "Command", required: true },
@@ -596,7 +607,9 @@
           type: "device",
           capabilities: [],
           telemetry: [
-            { name: "speed", unit: "rpm", address: "ns=1;s=Speed", namespaceIndex: 1 },
+            { name: "speed", unit: "rpm", address: "ns=2;s=MotorSpeed" },
+            { name: "Temperature", unit: "C", address: "ns=2;s=Temperature" },
+            { name: "Running", unit: "Status", address: "ns=2;s=Running" },
           ],
           commands: [],
           state: { mapped: false },
@@ -824,16 +837,51 @@
     return next;
   }
 
+  /** True when address already encodes ns=N;s=Identifier. */
+  function hasExpandedOpcUaNodeId(address) {
+    if (typeof address !== "string") return false;
+    return /^ns=\d+;s=.+/.test(address.trim());
+  }
+
+  /**
+   * For OPC UA, NodeId (address) is authoritative. Drop redundant namespaceIndex
+   * when address already contains ns=N;s=…. Old configs that still carry
+   * namespaceIndex remain loadable; the backend prefers the NodeId namespace.
+   */
+  function sanitizeOpcUaEquipmentForExport(equipment) {
+    return (equipment || []).map((eq) => {
+      const next = clone(eq);
+      const scrub = (point) => {
+        if (!point || typeof point !== "object") return point;
+        const out = clone(point);
+        if (hasExpandedOpcUaNodeId(out.address) && "namespaceIndex" in out) {
+          delete out.namespaceIndex;
+        }
+        return out;
+      };
+      next.telemetry = (next.telemetry || []).map(scrub);
+      next.commands = (next.commands || []).map(scrub);
+      if (next.state) next.state = scrub(next.state);
+      if (next.fault) next.fault = scrub(next.fault);
+      return next;
+    });
+  }
+
   /** Strip adapter to ICP-1B JSON (no GUI-only keys). */
   function adapterToConfigJson(adapter) {
+    const protocol = adapter.protocol || "mock";
+    const equipment =
+      protocol === "opcua"
+        ? sanitizeOpcUaEquipmentForExport(adapter.equipment || [])
+        : clone(adapter.equipment || []);
     const out = {
       adapterId: adapter.adapterId || "",
-      protocol: adapter.protocol || "mock",
+      protocol: protocol,
       enabled: adapter.enabled !== false,
       description: adapter.description || "",
       connection: clone(adapter.connection || {}),
       credentials: clone(adapter.credentials || {}),
-      equipment: clone(adapter.equipment || []),
+      equipment: equipment,
     };
     const impl = (adapter.implementation || "").trim();
     if (impl) {

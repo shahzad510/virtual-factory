@@ -21,13 +21,19 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 a { color: inherit; text-decoration: none; }
 button, input, select, textarea {
   font: inherit; color: var(--text); background: var(--bg-elevated);
-  border: 1px solid var(--border); border-radius: 4px; padding: 0.45rem 0.7rem;
+  border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem 0.75rem;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
 }
 button { cursor: pointer; background: #243040; }
 button.primary { background: var(--accent-dim); border-color: var(--accent); }
-button.danger { background: #4a2422; border-color: var(--danger); }
+button.danger, button.btn-row-danger { background: #4a2422; border-color: var(--danger); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 button:hover:not(:disabled) { filter: brightness(1.08); }
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: #3d8f74;
+  box-shadow: 0 0 0 2px rgba(47, 158, 122, 0.22);
+}
 
 .app-shell { display: flex; min-height: 100vh; min-width: 1280px; }
 .sidebar {
@@ -98,8 +104,8 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .status.HARDWARE_NOT_AVAILABLE, .status.NOT_DETECTED { color: #ffd8a8; background: #3a2c1c; border-color: #7a5a2e; }
 
 .toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.85rem; align-items: center; }
-.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
-.form-grid label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; color: var(--muted); }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.85rem 1rem; }
+.form-grid label { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.84rem; color: var(--muted); font-weight: 500; }
 .form-grid .full { grid-column: 1 / -1; }
 .muted { color: var(--muted); }
 .empty {
@@ -131,18 +137,138 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   border-bottom: 1px solid var(--border); padding-bottom: 0.35rem;
 }
 .eq-card {
-  grid-column: 1 / -1; border: 1px solid var(--border); border-radius: 6px;
-  padding: 0.75rem; background: var(--bg-elevated); margin-top: 0.35rem;
+  grid-column: 1 / -1; border: 1px solid var(--border); border-radius: 8px;
+  padding: 1rem 1.1rem; background: linear-gradient(180deg, #1a222c 0%, var(--bg-elevated) 100%);
+  margin-top: 0.65rem;
 }
-.eq-card h4 { margin: 0 0 0.5rem; font-size: 0.9rem; }
-.row-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; margin: 0.4rem 0; }
+.eq-card h4 { margin: 0 0 0.65rem; font-size: 0.92rem; letter-spacing: 0.01em; }
+.eq-card .mapping-heading {
+  margin: 1rem 0 0.55rem; padding-top: 0.65rem;
+  border-top: 1px solid var(--border); color: var(--text);
+}
+.row-actions { display: flex; gap: 0.45rem; flex-wrap: wrap; margin: 0.5rem 0; align-items: center; }
+
+/* Default mapping rows (non-OPC UA keep flexible auto-fill) */
 .tel-row, .cmd-row {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 0.5rem; padding: 0.5rem; margin: 0.35rem 0; border: 1px dashed var(--border);
-  border-radius: 4px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.65rem 0.75rem;
+  align-items: end;
+  padding: 0.75rem 0.85rem;
+  margin: 0.45rem 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(15, 20, 25, 0.35);
 }
-.tel-row label, .cmd-row label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.8rem; color: var(--muted); }
-.advanced-json { margin-top: 0.75rem; }
+.tel-row label, .cmd-row label,
+.mapping-field {
+  display: flex; flex-direction: column; gap: 0.3rem;
+  font-size: 0.78rem; color: var(--muted); font-weight: 500; min-width: 0;
+}
+.tel-row input, .cmd-row input, .tel-row select, .cmd-row select {
+  width: 100%; min-width: 0;
+}
+.mapping-actions {
+  display: flex; align-items: flex-end; justify-content: flex-end;
+  margin: 0; min-height: 100%;
+}
+.mapping-actions button { white-space: nowrap; }
+
+/* OPC UA: Name | Unit | NodeId (wide) | Action */
+.tel-row.protocol-opcua {
+  grid-template-columns: minmax(7.5rem, 0.9fr) minmax(5.5rem, 0.55fr) minmax(16rem, 2.6fr) auto;
+}
+.cmd-row.protocol-opcua {
+  grid-template-columns: minmax(8rem, 1fr) minmax(16rem, 2.4fr) auto;
+}
+.tel-row.protocol-opcua .mapping-field-wide,
+.cmd-row.protocol-opcua .mapping-field-wide {
+  min-width: 0;
+}
+.tel-row.protocol-opcua .mapping-field-wide input,
+.cmd-row.protocol-opcua .mapping-field-wide input {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+}
+
+.mapping-list { display: flex; flex-direction: column; gap: 0.35rem; }
+
+.advanced-json {
+  margin-top: 1rem;
+  width: 100%;
+  max-width: none;
+}
+.advanced-json .advanced-lead {
+  margin: 0 0 0.85rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+.advanced-json .advanced-lead strong {
+  display: block;
+  color: var(--text);
+  margin-bottom: 0.2rem;
+  font-size: 0.92rem;
+}
+.advanced-json-toolbar {
+  display: flex; flex-wrap: wrap; gap: 0.55rem;
+  margin-bottom: 0.45rem;
+}
+.advanced-btn-help {
+  display: flex; flex-direction: column; gap: 0.15rem;
+  margin: 0 0 0.75rem;
+}
+.json-editor-shell {
+  width: 100%;
+  border: 1px solid #364554;
+  border-radius: 8px;
+  background: #0c1117;
+  padding: 0.15rem;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+}
+textarea.json-editor,
+#f-advanced-json.json-editor {
+  display: block;
+  width: 100%;
+  min-height: 22rem;
+  max-height: 70vh;
+  margin: 0;
+  padding: 1rem 1.1rem;
+  border: none;
+  border-radius: 7px;
+  background: #0c1117;
+  color: #d7e6f2;
+  font-family: var(--mono);
+  font-size: 0.84rem;
+  line-height: 1.55;
+  white-space: pre;
+  overflow: auto;
+  resize: vertical;
+  tab-size: 2;
+}
+textarea.json-editor:focus,
+#f-advanced-json.json-editor:focus {
+  box-shadow: inset 0 0 0 1px rgba(47, 158, 122, 0.45);
+}
+.json-status {
+  margin-top: 0.55rem;
+  font-size: 0.82rem;
+  font-family: var(--mono);
+  padding: 0.4rem 0.55rem;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+.json-status.json-ok {
+  color: #c9f0d8;
+  background: #1a3228;
+  border-color: #2f6b4c;
+}
+.json-status.json-bad {
+  color: #ffd0cc;
+  background: #3a1f1e;
+  border-color: #7a3a36;
+}
+
 .protocol-hint { font-size: 0.8rem; color: var(--muted); margin: 0.25rem 0 0.5rem; }
 .field-help { display: block; font-size: 0.72rem; color: var(--muted); margin-top: 0.2rem; font-weight: 400; line-height: 1.35; }
 .field-help.full { grid-column: 1 / -1; margin: 0 0 0.35rem; }
@@ -157,17 +283,47 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   padding: 1.25rem; max-width: 720px; width: min(92vw, 720px); box-shadow: 0 16px 48px rgba(0,0,0,0.45);
 }
 .hidden { display: none !important; }
+#adapter-editor {
+  max-width: none;
+  width: 100%;
+}
+#adapter-editor > h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
 .editor-section {
-  background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px;
-  padding: 1rem; margin-top: 1rem;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.15rem 1.25rem;
+  margin-top: 1rem;
+  width: 100%;
+  box-sizing: border-box;
 }
 .editor-section h3 {
-  margin: 0 0 0.75rem; font-size: 0.95rem; color: var(--text);
-  border-bottom: 1px solid var(--border); padding-bottom: 0.4rem;
+  margin: 0 0 0.9rem; font-size: 0.98rem; color: var(--text);
+  border-bottom: 1px solid var(--border); padding-bottom: 0.5rem;
   display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  font-weight: 600;
 }
 .editor-actions {
-  display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem;
+  display: flex; justify-content: flex-end; gap: 0.55rem; margin-top: 1.15rem;
+}
+
+@media (max-width: 1100px) {
+  .tel-row.protocol-opcua,
+  .cmd-row.protocol-opcua {
+    grid-template-columns: 1fr 1fr;
+  }
+  .tel-row.protocol-opcua .mapping-field-wide,
+  .cmd-row.protocol-opcua .mapping-field-wide,
+  .tel-row.protocol-opcua .mapping-actions,
+  .cmd-row.protocol-opcua .mapping-actions {
+    grid-column: 1 / -1;
+  }
+  .mapping-actions { justify-content: flex-start; }
 }
 .config-actions {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem;

@@ -335,23 +335,24 @@
           tel[f.key],
           `data-tel-field="${esc(f.key)}"`
         );
-        return `<label class="${fieldErrorClass(id, errorMap)}">${esc(f.label)}${req}${control}${help}${fieldErrorMsg(
-          id,
-          errorMap
-        )}</label>`;
+        const wideClass = f.wide ? " mapping-field-wide" : "";
+        return `<label class="mapping-field${wideClass} ${fieldErrorClass(id, errorMap)}">${esc(
+          f.label
+        )}${req}${control}${help}${fieldErrorMsg(id, errorMap)}</label>`;
       })
       .join("");
     const addressingNote =
       protocol === "modbus"
         ? `<p class="field-help full">Addresses are 0-based protocol addresses. Vendor manuals may show 40001-style numbers; configure the zero-based wire address here.</p>`
         : "";
-    return `<div class="tel-row" data-eq="${eqIdx}" data-tel="${telIdx}">${addressingNote}${cells}
-      <div class="row-actions"><button type="button" data-action="remove-telemetry" data-eq="${eqIdx}" data-tel="${telIdx}">Remove telemetry</button></div>
+    return `<div class="tel-row protocol-${esc(protocol)}" data-eq="${eqIdx}" data-tel="${telIdx}">${addressingNote}${cells}
+      <div class="row-actions mapping-actions"><button type="button" class="btn-row-danger" data-action="remove-telemetry" data-eq="${eqIdx}" data-tel="${telIdx}">Remove telemetry</button></div>
     </div>`;
   }
 
   function commandRowHtml(adapter, cmd, eqIdx, cmdIdx, errorMap) {
     const fields = Form.commandFieldsFor(editorContext(adapter));
+    const protocol = editorContext(adapter).protocol || "mock";
     const cells = fields
       .map((f) => {
         const id = `f-eq-${eqIdx}-cmd-${cmdIdx}-${f.key}`;
@@ -363,14 +364,14 @@
           cmd[f.key],
           `data-cmd-field="${esc(f.key)}"`
         );
-        return `<label class="${fieldErrorClass(id, errorMap)}">${esc(f.label)}${req}${control}${help}${fieldErrorMsg(
-          id,
-          errorMap
-        )}</label>`;
+        const wideClass = f.wide ? " mapping-field-wide" : "";
+        return `<label class="mapping-field${wideClass} ${fieldErrorClass(id, errorMap)}">${esc(
+          f.label
+        )}${req}${control}${help}${fieldErrorMsg(id, errorMap)}</label>`;
       })
       .join("");
-    return `<div class="cmd-row" data-eq="${eqIdx}" data-cmd="${cmdIdx}">${cells}
-      <div class="row-actions"><button type="button" data-action="remove-command" data-eq="${eqIdx}" data-cmd="${cmdIdx}">Remove command</button></div>
+    return `<div class="cmd-row protocol-${esc(protocol)}" data-eq="${eqIdx}" data-cmd="${cmdIdx}">${cells}
+      <div class="row-actions mapping-actions"><button type="button" class="btn-row-danger" data-action="remove-command" data-eq="${eqIdx}" data-cmd="${cmdIdx}">Remove command</button></div>
     </div>`;
   }
 
@@ -423,11 +424,19 @@
         ${extraHtml}
         ${modulesHtml}
       </div>
-      <h4>Telemetry</h4>
-      ${tel || '<p class="muted">No telemetry mappings. Add points that this equipment should publish.</p>'}
+      <h4 class="mapping-heading">Telemetry</h4>
+      ${
+        tel
+          ? `<div class="mapping-list protocol-${esc(protocol)}">${tel}</div>`
+          : '<p class="muted">No telemetry mappings. Add points that this equipment should publish.</p>'
+      }
       <div class="row-actions"><button type="button" data-action="add-telemetry" data-eq="${eqIdx}">Add telemetry</button></div>
-      <h4>Commands</h4>
-      ${cmds || '<p class="muted">No commands. Add commands this equipment can execute.</p>'}
+      <h4 class="mapping-heading">Commands</h4>
+      ${
+        cmds
+          ? `<div class="mapping-list protocol-${esc(protocol)}">${cmds}</div>`
+          : '<p class="muted">No commands. Add commands this equipment can execute.</p>'
+      }
       <div class="row-actions">
         <button type="button" data-action="add-command" data-eq="${eqIdx}">Add command</button>
         <button type="button" class="danger" data-action="remove-equipment" data-eq="${eqIdx}">Remove equipment</button>
@@ -553,14 +562,29 @@
             }</button>
           </h3>
           <div id="advanced-json-body" class="${advancedOpen ? "" : "hidden"}">
-            <p class="muted">Expert view of the same adapter record the backend stores. Use GUI fields for normal setup.</p>
-            <textarea id="f-advanced-json" class="mono" rows="14">${esc(
-              JSON.stringify(Form.adapterToConfigJson(adapter), null, 2)
-            )}</textarea>
-            <div class="toolbar">
-              <button type="button" data-action="gui-to-json">GUI → JSON</button>
-              <button type="button" data-action="json-to-gui">JSON → GUI</button>
+            <p class="advanced-lead">
+              <strong>Expert configuration</strong>
+              Edit or inspect the complete adapter configuration as JSON.
+              Configure using the form above, or edit the JSON directly and load it back into the form.
+            </p>
+            <div class="advanced-json-toolbar">
+              <button type="button" data-action="gui-to-json" title="Create the adapter configuration JSON from the fields above">
+                Generate JSON from Form
+              </button>
+              <button type="button" data-action="json-to-gui" title="Read the JSON below and populate the editable form fields">
+                Load Form from JSON
+              </button>
             </div>
+            <p class="field-help advanced-btn-help">
+              <span><strong>Generate JSON from Form</strong> — create JSON from the fields above.</span>
+              <span><strong>Load Form from JSON</strong> — populate the form from the JSON below.</span>
+            </p>
+            <div class="json-editor-shell">
+              <textarea id="f-advanced-json" class="mono json-editor" spellcheck="false" rows="18">${esc(
+                JSON.stringify(Form.adapterToConfigJson(adapter), null, 2)
+              )}</textarea>
+            </div>
+            <div id="advanced-json-status" class="json-status muted" role="status" aria-live="polite">JSON status will update as you edit.</div>
           </div>
         </section>
         <div class="editor-actions">
@@ -711,17 +735,40 @@
     return adapter;
   }
 
+  function setAdvancedJsonStatus(ok, message) {
+    const el = document.getElementById("advanced-json-status");
+    if (!el) return;
+    el.className = "json-status " + (ok ? "json-ok" : "json-bad");
+    el.textContent = message;
+  }
+
+  function validateAdvancedJsonText(text) {
+    try {
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        setAdvancedJsonStatus(false, "✕ Invalid JSON: adapter configuration must be an object");
+        return { ok: false, error: "adapter configuration must be an object" };
+      }
+      setAdvancedJsonStatus(true, "✓ Valid JSON");
+      return { ok: true, parsed };
+    } catch (e) {
+      setAdvancedJsonStatus(false, "✕ Invalid JSON: " + e.message);
+      return { ok: false, error: e.message };
+    }
+  }
+
+  function bindAdvancedJsonEditor() {
+    const ta = document.getElementById("f-advanced-json");
+    if (!ta || ta.dataset.boundJsonStatus) return;
+    ta.dataset.boundJsonStatus = "1";
+    const refresh = () => validateAdvancedJsonText(ta.value);
+    ta.addEventListener("input", refresh);
+    ta.addEventListener("blur", refresh);
+    refresh();
+  }
+
   function bindPostRenderHandlers() {
     const protoEl = document.getElementById("f-protocol");
-    if (protoEl && !protoEl.dataset.bound) {
-      protoEl.dataset.bound = "1";
-      protoEl.addEventListener("change", async () => {
-        applyProtocolChange(protoEl.value);
-        await render({ skipDraftCapture: true });
-        flash("Protocol changed to " + protoEl.value + " — connection/equipment reset to defaults", "ok");
-      });
-    }
-
     if (protoEl && !protoEl.dataset.bound) {
       protoEl.dataset.bound = "1";
       protoEl.addEventListener("change", async () => {
@@ -752,6 +799,8 @@
         state._cfgDraft = cfgEditor.value;
       });
     }
+
+    bindAdvancedJsonEditor();
 
     // Highlight validation issues after render.
     if (state._editingAdapter && state._editingAdapter._validationIssues) {
@@ -1693,6 +1742,8 @@
             null,
             2
           );
+          validateAdvancedJsonText(ta.value);
+          bindAdvancedJsonEditor();
         }
         return;
       }
@@ -1705,13 +1756,19 @@
             null,
             2
           );
-          flash("GUI synchronized into Advanced JSON", "ok");
+          validateAdvancedJsonText(ta.value);
+          flash("Generated JSON from form fields", "ok");
         }
         return;
       }
       if (action === "json-to-gui") {
         const ta = document.getElementById("f-advanced-json");
         if (!ta) return;
+        const checked = validateAdvancedJsonText(ta.value);
+        if (!checked.ok) {
+          flash("Could not load form from JSON: " + checked.error, "error");
+          return;
+        }
         try {
           const parsed = Form.parseAdapterJson(ta.value);
           parsed._edit = state._editingAdapter && state._editingAdapter._edit;
@@ -1719,9 +1776,10 @@
           parsed._validationIssues = undefined;
           state._editingAdapter = parsed;
           await render({ skipDraftCapture: true });
-          flash("Advanced JSON applied to GUI fields", "ok");
+          flash("Loaded form fields from JSON", "ok");
         } catch (e) {
-          flash("Invalid adapter JSON: " + e.message, "error");
+          setAdvancedJsonStatus(false, "✕ Invalid JSON: " + e.message);
+          flash("Could not load form from JSON: " + e.message, "error");
         }
         return;
       }
