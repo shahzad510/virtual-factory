@@ -26,6 +26,21 @@
     _chooser: null,
   };
 
+  const APPEARANCE_STORAGE_KEY = "icp.gui.appearance";
+  const DEFAULT_APPEARANCE = Object.freeze({
+    bg: "#0a0e14",
+    bgPanel: "#141b24",
+    bgElevated: "#1c2531",
+    bgInput: "#0c1118",
+    border: "#3d4b5c",
+    text: "#f2f6fa",
+    muted: "#aebccd",
+    accent: "#2f9e7a",
+    fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
+    monoFamily: '"IBM Plex Mono", "Consolas", monospace',
+    fontScale: "1",
+  });
+
   let renderChain = Promise.resolve();
 
   function $(sel) {
@@ -38,6 +53,176 @@
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+  }
+
+  function normalizeHexColor(value, fallback) {
+    const raw = String(value == null ? "" : value).trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(raw)) return raw.toLowerCase();
+    if (/^[0-9a-fA-F]{6}$/.test(raw)) return ("#" + raw).toLowerCase();
+    return fallback;
+  }
+
+  function normalizeFontScale(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0.85 || n > 1.25) return DEFAULT_APPEARANCE.fontScale;
+    return String(Math.round(n * 100) / 100);
+  }
+
+  function sanitizeAppearance(raw) {
+    const src = raw && typeof raw === "object" ? raw : {};
+    return {
+      bg: normalizeHexColor(src.bg, DEFAULT_APPEARANCE.bg),
+      bgPanel: normalizeHexColor(src.bgPanel, DEFAULT_APPEARANCE.bgPanel),
+      bgElevated: normalizeHexColor(src.bgElevated, DEFAULT_APPEARANCE.bgElevated),
+      bgInput: normalizeHexColor(src.bgInput, DEFAULT_APPEARANCE.bgInput),
+      border: normalizeHexColor(src.border, DEFAULT_APPEARANCE.border),
+      text: normalizeHexColor(src.text, DEFAULT_APPEARANCE.text),
+      muted: normalizeHexColor(src.muted, DEFAULT_APPEARANCE.muted),
+      accent: normalizeHexColor(src.accent, DEFAULT_APPEARANCE.accent),
+      fontFamily: String(src.fontFamily || DEFAULT_APPEARANCE.fontFamily).trim() ||
+        DEFAULT_APPEARANCE.fontFamily,
+      monoFamily: String(src.monoFamily || DEFAULT_APPEARANCE.monoFamily).trim() ||
+        DEFAULT_APPEARANCE.monoFamily,
+      fontScale: normalizeFontScale(src.fontScale),
+    };
+  }
+
+  function loadAppearance() {
+    try {
+      const raw = localStorage.getItem(APPEARANCE_STORAGE_KEY);
+      if (!raw) return sanitizeAppearance(DEFAULT_APPEARANCE);
+      return sanitizeAppearance(JSON.parse(raw));
+    } catch (_) {
+      return sanitizeAppearance(DEFAULT_APPEARANCE);
+    }
+  }
+
+  function saveAppearance(appearance) {
+    const next = sanitizeAppearance(appearance);
+    localStorage.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify(next));
+    return next;
+  }
+
+  function applyAppearance(appearance) {
+    const a = sanitizeAppearance(appearance);
+    const root = document.documentElement;
+    root.style.setProperty("--bg", a.bg);
+    root.style.setProperty("--bg-panel", a.bgPanel);
+    root.style.setProperty("--bg-elevated", a.bgElevated);
+    root.style.setProperty("--bg-input", a.bgInput);
+    root.style.setProperty("--border", a.border);
+    root.style.setProperty("--text", a.text);
+    root.style.setProperty("--muted", a.muted);
+    root.style.setProperty("--accent", a.accent);
+    root.style.setProperty("--font", a.fontFamily);
+    root.style.setProperty("--mono", a.monoFamily);
+    root.style.setProperty("--font-scale", a.fontScale);
+    root.style.setProperty("--ui-bg", a.bg);
+    root.style.setProperty("--ui-bg-panel", a.bgPanel);
+    root.style.setProperty("--ui-bg-elevated", a.bgElevated);
+    root.style.setProperty("--ui-bg-input", a.bgInput);
+    root.style.setProperty("--ui-border", a.border);
+    root.style.setProperty("--ui-text", a.text);
+    root.style.setProperty("--ui-muted", a.muted);
+    root.style.setProperty("--ui-accent", a.accent);
+    root.style.setProperty("--ui-font", a.fontFamily);
+    root.style.setProperty("--ui-mono", a.monoFamily);
+    return a;
+  }
+
+  function readAppearanceForm() {
+    const get = (id) => {
+      const el = document.getElementById(id);
+      return el ? el.value : "";
+    };
+    return sanitizeAppearance({
+      bg: get("ap-bg-hex") || get("ap-bg"),
+      bgPanel: get("ap-bg-panel-hex") || get("ap-bg-panel"),
+      bgElevated: get("ap-bg-elevated-hex") || get("ap-bg-elevated"),
+      bgInput: get("ap-bg-input-hex") || get("ap-bg-input"),
+      border: get("ap-border-hex") || get("ap-border"),
+      text: get("ap-text-hex") || get("ap-text"),
+      muted: get("ap-muted-hex") || get("ap-muted"),
+      accent: get("ap-accent-hex") || get("ap-accent"),
+      fontFamily: get("ap-font"),
+      monoFamily: get("ap-mono"),
+      fontScale: get("ap-font-scale"),
+    });
+  }
+
+  function appearanceColorField(id, label, value) {
+    return `<div class="field">
+      <label class="field-label" for="${id}-hex">${esc(label)}</label>
+      <div class="field-hex">
+        <input type="color" id="${id}" data-appearance-color="${id}" value="${esc(value)}" aria-label="${esc(label)} color"/>
+        <input type="text" id="${id}-hex" data-appearance-hex="${id}" value="${esc(value)}" spellcheck="false"/>
+      </div>
+    </div>`;
+  }
+
+  function appearanceFormHtml(appearance) {
+    const a = sanitizeAppearance(appearance);
+    const scales = ["0.9", "0.95", "1", "1.05", "1.1", "1.15"];
+    const scaleOpts = scales
+      .map((s) => {
+        const sel = String(a.fontScale) === s ? " selected" : "";
+        const pct = Math.round(Number(s) * 100);
+        return `<option value="${s}"${sel}>${pct}%</option>`;
+      })
+      .join("");
+    return `<div class="panel" id="appearance-settings">
+      <h2>Appearance</h2>
+      <p class="appearance-lead">UI chrome only. Stored in this browser (<code>localStorage</code> key <code>${esc(
+        APPEARANCE_STORAGE_KEY
+      )}</code>). Does not change ICP configuration, adapters, or runtime.</p>
+      <div class="form-grid appearance-grid">
+        ${appearanceColorField("ap-bg", "Page background", a.bg)}
+        ${appearanceColorField("ap-bg-panel", "Panel background", a.bgPanel)}
+        ${appearanceColorField("ap-bg-elevated", "Elevated / button surface", a.bgElevated)}
+        ${appearanceColorField("ap-bg-input", "Input background", a.bgInput)}
+        ${appearanceColorField("ap-border", "Border", a.border)}
+        ${appearanceColorField("ap-text", "Primary text", a.text)}
+        ${appearanceColorField("ap-muted", "Muted text", a.muted)}
+        ${appearanceColorField("ap-accent", "Accent", a.accent)}
+        <div class="field full">
+          <label class="field-label" for="ap-font">UI font family</label>
+          <input id="ap-font" type="text" value="${esc(a.fontFamily)}" spellcheck="false"/>
+        </div>
+        <div class="field full">
+          <label class="field-label" for="ap-mono">Monospace font family</label>
+          <input id="ap-mono" type="text" value="${esc(a.monoFamily)}" spellcheck="false"/>
+        </div>
+        <div class="field">
+          <label class="field-label" for="ap-font-scale">UI scale</label>
+          <select id="ap-font-scale">${scaleOpts}</select>
+        </div>
+      </div>
+      <div class="row-actions">
+        <button type="button" class="primary" data-action="appearance-apply">Apply</button>
+        <button type="button" data-action="appearance-reset">Reset to Default</button>
+      </div>
+    </div>`;
+  }
+
+  function bindAppearanceHandlers() {
+    const root = document.getElementById("appearance-settings");
+    if (!root || root.dataset.bound === "1") return;
+    root.dataset.bound = "1";
+
+    root.addEventListener("input", (ev) => {
+      const t = ev.target;
+      if (!t) return;
+      if (t.dataset.appearanceColor) {
+        const hex = document.getElementById(t.id + "-hex");
+        if (hex) hex.value = t.value;
+      } else if (t.dataset.appearanceHex) {
+        const normalized = normalizeHexColor(t.value, "");
+        if (!normalized) return;
+        const color = document.getElementById(t.dataset.appearanceHex);
+        if (color) color.value = normalized;
+        t.value = normalized;
+      }
+    });
   }
 
   function statusBadge(value) {
@@ -321,14 +506,45 @@
     }" value="${esc(value == null ? "" : value)}" placeholder="${esc(f.placeholder || "")}"/>`;
   }
 
+  function usesOpcUaMappingLayout(adapter) {
+    const ctx = editorContext(adapter);
+    const protocol = ctx.protocol || "mock";
+    if (protocol === "opcua") return true;
+    if (
+      (protocol === "profinet" || protocol === "profibus") &&
+      Form.resolveImplementation(ctx) === "gateway"
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function opcUaMappingHeaderHtml(kind) {
+    if (kind === "command") {
+      return `<div class="mapping-header mapping-layout-opcua cmd-header" role="row">
+        <div class="mapping-col-head">Command <span class="req">*</span></div>
+        <div class="mapping-col-head">NodeId</div>
+        <div class="mapping-col-head mapping-col-action">Action</div>
+      </div>`;
+    }
+    return `<div class="mapping-header mapping-layout-opcua tel-header" role="row">
+      <div class="mapping-col-head">Name <span class="req">*</span></div>
+      <div class="mapping-col-head">Unit</div>
+      <div class="mapping-col-head">NodeId <span class="req">*</span></div>
+      <div class="mapping-col-head mapping-col-action">Action</div>
+    </div>`;
+  }
+
   function telemetryRowHtml(adapter, tel, eqIdx, telIdx, errorMap) {
     const fields = Form.telemetryFieldsFor(editorContext(adapter));
     const protocol = editorContext(adapter).protocol || "mock";
+    const opcLayout = usesOpcUaMappingLayout(adapter);
     const cells = fields
       .map((f) => {
         const id = `f-eq-${eqIdx}-tel-${telIdx}-${f.key}`;
         const req = f.required ? ' <span class="req">*</span>' : "";
-        const help = f.help ? `<span class="field-help">${esc(f.help)}</span>` : "";
+        const help =
+          !opcLayout && f.help ? `<span class="field-help">${esc(f.help)}</span>` : "";
         const control = mappingFieldControl(
           f,
           id,
@@ -336,6 +552,15 @@
           `data-tel-field="${esc(f.key)}"`
         );
         const wideClass = f.wide ? " mapping-field-wide" : "";
+        if (opcLayout) {
+          return `<div class="mapping-cell${wideClass}${fieldErrorClass(
+            id,
+            errorMap
+          )}" data-label="${esc(f.label)}${f.required ? " *" : ""}">${control}${fieldErrorMsg(
+            id,
+            errorMap
+          )}</div>`;
+        }
         return `<label class="mapping-field${wideClass} ${fieldErrorClass(id, errorMap)}">${esc(
           f.label
         )}${req}${control}${help}${fieldErrorMsg(id, errorMap)}</label>`;
@@ -345,7 +570,8 @@
       protocol === "modbus"
         ? `<p class="field-help full">Addresses are 0-based protocol addresses. Vendor manuals may show 40001-style numbers; configure the zero-based wire address here.</p>`
         : "";
-    return `<div class="tel-row protocol-${esc(protocol)}" data-eq="${eqIdx}" data-tel="${telIdx}">${addressingNote}${cells}
+    const layoutClass = opcLayout ? " mapping-layout-opcua protocol-opcua" : ` protocol-${esc(protocol)}`;
+    return `<div class="tel-row${layoutClass}" data-eq="${eqIdx}" data-tel="${telIdx}">${addressingNote}${cells}
       <div class="row-actions mapping-actions"><button type="button" class="btn-row-danger" data-action="remove-telemetry" data-eq="${eqIdx}" data-tel="${telIdx}">Remove telemetry</button></div>
     </div>`;
   }
@@ -353,11 +579,13 @@
   function commandRowHtml(adapter, cmd, eqIdx, cmdIdx, errorMap) {
     const fields = Form.commandFieldsFor(editorContext(adapter));
     const protocol = editorContext(adapter).protocol || "mock";
+    const opcLayout = usesOpcUaMappingLayout(adapter);
     const cells = fields
       .map((f) => {
         const id = `f-eq-${eqIdx}-cmd-${cmdIdx}-${f.key}`;
         const req = f.required ? ' <span class="req">*</span>' : "";
-        const help = f.help ? `<span class="field-help">${esc(f.help)}</span>` : "";
+        const help =
+          !opcLayout && f.help ? `<span class="field-help">${esc(f.help)}</span>` : "";
         const control = mappingFieldControl(
           f,
           id,
@@ -365,12 +593,22 @@
           `data-cmd-field="${esc(f.key)}"`
         );
         const wideClass = f.wide ? " mapping-field-wide" : "";
+        if (opcLayout) {
+          return `<div class="mapping-cell${wideClass}${fieldErrorClass(
+            id,
+            errorMap
+          )}" data-label="${esc(f.label)}${f.required ? " *" : ""}">${control}${fieldErrorMsg(
+            id,
+            errorMap
+          )}</div>`;
+        }
         return `<label class="mapping-field${wideClass} ${fieldErrorClass(id, errorMap)}">${esc(
           f.label
         )}${req}${control}${help}${fieldErrorMsg(id, errorMap)}</label>`;
       })
       .join("");
-    return `<div class="cmd-row protocol-${esc(protocol)}" data-eq="${eqIdx}" data-cmd="${cmdIdx}">${cells}
+    const layoutClass = opcLayout ? " mapping-layout-opcua protocol-opcua" : ` protocol-${esc(protocol)}`;
+    return `<div class="cmd-row${layoutClass}" data-eq="${eqIdx}" data-cmd="${cmdIdx}">${cells}
       <div class="row-actions mapping-actions"><button type="button" class="btn-row-danger" data-action="remove-command" data-eq="${eqIdx}" data-cmd="${cmdIdx}">Remove command</button></div>
     </div>`;
   }
@@ -400,6 +638,12 @@
     const cmds = (eq.commands || [])
       .map((c, i) => commandRowHtml(adapter, c, eqIdx, i, errorMap))
       .join("");
+    const opcLayout = usesOpcUaMappingLayout(adapter);
+    const telHeader = opcLayout && tel ? opcUaMappingHeaderHtml("telemetry") : "";
+    const cmdHeader = opcLayout && cmds ? opcUaMappingHeaderHtml("command") : "";
+    const opcHelp = opcLayout
+      ? `<p class="mapping-section-help">Expanded NodeId (<code>ns=N;s=Identifier</code>). Namespace is taken from the NodeId.</p>`
+      : "";
     let modulesHtml = "";
     if (protocol === "profinet" && impl === "hilscher_native") {
       modulesHtml = `<label class="full">Submodules JSON<textarea id="f-eq-${eqIdx}-submodules" class="mono" rows="3">${esc(
@@ -425,16 +669,22 @@
         ${modulesHtml}
       </div>
       <h4 class="mapping-heading">Telemetry</h4>
+      ${opcHelp}
       ${
         tel
-          ? `<div class="mapping-list protocol-${esc(protocol)}">${tel}</div>`
+          ? `<div class="mapping-list${opcLayout ? " mapping-layout-opcua" : ""} protocol-${esc(
+              protocol
+            )}">${telHeader}${tel}</div>`
           : '<p class="muted">No telemetry mappings. Add points that this equipment should publish.</p>'
       }
       <div class="row-actions"><button type="button" data-action="add-telemetry" data-eq="${eqIdx}">Add telemetry</button></div>
       <h4 class="mapping-heading">Commands</h4>
+      ${opcLayout && cmds ? opcHelp : ""}
       ${
         cmds
-          ? `<div class="mapping-list protocol-${esc(protocol)}">${cmds}</div>`
+          ? `<div class="mapping-list${opcLayout ? " mapping-layout-opcua" : ""} protocol-${esc(
+              protocol
+            )}">${cmdHeader}${cmds}</div>`
           : '<p class="muted">No commands. Add commands this equipment can execute.</p>'
       }
       <div class="row-actions">
@@ -462,10 +712,11 @@
     const creds = adapter.credentials || {};
     const showImpl = protocol === "profinet" || protocol === "profibus";
     const implHtml = showImpl
-      ? `<label>Implementation<input id="f-implementation" readonly value="${esc(
-          implementationLabel(impl)
-        )}"/></label>
-         <input type="hidden" id="f-implementation-value" value="${esc(impl)}"/>`
+      ? `<div class="field">
+          <label class="field-label" for="f-implementation">Implementation</label>
+          <input id="f-implementation" readonly value="${esc(implementationLabel(impl))}"/>
+          <input type="hidden" id="f-implementation-value" value="${esc(impl)}"/>
+        </div>`
       : "";
     const gatewayNote =
       showImpl && impl === "gateway"
@@ -477,21 +728,29 @@
         <section class="editor-section">
           <h3>Basic Information</h3>
           <div class="form-grid">
-            <label class="${fieldErrorClass("f-id", errorMap)}">Adapter name <span class="req">*</span>
+            <div class="field${fieldErrorClass("f-id", errorMap)}">
+              <label class="field-label" for="f-id">Adapter name <span class="req">*</span></label>
               <input id="f-id" value="${esc(adapter.adapterId)}" ${
                 adapter._edit ? "readonly" : ""
-              }/>${fieldErrorMsg("f-id", errorMap)}</label>
-            <label>Enabled<select id="f-enabled"><option value="true" ${
-              adapter.enabled !== false ? "selected" : ""
-            }>true</option><option value="false" ${
-              adapter.enabled === false ? "selected" : ""
-            }>false</option></select></label>
-            <label class="${fieldErrorClass("f-protocol", errorMap)}">Protocol <span class="req">*</span>
-              <select id="f-protocol">${options}</select>${fieldErrorMsg("f-protocol", errorMap)}</label>
+              }/>${fieldErrorMsg("f-id", errorMap)}
+            </div>
+            <div class="field">
+              <label class="field-label" for="f-enabled">Enabled</label>
+              <select id="f-enabled"><option value="true" ${
+                adapter.enabled !== false ? "selected" : ""
+              }>true</option><option value="false" ${
+                adapter.enabled === false ? "selected" : ""
+              }>false</option></select>
+            </div>
+            <div class="field${fieldErrorClass("f-protocol", errorMap)}">
+              <label class="field-label" for="f-protocol">Protocol <span class="req">*</span></label>
+              <select id="f-protocol">${options}</select>${fieldErrorMsg("f-protocol", errorMap)}
+            </div>
             ${implHtml}
-            <label class="full">Description<input id="f-desc" value="${esc(
-              adapter.description || ""
-            )}"/></label>
+            <div class="field full">
+              <label class="field-label" for="f-desc">Description</label>
+              <input id="f-desc" value="${esc(adapter.description || "")}"/>
+            </div>
           </div>
           ${gatewayNote}
         </section>
@@ -801,6 +1060,7 @@
     }
 
     bindAdvancedJsonEditor();
+    bindAppearanceHandlers();
 
     // Highlight validation issues after render.
     if (state._editingAdapter && state._editingAdapter._validationIssues) {
@@ -1413,6 +1673,7 @@
   async function renderSettings() {
     const st = await IcpApi.status();
     const s = st.data || {};
+    const appearance = loadAppearance();
     return `<div class="panel">
       <h2>ICP settings</h2>
       <dl class="kv">
@@ -1426,7 +1687,8 @@
         <dt>CIC</dt><dd>not required</dd>
         <dt>Designer</dt><dd>not implemented (nav disabled)</dd>
       </dl>
-    </div>`;
+    </div>
+    ${appearanceFormHtml(appearance)}`;
   }
 
   async function render(options) {
@@ -1499,6 +1761,20 @@
   async function onAction(action, id, el) {
     flash("");
     try {
+      if (action === "appearance-apply") {
+        const next = saveAppearance(readAppearanceForm());
+        applyAppearance(next);
+        flash("Appearance applied (saved in this browser only)", "ok");
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "appearance-reset") {
+        localStorage.removeItem(APPEARANCE_STORAGE_KEY);
+        applyAppearance(DEFAULT_APPEARANCE);
+        flash("Appearance reset to default", "ok");
+        await render({ skipDraftCapture: true });
+        return;
+      }
       if (action === "stop-modal") {
         return;
       }
@@ -1915,6 +2191,7 @@
     }, 2000);
   }
 
+  applyAppearance(loadAppearance());
   parseHash();
   render();
   startPolling();
