@@ -3,11 +3,13 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <virtual_factory/icp/AdapterManager.hh>
@@ -90,6 +92,90 @@ struct RuntimeAdapterView
   std::string connectionSummary;
 };
 
+/// Common, protocol-agnostic session diagnostics for one adapter (process lifetime).
+struct AdapterSessionDiagnostics
+{
+  std::size_t connectionAttempts{0};
+  std::size_t successfulConnections{0};
+  std::size_t failedConnections{0};
+  std::size_t reconnectCount{0};
+  std::size_t faultCount{0};
+  std::size_t warningCount{0};
+  std::size_t communicationFailureCount{0};
+  bool activeFault{false};
+  bool everConnected{false};
+  std::chrono::system_clock::time_point sessionStartedAt{};
+  std::chrono::system_clock::time_point connectedAt{};
+  std::chrono::system_clock::time_point disconnectedAt{};
+  std::chrono::system_clock::time_point lastStateChangeAt{};
+  std::chrono::system_clock::time_point lastSuccessfulCommunicationAt{};
+  bool hasLastSuccessfulCommunication{false};
+  std::chrono::milliseconds cumulativeConnectedMs{0};
+  std::chrono::milliseconds cumulativeDisconnectedMs{0};
+  std::string lastObservedState{"DISCONNECTED"};
+  std::string communicationHealth{"UNKNOWN"};
+  std::string lastWarning;
+  std::string earlyWarning;
+};
+
+struct AdapterDiagnosticsView
+{
+  RuntimeAdapterView adapter;
+  AdapterSessionDiagnostics session;
+  std::size_t healthyEquipmentCount{0};
+  std::size_t degradedEquipmentCount{0};
+  std::size_t faultedEquipmentCount{0};
+  std::int64_t currentStateDurationMs{0};
+  std::int64_t currentUptimeMs{0};
+  std::int64_t currentDowntimeMs{0};
+  std::string sessionMtbfStatus{"insufficient_data"};
+  std::int64_t sessionMtbfMs{0};
+};
+
+struct ActiveAlarmView
+{
+  std::string severity;
+  std::string sourceType;
+  std::string sourceId;
+  std::string protocol;
+  std::string category;
+  std::string message;
+  std::chrono::system_clock::time_point sinceUtc{};
+};
+
+struct DiagnosticsSystemSummary
+{
+  std::string overallHealth{"UNKNOWN"};
+  std::size_t configuredAdapters{0};
+  std::size_t connectedAdapters{0};
+  std::size_t disconnectedAdapters{0};
+  std::size_t faultedAdapters{0};
+  std::size_t warningCount{0};
+  std::size_t activeAlarmCount{0};
+  std::size_t historicalFaultCount{0};
+  std::size_t healthyAdapters{0};
+  std::size_t degradedAdapters{0};
+  std::size_t failedAdapters{0};
+  std::size_t healthyEquipment{0};
+  std::size_t degradedEquipment{0};
+  std::size_t faultedEquipment{0};
+  std::string mtbfStatus{"insufficient_data"};
+  std::string mtbfNote{
+      "Long-term MTBF requires persistent history across sessions. "
+      "Only session-scoped estimates are available in this process."};
+  bool schedulerRunning{false};
+};
+
+struct DiagnosticsReport
+{
+  DiagnosticsSystemSummary system;
+  std::vector<AdapterDiagnosticsView> adapters;
+  std::vector<EquipmentSnapshot> equipment;
+  std::vector<ActiveAlarmView> activeAlarms;
+  std::vector<ApplicationEvent> recentEvents;
+  std::chrono::system_clock::time_point generatedAtUtc{};
+};
+
 struct HilscherDiagnosticsView
 {
   bool compiledIn{false};
@@ -138,6 +224,8 @@ public:
 
   AdapterManagerResult connectAdapter(const std::string &adapterId);
   AdapterManagerResult disconnectAdapter(const std::string &adapterId);
+  /// Explicit disconnect then connect; increments reconnectCount (GUI/API reconnect).
+  AdapterManagerResult reconnectAdapter(const std::string &adapterId);
 
   std::vector<EquipmentSnapshot> equipment() const;
   std::optional<EquipmentSnapshot> equipmentById(const std::string &id) const;
@@ -150,6 +238,9 @@ public:
 
   HilscherDiagnosticsView hilscherDiagnostics() const;
   std::vector<ApplicationEvent> events(std::size_t limit = 100) const;
+
+  /// Adapter-agnostic diagnostics snapshot for GUI / Application API.
+  DiagnosticsReport diagnosticsReport() const;
 
   /// Classifies configured adapter stack for contextual diagnostics (GUI/API).
   static std::string adapterImplementation(const AdapterConfigRecord &record);
@@ -175,6 +266,11 @@ private:
       const std::string &protocol, const std::string &connectionState);
   static std::string connectionSummary(const AdapterConfigRecord &record);
 
+  AdapterSessionDiagnostics &diagnosticsFor(const std::string &adapterId) const;
+  void observeAdapterStateLocked(
+      const std::string &adapterId, const std::string &connectionState) const;
+  void refreshAllAdapterObservationsLocked() const;
+
   mutable std::mutex mutex_;
   std::string configuration_path_;
   ConfigurationCatalog catalog_;
@@ -186,6 +282,8 @@ private:
   std::string configuration_load_state_;
   std::deque<ApplicationEvent> events_;
   static constexpr std::size_t kMaxEvents = 500;
+  mutable std::unordered_map<std::string, AdapterSessionDiagnostics> adapter_diagnostics_;
+  std::chrono::system_clock::time_point service_started_at_{};
 };
 
 }  // namespace icp

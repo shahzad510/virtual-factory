@@ -24,6 +24,10 @@
     _lastRefreshAt: null,
     _renderGeneration: 0,
     _chooser: null,
+    _diagAdapterId: null,
+    _diagEquipmentId: null,
+    _diagSeverityFilter: "all",
+    _diagAdapterFilter: "all",
   };
 
   const APPEARANCE_STORAGE_KEY = "icp.gui.appearance";
@@ -1102,6 +1106,23 @@
     bindAdvancedJsonEditor();
     bindAppearanceHandlers();
 
+    const sev = document.getElementById("diag-severity-filter");
+    if (sev && !sev.dataset.bound) {
+      sev.dataset.bound = "1";
+      sev.addEventListener("change", async () => {
+        state._diagSeverityFilter = sev.value || "all";
+        await render({ skipDraftCapture: true });
+      });
+    }
+    const adp = document.getElementById("diag-adapter-filter");
+    if (adp && !adp.dataset.bound) {
+      adp.dataset.bound = "1";
+      adp.addEventListener("change", async () => {
+        state._diagAdapterFilter = adp.value || "all";
+        await render({ skipDraftCapture: true });
+      });
+    }
+
     // Highlight validation issues after render.
     if (state._editingAdapter && state._editingAdapter._validationIssues) {
       const box = $("#editor-result");
@@ -1463,11 +1484,63 @@
     return html;
   }
 
+  function formatDurationMs(ms) {
+    if (ms == null || ms === "" || Number(ms) < 0 || !Number.isFinite(Number(ms))) {
+      return "N/A";
+    }
+    let sec = Math.floor(Number(ms) / 1000);
+    const days = Math.floor(sec / 86400);
+    sec %= 86400;
+    const hours = Math.floor(sec / 3600);
+    sec %= 3600;
+    const mins = Math.floor(sec / 60);
+    sec %= 60;
+    if (days > 0) return days + "d " + hours + "h";
+    if (hours > 0) return hours + "h " + mins + "m";
+    if (mins > 0) return mins + "m " + sec + "s";
+    return sec + "s";
+  }
+
+  function healthBadge(value) {
+    const v = String(value || "UNKNOWN").toUpperCase();
+    const cls =
+      v === "HEALTHY" || v === "OK"
+        ? "ok"
+        : v === "DEGRADED" || v === "WARNING"
+          ? "warn"
+          : v === "FAILED" || v === "FAULTED" || v === "CRITICAL" || v === "ERROR"
+            ? "error"
+            : "";
+    return `<span class="status ${cls} ${esc(v)}">${esc(v.replace(/_/g, " "))}</span>`;
+  }
+
+  function severityBadge(value) {
+    const v = String(value || "INFO").toUpperCase();
+    const cls =
+      v === "CRITICAL" || v === "ERROR"
+        ? "error"
+        : v === "WARNING"
+          ? "warn"
+          : v === "INFO"
+            ? "ok"
+            : "";
+    return `<span class="status ${cls}">${esc(v)}</span>`;
+  }
+
+  function relativeTimeLabel(iso) {
+    if (!iso) return "N/A";
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return esc(iso);
+    const delta = Math.max(0, Date.now() - t);
+    if (delta < 5000) return "just now";
+    return formatDurationMs(delta) + " ago";
+  }
+
   function renderImplementationAdapterTable(adapters, title) {
     if (!adapters || !adapters.length) {
       return `<p class="muted">No adapters in this implementation group.</p>`;
     }
-    return `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>Transport</th><th>Implementation</th><th>Endpoint</th><th>State</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
+    return `<table class="diag-table"><thead><tr><th>Adapter</th><th>Protocol</th><th>Transport</th><th>Implementation</th><th>Endpoint</th><th>State</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
       .map((a) => {
         const transportLabel =
           a.protocol === "modbus"
@@ -1490,6 +1563,112 @@
       .join("")}</tbody></table>`;
   }
 
+  function diagnosticsDetailPanel(selectedAdapter, selectedEquipment, d) {
+    if (selectedEquipment) {
+      const eq = (d.equipment || []).find((e) => e.equipmentId === selectedEquipment);
+      if (!eq) {
+        return `<div class="panel"><h2>Equipment details</h2><p class="muted">Equipment not found in live cache.</p></div>`;
+      }
+      const telRows = (eq.telemetry || [])
+        .map(
+          (t) =>
+            `<tr><td>${esc(t.name)}</td><td class="mono">${esc(t.value)}</td><td>${esc(
+              t.unit || ""
+            )}</td></tr>`
+        )
+        .join("");
+      return `<div class="panel" id="diag-details">
+        <h2>Equipment details</h2>
+        <dl class="kv">
+          <dt>Equipment</dt><dd>${esc(eq.equipmentId)}</dd>
+          <dt>Adapter</dt><dd>${esc(eq.adapterId)}</dd>
+          <dt>Protocol</dt><dd>${esc(eq.protocol || "—")}</dd>
+          <dt>Type</dt><dd>${esc(eq.type || "—")}</dd>
+          <dt>Communication</dt><dd>${statusBadge(
+            eq.communicationStateDisplay || eq.communicationState
+          )}</dd>
+          <dt>Health</dt><dd>${healthBadge(eq.health)}</dd>
+          <dt>Machine</dt><dd>${esc(eq.machineState || "—")}${
+            eq.machineFault ? " / FAULT" : ""
+          }</dd>
+          <dt>Last telemetry</dt><dd class="mono">${
+            eq.hasSuccessfulCommunication
+              ? esc(eq.lastSuccessfulTelemetryUtc) +
+                " (" +
+                relativeTimeLabel(eq.lastSuccessfulTelemetryUtc) +
+                ")"
+              : "No successful communication yet"
+          }</dd>
+          <dt>Last error</dt><dd class="mono">${esc(eq.lastError || "—")}</dd>
+        </dl>
+        <h3>Telemetry</h3>
+        ${
+          telRows
+            ? `<table class="diag-table"><thead><tr><th>Name</th><th>Value</th><th>Unit</th></tr></thead><tbody>${telRows}</tbody></table>`
+            : `<p class="muted">No telemetry points in cache.</p>`
+        }
+        <p class="muted">Protocol-specific diagnostics: Not available unless exposed by the adapter runtime.</p>
+        <div class="row-actions"><button type="button" data-action="diag-clear-detail">Close details</button></div>
+      </div>`;
+    }
+    if (selectedAdapter) {
+      const a = (d.adapters || []).find((x) => x.adapterId === selectedAdapter);
+      if (!a) {
+        return `<div class="panel"><h2>Adapter details</h2><p class="muted">Adapter not found.</p></div>`;
+      }
+      const mtbf =
+        a.sessionMtbfStatus === "session_only"
+          ? formatDurationMs(a.sessionMtbfMs) + " (session only)"
+          : "Insufficient historical data";
+      return `<div class="panel" id="diag-details">
+        <h2>Adapter details</h2>
+        <dl class="kv">
+          <dt>Adapter</dt><dd>${esc(a.adapterId)}</dd>
+          <dt>Protocol</dt><dd>${esc(a.protocol)}</dd>
+          <dt>Implementation</dt><dd>${esc(implementationLabel(a.implementation))}</dd>
+          <dt>Enabled</dt><dd>${a.enabled ? "yes" : "no"}</dd>
+          <dt>Endpoint / transport</dt><dd class="mono">${esc(
+            a.connectionSummary || "—"
+          )}</dd>
+          <dt>State</dt><dd>${statusBadge(a.connectionStateDisplay || a.connectionState)}</dd>
+          <dt>Health</dt><dd>${healthBadge(a.health || a.communicationHealth)}</dd>
+          <dt>State duration</dt><dd>${formatDurationMs(a.currentStateDurationMs)} (current state)</dd>
+          <dt>Connected for</dt><dd>${formatDurationMs(a.uptimeMs)} (current session state)</dd>
+          <dt>Disconnected for</dt><dd>${formatDurationMs(a.downtimeMs)} (current session state)</dd>
+          <dt>Session connected total</dt><dd>${formatDurationMs(
+            a.cumulativeConnectedMs
+          )}</dd>
+          <dt>Session disconnected total</dt><dd>${formatDurationMs(
+            a.cumulativeDisconnectedMs
+          )}</dd>
+          <dt>Connection attempts</dt><dd>${esc(a.connectionAttempts || 0)}</dd>
+          <dt>Successful connections</dt><dd>${esc(a.successfulConnections || 0)}</dd>
+          <dt>Failed connections</dt><dd>${esc(a.failedConnections || 0)}</dd>
+          <dt>Reconnects</dt><dd>${esc(a.reconnectCount || 0)}</dd>
+          <dt>Faults (session)</dt><dd>${esc(a.faultCount || 0)}</dd>
+          <dt>Warnings (session)</dt><dd>${esc(a.warningCount || 0)}</dd>
+          <dt>Last communication</dt><dd class="mono">${
+            a.lastSuccessfulCommunicationUtc
+              ? esc(a.lastSuccessfulCommunicationUtc) +
+                " (" +
+                relativeTimeLabel(a.lastSuccessfulCommunicationUtc) +
+                ")"
+              : "N/A"
+          }</dd>
+          <dt>Last error</dt><dd class="mono">${esc(a.lastError || "—")}</dd>
+          <dt>Early warning</dt><dd>${esc(a.earlyWarning || "None")}</dd>
+          <dt>Session MTBF</dt><dd>${esc(mtbf)}</dd>
+          <dt>Equipment</dt><dd>healthy ${esc(a.healthyEquipmentCount || 0)} /
+            degraded ${esc(a.degradedEquipmentCount || 0)} /
+            faulted ${esc(a.faultedEquipmentCount || 0)}</dd>
+        </dl>
+        <p class="muted">Protocol-specific diagnostics: Not available (common adapter lifecycle metrics only).</p>
+        <div class="row-actions"><button type="button" data-action="diag-clear-detail">Close details</button></div>
+      </div>`;
+    }
+    return "";
+  }
+
   async function renderDiagnostics() {
     const res = await IcpApi.diagnostics();
     if (!res.ok) {
@@ -1497,189 +1676,270 @@
     }
     const d = res.data;
     const rt = d.runtime || {};
+    const sys = d.system || {};
     const adapters = d.adapters || [];
     const equipment = d.equipment || [];
-    const recentErrors = d.recentErrors || [];
-    const dist = rt.protocolDistribution || {};
+    const activeAlarms = d.activeAlarms || [];
+    const recentEvents = d.recentEvents || d.recentErrors || [];
     const impl = d.implementations || {};
-    const gateway = impl.gateway;
-    const hilscher = impl.hilscher_native;
-    const softing = impl.softing_native;
+    const selectedAdapter = state._diagAdapterId || null;
+    const selectedEquipment = state._diagEquipmentId || null;
 
-    let html = `<div class="grid stats">
-        <div class="stat"><div class="label">Scheduler</div><div class="value">${
-          rt.schedulerRunning ? "ON" : "OFF"
-        }</div></div>
-        <div class="stat"><div class="label">Connected</div><div class="value">${esc(
-          rt.connectedAdapters || 0
-        )}</div></div>
-        <div class="stat"><div class="label">Faulted</div><div class="value">${esc(
-          rt.faultedAdapters || 0
-        )}</div></div>
-        <div class="stat"><div class="label">Stale eq.</div><div class="value">${esc(
-          rt.staleEquipment || 0
-        )}</div></div>
-        <div class="stat"><div class="label">Active comms</div><div class="value">${esc(
-          rt.activeCommunications || 0
-        )}</div></div>
+    const severityFilter = state._diagSeverityFilter || "all";
+    const adapterFilter = state._diagAdapterFilter || "all";
+    const filteredEvents = recentEvents.filter((e) => {
+      const sev = String(e.severity || e.level || "").toUpperCase();
+      if (severityFilter !== "all") {
+        const want = severityFilter.toUpperCase();
+        if (want === "WARNING" && !(sev === "WARNING" || sev === "WARN")) return false;
+        if (want !== "WARNING" && sev !== want) return false;
+      }
+      if (adapterFilter !== "all" && (e.adapterId || "") !== adapterFilter) return false;
+      return true;
+    });
+
+    const adapterFilterOpts =
+      `<option value="all">All adapters</option>` +
+      adapters
+        .map(
+          (a) =>
+            `<option value="${esc(a.adapterId)}" ${
+              adapterFilter === a.adapterId ? "selected" : ""
+            }>${esc(a.adapterId)}</option>`
+        )
+        .join("");
+
+    let html = `
+      <div class="panel diag-summary">
+        <div class="diag-summary-head">
+          <h2>System health</h2>
+          ${healthBadge(sys.overallHealth || "UNKNOWN")}
+        </div>
+        <div class="grid stats diag-summary-stats">
+          <div class="stat"><div class="label">Adapters</div><div class="value">${esc(
+            sys.configuredAdapters != null ? sys.configuredAdapters : rt.configuredAdapterCount || 0
+          )}</div></div>
+          <div class="stat"><div class="label">Connected</div><div class="value">${esc(
+            sys.connectedAdapters != null ? sys.connectedAdapters : rt.connectedAdapters || 0
+          )}</div></div>
+          <div class="stat"><div class="label">Disconnected</div><div class="value">${esc(
+            sys.disconnectedAdapters != null
+              ? sys.disconnectedAdapters
+              : rt.disconnectedAdapters || 0
+          )}</div></div>
+          <div class="stat"><div class="label">Faulted</div><div class="value">${esc(
+            sys.faultedAdapters != null ? sys.faultedAdapters : rt.faultedAdapters || 0
+          )}</div></div>
+          <div class="stat"><div class="label">Warnings</div><div class="value">${esc(
+            sys.warningCount || 0
+          )}</div></div>
+          <div class="stat"><div class="label">Active alarms</div><div class="value">${esc(
+            sys.activeAlarmCount != null ? sys.activeAlarmCount : activeAlarms.length
+          )}</div></div>
+        </div>
+        <div class="diag-summary-grid">
+          <div>
+            <h3>Communication</h3>
+            <dl class="kv">
+              <dt>Healthy</dt><dd>${esc(sys.healthyAdapters || 0)}</dd>
+              <dt>Degraded</dt><dd>${esc(sys.degradedAdapters || 0)}</dd>
+              <dt>Failed</dt><dd>${esc(sys.failedAdapters || 0)}</dd>
+            </dl>
+          </div>
+          <div>
+            <h3>Equipment</h3>
+            <dl class="kv">
+              <dt>Healthy</dt><dd>${esc(sys.healthyEquipment || 0)}</dd>
+              <dt>Degraded</dt><dd>${esc(sys.degradedEquipment || 0)}</dd>
+              <dt>Faulted</dt><dd>${esc(sys.faultedEquipment || 0)}</dd>
+            </dl>
+          </div>
+          <div>
+            <h3>Reliability</h3>
+            <dl class="kv">
+              <dt>Historical faults</dt><dd>${esc(sys.historicalFaultCount || 0)}</dd>
+              <dt>MTBF</dt><dd>${esc(
+                sys.mtbfStatus === "insufficient_data"
+                  ? "Insufficient historical data"
+                  : sys.mtbfStatus || "N/A"
+              )}</dd>
+            </dl>
+            <p class="muted diag-note">${esc(
+              sys.mtbfNote ||
+                "Long-term MTBF requires persistent history across sessions."
+            )}</p>
+          </div>
+        </div>
+        <p class="muted">Common adapter lifecycle diagnostics — not protocol-specific. Scheduler: ${
+          (sys.schedulerRunning != null ? sys.schedulerRunning : rt.schedulerRunning)
+            ? "ON"
+            : "OFF"
+        }.</p>
       </div>
-      <p class="muted">Diagnostics reflect what you configured — implementation-specific sections appear only for active adapter types.</p>
+
       <div class="panel">
-        <h2>Runtime health</h2>
-        <dl class="kv">
-          <dt>Configured adapters</dt><dd>${esc(rt.configuredAdapterCount || 0)}</dd>
-          <dt>Runtime adapters</dt><dd>${esc(rt.runtimeAdapterCount || 0)}</dd>
-          <dt>Disconnected</dt><dd>${esc(rt.disconnectedAdapters || 0)}</dd>
-          <dt>Equipment</dt><dd>${esc(rt.equipmentCount || 0)}</dd>
-          <dt>Machine faults</dt><dd>${esc(rt.machineFaultEquipment || 0)}</dd>
-          <dt>Config path</dt><dd class="mono">${esc(rt.configurationPath || "")}</dd>
-          <dt>Config state</dt><dd>${esc(rt.configurationLoadState || "")}</dd>
-        </dl>
-        <h3>Protocol distribution</h3>
+        <h2>Active alarms</h2>
         ${
-          Object.keys(dist).length
-            ? `<table><thead><tr><th>Protocol</th><th>Count</th></tr></thead><tbody>${Object.keys(
-                dist
-              )
-                .map((k) => `<tr><td>${esc(k)}</td><td>${esc(dist[k])}</td></tr>`)
-                .join("")}</tbody></table>`
-            : `<p class="muted">No adapters configured.</p>`
-        }
-      </div>`;
-
-    if (gateway && gateway.active) {
-      html += `<div class="panel">
-        <h2>Gateway implementation</h2>
-        <p class="muted">${esc(gateway.label || "Industrial gateway protocols")}</p>
-        <dl class="kv">
-          <dt>Adapters</dt><dd>${esc(gateway.adapterCount || 0)}</dd>
-          <dt>Connected</dt><dd>${esc(gateway.connectedCount || 0)}</dd>
-          <dt>Faulted</dt><dd>${esc(gateway.faultedCount || 0)}</dd>
-          <dt>Protocols</dt><dd>${esc(
-            (gateway.protocols || []).join(", ")
-          )}</dd>
-        </dl>
-        ${renderImplementationAdapterTable(gateway.adapters)}
-        <p class="muted">Field equipment reached via OPC UA, Modbus, MQTT, REST, or EtherNet/IP — not native PROFINET/PROFIBUS stacks.</p>
-      </div>`;
-    }
-
-    if (hilscher && hilscher.active) {
-      const hw = hilscher.hardware || {};
-      const hwBadge =
-        hw.hardware === "DETECTED"
-          ? statusBadge("DETECTED")
-          : statusBadge("HARDWARE_NOT_AVAILABLE");
-      html += `<div class="panel">
-        <h2>Hilscher native fieldbus</h2>
-        <p class="muted">${esc(hilscher.label || "PROFINET / PROFIBUS via Hilscher CIFX")}</p>
-        ${renderImplementationAdapterTable(hilscher.adapters)}
-        <h3>Hardware readiness</h3>
-        <dl class="kv">
-          <dt>SDK compiled in</dt><dd>${hw.compiledIn ? "yes" : "no"}</dd>
-          <dt>Readiness</dt><dd>${esc(hw.readinessState || "")}</dd>
-          <dt>Hardware</dt><dd>${hwBadge}</dd>
-          <dt>Driver</dt><dd class="mono">${esc(hw.driverVersion || "")}</dd>
-          <dt>Boards</dt><dd>${esc(hw.boardCount || 0)}</dd>
-          <dt>Selected board</dt><dd>${esc(hw.selectedBoard || "")}</dd>
-          <dt>Firmware</dt><dd>${esc(hw.selectedFirmware || "")}</dd>
-          <dt>Summary</dt><dd>${esc(hw.summary || "")}</dd>
-        </dl>
-        <p class="muted">Shown because a Hilscher native adapter is configured.</p>
-      </div>`;
-    }
-
-    if (softing && softing.active) {
-      html += `<div class="panel">
-        <h2>Softing native fieldbus</h2>
-        <p class="muted">${esc(softing.label || "Softing stack")}</p>
-        ${renderImplementationAdapterTable(softing.adapters)}
-      </div>`;
-    }
-
-    html += `<div class="panel">
-        <h2>All configured adapters</h2>
-        ${
-          !adapters.length
-            ? `<p class="muted">No adapters.</p>`
-            : `<table><thead><tr><th>Adapter</th><th>Protocol</th><th>Transport</th><th>Implementation</th><th>Endpoint</th><th>State</th><th>Runtime</th><th>Equipment</th><th>Last error</th></tr></thead><tbody>${adapters
-                .map((a) => {
-                  const transportLabel =
-                    a.protocol === "modbus"
-                      ? a.transport === "rtu"
-                        ? "RTU / RS-485"
-                        : "TCP"
-                      : "—";
-                  return `<tr>
-              <td>${esc(a.adapterId)}</td>
-              <td>${esc(a.protocol)}</td>
-              <td>${esc(transportLabel)}</td>
-              <td>${esc(implementationLabel(a.implementation))}</td>
-              <td class="mono">${esc(a.connectionSummary || "")}</td>
-              <td>${statusBadge(
-                a.connectionStateDisplay || a.connectionState
-              )}</td>
-              <td>${a.runtimePresent ? "yes" : "no"}</td>
-              <td>${esc(a.equipmentCount || 0)}</td>
-              <td class="mono">${esc(a.lastError || "")}</td>
-            </tr>`;
-                })
-                .join("")}</tbody></table>`
-        }
-      </div>
-      <div class="panel">
-        <h2>Equipment communication</h2>
-        ${
-          !equipment.length
-            ? `<p class="muted">No equipment in live cache. Connect an adapter to receive telemetry.</p>`
-            : `<table><thead><tr><th>Equipment</th><th>Adapter</th><th>Comm</th><th>Machine</th><th>Stale</th><th>Last telemetry</th><th>Error</th></tr></thead><tbody>${equipment
+          !activeAlarms.length
+            ? `<p class="diag-ok-banner">No active alarms</p>`
+            : `<table class="diag-table"><thead><tr><th>Severity</th><th>Source</th><th>Protocol</th><th>Problem</th><th>Since</th></tr></thead><tbody>${activeAlarms
                 .map(
-                  (e) => `<tr>
-              <td>${esc(e.equipmentId)}</td>
-              <td>${esc(e.adapterId)}</td>
-              <td>${statusBadge(
-                e.communicationStateDisplay || e.communicationState
-              )}</td>
-              <td>${esc(e.machineState || "")}${
-                    e.machineFault ? " / FAULT" : ""
-                  }</td>
-              <td>${e.stale ? "yes" : "no"}</td>
-              <td class="mono">${esc(
-                e.lastSuccessfulTelemetryUtc || e.observedAtUtc || "No telemetry received yet"
-              )}</td>
-              <td class="mono">${esc(e.lastError || "")}</td>
+                  (a) => `<tr>
+              <td>${severityBadge(a.severity)}</td>
+              <td>${esc(a.sourceType || "")}: <strong>${esc(a.sourceId || "")}</strong></td>
+              <td>${esc(a.protocol || "—")}</td>
+              <td>${esc(a.message || "")}</td>
+              <td class="mono">${esc(a.sinceUtc || "")}</td>
             </tr>`
                 )
                 .join("")}</tbody></table>`
         }
       </div>
+
       <div class="panel">
-        <h2>Configuration errors</h2>
+        <h2>Adapter health</h2>
+        ${
+          !adapters.length
+            ? `<p class="muted">No adapters configured.</p>`
+            : `<table class="diag-table diag-adapters"><thead><tr>
+                <th>Adapter</th><th>Protocol</th><th>State</th><th>Health</th><th>Connected for</th><th>Reconnects</th><th>Faults</th><th>Last communication</th><th>Last error</th>
+              </tr></thead><tbody>${adapters
+                .map((a) => {
+                  const selected =
+                    selectedAdapter === a.adapterId ? " class=\"diag-row-selected\"" : "";
+                  return `<tr${selected} data-action="diag-select-adapter" data-id="${esc(
+                    a.adapterId
+                  )}" style="cursor:pointer">
+                  <td><strong>${esc(a.adapterId)}</strong></td>
+                  <td>${esc(a.protocol)}</td>
+                  <td>${statusBadge(a.connectionStateDisplay || a.connectionState)}</td>
+                  <td>${healthBadge(a.health || a.communicationHealth)}</td>
+                  <td>${formatDurationMs(a.uptimeMs)}</td>
+                  <td>${esc(a.reconnectCount || 0)}</td>
+                  <td>${esc(a.faultCount || 0)}</td>
+                  <td class="mono">${
+                    a.lastSuccessfulCommunicationUtc
+                      ? relativeTimeLabel(a.lastSuccessfulCommunicationUtc)
+                      : "N/A"
+                  }</td>
+                  <td class="mono">${esc(a.lastError || "—")}</td>
+                </tr>`;
+                })
+                .join("")}</tbody></table>
+              <p class="muted">Click an adapter row for details. Protocol-specific fields show N/A when not exposed.</p>`
+        }
+      </div>
+
+      <div class="panel">
+        <h2>Equipment health</h2>
+        ${
+          !equipment.length
+            ? `<p class="muted">No equipment in live cache. Connect an adapter to populate communication health.</p>`
+            : `<table class="diag-table diag-equipment"><thead><tr>
+                <th>Equipment</th><th>Adapter</th><th>Comm</th><th>Health</th><th>Last telemetry</th><th>Error</th>
+              </tr></thead><tbody>${equipment
+                .map((e) => {
+                  const selected =
+                    selectedEquipment === e.equipmentId
+                      ? " class=\"diag-row-selected\""
+                      : "";
+                  return `<tr${selected} data-action="diag-select-equipment" data-id="${esc(
+                    e.equipmentId
+                  )}" style="cursor:pointer">
+                  <td><strong>${esc(e.equipmentId)}</strong></td>
+                  <td>${esc(e.adapterId)}</td>
+                  <td>${statusBadge(
+                    e.communicationStateDisplay || e.communicationState
+                  )}</td>
+                  <td>${healthBadge(e.health)}</td>
+                  <td class="mono">${
+                    e.hasSuccessfulCommunication
+                      ? relativeTimeLabel(e.lastSuccessfulTelemetryUtc)
+                      : "N/A"
+                  }</td>
+                  <td class="mono">${esc(e.lastError || "—")}</td>
+                </tr>`;
+                })
+                .join("")}</tbody></table>
+              <p class="muted">Click an equipment row for details.</p>`
+        }
+      </div>
+
+      ${diagnosticsDetailPanel(selectedAdapter, selectedEquipment, d)}
+
+      <div class="panel">
+        <h2>Recent events</h2>
+        <div class="toolbar diag-filters">
+          <label class="field">
+            <span class="field-label">Severity</span>
+            <select id="diag-severity-filter" data-action="diag-filter-severity">
+              <option value="all" ${severityFilter === "all" ? "selected" : ""}>All</option>
+              <option value="INFO" ${severityFilter === "INFO" ? "selected" : ""}>INFO</option>
+              <option value="WARNING" ${
+                severityFilter === "WARNING" ? "selected" : ""
+              }>WARNING</option>
+              <option value="ERROR" ${severityFilter === "ERROR" ? "selected" : ""}>ERROR</option>
+              <option value="CRITICAL" ${
+                severityFilter === "CRITICAL" ? "selected" : ""
+              }>CRITICAL</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Adapter</span>
+            <select id="diag-adapter-filter" data-action="diag-filter-adapter">${adapterFilterOpts}</select>
+          </label>
+        </div>
+        ${
+          !filteredEvents.length
+            ? `<p class="muted">No events match the current filters.</p>`
+            : `<table class="diag-table"><thead><tr><th>Time</th><th>Severity</th><th>Category</th><th>Source</th><th>Message</th></tr></thead><tbody>${filteredEvents
+                .slice(0, 50)
+                .map((e) => {
+                  const source = e.equipmentId
+                    ? "equipment:" + e.equipmentId
+                    : e.adapterId
+                      ? "adapter:" + e.adapterId
+                      : "system";
+                  return `<tr>
+                  <td class="mono">${esc(e.atUtc || "")}</td>
+                  <td>${severityBadge(e.severity || e.level)}</td>
+                  <td>${esc(e.category || "")}</td>
+                  <td>${esc(source)}</td>
+                  <td>${esc(e.message || "")}</td>
+                </tr>`;
+                })
+                .join("")}</tbody></table>`
+        }
+      </div>
+
+      <div class="panel">
+        <h2>Configuration</h2>
         ${
           d.configurationValidation && d.configurationValidation.ok
             ? statusBadge("ok") + " Configuration validates."
             : formatIssues(d.configurationValidation)
         }
-      </div>
-      <div class="panel">
-        <h2>Recent warnings / errors</h2>
-        ${
-          !recentErrors.length
-            ? `<p class="muted">None in recent event buffer.</p>`
-            : `<table><thead><tr><th>Time</th><th>Level</th><th>Adapter</th><th>Message</th></tr></thead><tbody>${recentErrors
-                .slice()
-                .reverse()
-                .map(
-                  (e) =>
-                    `<tr><td class="mono">${esc(e.atUtc)}</td><td>${esc(
-                      e.level
-                    )}</td><td>${esc(e.adapterId || "")}</td><td>${esc(
-                      e.message
-                    )}</td></tr>`
-                )
-                .join("")}</tbody></table>`
-        }
       </div>`;
+
+    if (impl.gateway && impl.gateway.active) {
+      html += `<div class="panel">
+        <h2>Gateway implementation</h2>
+        <p class="muted">${esc(impl.gateway.label || "Industrial gateway protocols")}</p>
+        ${renderImplementationAdapterTable(impl.gateway.adapters)}
+      </div>`;
+    }
+    if (impl.hilscher_native && impl.hilscher_native.active) {
+      const hw = impl.hilscher_native.hardware || {};
+      html += `<div class="panel">
+        <h2>Hilscher native fieldbus</h2>
+        ${renderImplementationAdapterTable(impl.hilscher_native.adapters)}
+        <dl class="kv">
+          <dt>Hardware</dt><dd>${esc(hw.hardware || hw.readinessState || "—")}</dd>
+          <dt>Summary</dt><dd>${esc(hw.summary || "")}</dd>
+        </dl>
+      </div>`;
+    }
+
     return html;
   }
 
@@ -1802,6 +2062,24 @@
         localStorage.removeItem(APPEARANCE_STORAGE_KEY);
         applyAppearance(DEFAULT_APPEARANCE);
         flash("Appearance reset to default", "ok");
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "diag-select-adapter") {
+        state._diagAdapterId = id || null;
+        state._diagEquipmentId = null;
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "diag-select-equipment") {
+        state._diagEquipmentId = id || null;
+        state._diagAdapterId = null;
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "diag-clear-detail") {
+        state._diagAdapterId = null;
+        state._diagEquipmentId = null;
         await render({ skipDraftCapture: true });
         return;
       }

@@ -119,6 +119,7 @@ OpcUaNodeRef mapOpcUaAddress(
 
 ApplicationService::ApplicationService(std::string configurationPath)
     : configuration_path_(std::move(configurationPath))
+    , service_started_at_(std::chrono::system_clock::now())
 {
 }
 
@@ -414,6 +415,12 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
     result.ok = false;
     result.message = "adapter '" + adapterId + "' is not in configuration";
     this->recordEvent("error", "connection", result.message, adapterId);
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+      ++diag.connectionAttempts;
+      ++diag.failedConnections;
+    }
     return result;
   }
   if (!record->enabled)
@@ -424,10 +431,20 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
     return result;
   }
 
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    ++this->diagnosticsFor(adapterId).connectionAttempts;
+  }
+
   AdapterManagerResult ensured = this->ensureRuntimeAdapter(*record);
   if (!ensured.ok)
   {
     this->recordEvent("error", "connection", ensured.message, adapterId);
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      // Creation failure is a failed connection attempt, not a live FAULTED session.
+      ++this->diagnosticsFor(adapterId).failedConnections;
+    }
     return ensured;
   }
 
@@ -439,6 +456,12 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
     {
       this->cache_.updateFromAdapter(*runtime);
       this->recordEvent("info", "connection", "Adapter connected", adapterId);
+      {
+        std::lock_guard<std::mutex> lock(this->mutex_);
+        AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+        ++diag.successfulConnections;
+        this->observeAdapterStateLocked(adapterId, "CONNECTED");
+      }
     }
     else
     {
@@ -468,6 +491,15 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
       }
       connected.message = message;
       this->recordEvent("error", "connection", connected.message, adapterId);
+      {
+        std::lock_guard<std::mutex> lock(this->mutex_);
+        AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+        ++diag.failedConnections;
+        // communicationFailureCount / faultCount increment only on observed
+        // transition into FAULTED (avoid double-count with observeAdapterStateLocked).
+        this->observeAdapterStateLocked(
+            adapterId, connectionStateName(runtime->connectionState()));
+      }
     }
   }
   return connected;
@@ -481,8 +513,31 @@ AdapterManagerResult ApplicationService::disconnectAdapter(
   if (result.ok)
   {
     this->recordEvent("info", "connection", "Adapter disconnected", adapterId);
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      this->observeAdapterStateLocked(adapterId, "DISCONNECTED");
+    }
   }
   return result;
+}
+
+AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &adapterId)
+{
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    ++this->diagnosticsFor(adapterId).reconnectCount;
+  }
+  this->disconnectAdapter(adapterId);
+  AdapterManagerResult connected = this->connectAdapter(adapterId);
+  if (connected.ok)
+  {
+    this->recordEvent("info", "connection", "Adapter reconnected", adapterId);
+  }
+  else
+  {
+    this->recordEvent("error", "connection", "Adapter reconnect failed: " + connected.message, adapterId);
+  }
+  return connected;
 }
 
 std::vector<EquipmentSnapshot> ApplicationService::equipment() const
@@ -635,6 +690,387 @@ void ApplicationService::recordEvent(
   {
     this->events_.pop_front();
   }
+  if (!adapterId.empty() && (level == "warn" || level == "warning"))
+  {
+    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+    ++diag.warningCount;
+    diag.lastWarning = message;
+  }
+}
+
+AdapterSessionDiagnostics &
+ApplicationService::diagnosticsFor(const std::string &adapterId) const
+{
+  AdapterSessionDiagnostics &diag = this->adapter_diagnostics_[adapterId];
+  if (diag.sessionStartedAt.time_since_epoch().count() == 0)
+  {
+    const auto now = std::chrono::system_clock::now();
+    diag.sessionStartedAt = this->service_started_at_.time_since_epoch().count() == 0
+                                ? now
+                                : this->service_started_at_;
+    diag.lastStateChangeAt = now;
+    diag.disconnectedAt = now;
+  }
+  return diag;
+}
+
+void ApplicationService::observeAdapterStateLocked(
+    const std::string &adapterId, const std::string &connectionState) const
+{
+  AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+  const auto now = std::chrono::system_clock::now();
+  const std::string state =
+      connectionState.empty() ? std::string("DISCONNECTED") : connectionState;
+
+  if (diag.lastStateChangeAt.time_since_epoch().count() != 0)
+  {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - diag.lastStateChangeAt);
+    if (diag.lastObservedState == "CONNECTED")
+    {
+      diag.cumulativeConnectedMs += elapsed;
+    }
+    else if (
+        diag.lastObservedState == "DISCONNECTED" || diag.lastObservedState == "NOT_CONFIGURED"
+        || diag.lastObservedState == "FAULTED")
+    {
+      // Faulted counts toward downtime for session reliability stats.
+      diag.cumulativeDisconnectedMs += elapsed;
+    }
+  }
+
+  if (state != diag.lastObservedState)
+  {
+    if (state == "FAULTED" && diag.lastObservedState != "FAULTED")
+    {
+      ++diag.faultCount;
+      diag.activeFault = true;
+      ++diag.communicationFailureCount;
+    }
+    if (state == "CONNECTED")
+    {
+      diag.connectedAt = now;
+      diag.everConnected = true;
+      diag.activeFault = false;
+      diag.lastSuccessfulCommunicationAt = now;
+      diag.hasLastSuccessfulCommunication = true;
+    }
+    if (state == "DISCONNECTED" || state == "NOT_CONFIGURED")
+    {
+      diag.disconnectedAt = now;
+      diag.activeFault = false;
+    }
+    if (state == "FAULTED")
+    {
+      diag.disconnectedAt = now;
+    }
+    diag.lastStateChangeAt = now;
+    diag.lastObservedState = state;
+  }
+  else if (state == "CONNECTED")
+  {
+    diag.lastSuccessfulCommunicationAt = now;
+    diag.hasLastSuccessfulCommunication = true;
+    diag.activeFault = false;
+  }
+
+  // Rule-based early warning from session counters (not predictive / ML).
+  diag.earlyWarning.clear();
+  if (diag.reconnectCount >= 5)
+  {
+    diag.earlyWarning =
+        "Communication degradation detected: "
+        + std::to_string(diag.reconnectCount)
+        + " reconnects in this session.";
+  }
+  else if (diag.faultCount >= 3)
+  {
+    diag.earlyWarning =
+        "Communication degradation detected: "
+        + std::to_string(diag.faultCount)
+        + " faulted-state entries in this session.";
+  }
+  else if (diag.failedConnections >= 3 && diag.successfulConnections == 0)
+  {
+    diag.earlyWarning =
+        "Communication degradation detected: repeated connection failures "
+        "with no successful connection in this session.";
+  }
+
+  if (state == "CONNECTED")
+  {
+    diag.communicationHealth = diag.earlyWarning.empty() ? "HEALTHY" : "DEGRADED";
+  }
+  else if (state == "FAULTED")
+  {
+    diag.communicationHealth = "FAILED";
+  }
+  else
+  {
+    diag.communicationHealth = diag.everConnected ? "UNKNOWN" : "UNKNOWN";
+  }
+}
+
+void ApplicationService::refreshAllAdapterObservationsLocked() const
+{
+  for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
+  {
+    std::string state = "DISCONNECTED";
+    if (const IndustrialAdapter *runtime = this->manager_.adapter(record.adapterId))
+    {
+      state = connectionStateName(runtime->connectionState());
+    }
+    this->observeAdapterStateLocked(record.adapterId, state);
+  }
+}
+
+DiagnosticsReport ApplicationService::diagnosticsReport() const
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  this->refreshAllAdapterObservationsLocked();
+
+  DiagnosticsReport report;
+  report.generatedAtUtc = std::chrono::system_clock::now();
+  report.system.schedulerRunning = this->running_ && this->scheduler_
+                                   && this->scheduler_->running();
+  report.system.configuredAdapters = this->catalog_.adapterCount();
+
+  const auto snapshots = this->cache_.equipment();
+  report.equipment = snapshots;
+
+  std::size_t historicalFaults = 0;
+  std::size_t warningTotal = 0;
+
+  for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
+  {
+    AdapterDiagnosticsView view;
+    view.adapter.adapterId = record.adapterId;
+    view.adapter.protocol = record.protocol;
+    view.adapter.configured = true;
+    view.adapter.enabled = record.enabled;
+    view.adapter.description = record.description;
+    view.adapter.equipmentCount = record.equipment.size();
+    view.adapter.connectionState = "DISCONNECTED";
+    view.adapter.implementation = adapterImplementation(record);
+    view.adapter.connectionSummary = connectionSummary(record);
+    if (record.protocol == "modbus")
+    {
+      const std::string transport =
+          record.connection.transport.empty() ? "tcp" : record.connection.transport;
+      view.adapter.transport = transport == "rtu" ? "rtu" : "tcp";
+    }
+
+    if (const IndustrialAdapter *runtime = this->manager_.adapter(record.adapterId))
+    {
+      view.adapter.runtimePresent = true;
+      view.adapter.connectionState = connectionStateName(runtime->connectionState());
+      view.adapter.lastError = runtime->lastError();
+    }
+    view.adapter.connectionStateDisplay =
+        connectionStateDisplay(view.adapter.protocol, view.adapter.connectionState);
+
+    this->observeAdapterStateLocked(record.adapterId, view.adapter.connectionState);
+    view.session = this->diagnosticsFor(record.adapterId);
+
+    const auto now = report.generatedAtUtc;
+    if (view.session.lastStateChangeAt.time_since_epoch().count() != 0)
+    {
+      view.currentStateDurationMs =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              now - view.session.lastStateChangeAt)
+              .count();
+    }
+    if (view.adapter.connectionState == "CONNECTED")
+    {
+      view.currentUptimeMs = view.currentStateDurationMs;
+      view.currentDowntimeMs = 0;
+      ++report.system.connectedAdapters;
+    }
+    else if (view.adapter.connectionState == "FAULTED")
+    {
+      view.currentUptimeMs = 0;
+      view.currentDowntimeMs = view.currentStateDurationMs;
+      ++report.system.faultedAdapters;
+    }
+    else
+    {
+      view.currentUptimeMs = 0;
+      view.currentDowntimeMs = view.currentStateDurationMs;
+      ++report.system.disconnectedAdapters;
+    }
+
+    for (const EquipmentSnapshot &snap : snapshots)
+    {
+      if (snap.adapterId != record.adapterId)
+      {
+        continue;
+      }
+      if (snap.machineFault || snap.communicationState == ConnectionState::Faulted)
+      {
+        ++view.faultedEquipmentCount;
+      }
+      else if (snap.stale || snap.communicationState != ConnectionState::Connected)
+      {
+        ++view.degradedEquipmentCount;
+      }
+      else
+      {
+        ++view.healthyEquipmentCount;
+      }
+    }
+
+    if (view.session.faultCount > 0
+        && view.session.cumulativeConnectedMs.count() > 0)
+    {
+      view.sessionMtbfStatus = "session_only";
+      view.sessionMtbfMs =
+          view.session.cumulativeConnectedMs.count()
+          / static_cast<std::int64_t>(view.session.faultCount);
+    }
+    else
+    {
+      view.sessionMtbfStatus = "insufficient_data";
+      view.sessionMtbfMs = 0;
+    }
+
+    if (view.session.communicationHealth == "HEALTHY")
+    {
+      ++report.system.healthyAdapters;
+    }
+    else if (view.session.communicationHealth == "DEGRADED")
+    {
+      ++report.system.degradedAdapters;
+    }
+    else if (view.session.communicationHealth == "FAILED")
+    {
+      ++report.system.failedAdapters;
+    }
+
+    historicalFaults += view.session.faultCount;
+    warningTotal += view.session.warningCount;
+
+    if (view.session.activeFault || view.adapter.connectionState == "FAULTED")
+    {
+      ActiveAlarmView alarm;
+      alarm.severity = "ERROR";
+      alarm.sourceType = "adapter";
+      alarm.sourceId = view.adapter.adapterId;
+      alarm.protocol = view.adapter.protocol;
+      alarm.category = "CONNECTION";
+      alarm.message = view.adapter.lastError.empty() ? "Adapter is faulted"
+                                                     : view.adapter.lastError;
+      alarm.sinceUtc = view.session.lastStateChangeAt;
+      report.activeAlarms.push_back(std::move(alarm));
+    }
+    else if (
+        !view.session.earlyWarning.empty()
+        && view.session.communicationHealth == "DEGRADED")
+    {
+      // Early-warning alarms only while currently connected but degraded.
+      // Historical reconnect/fault counts alone do not keep alarms active
+      // after disconnect or after a healthy recovery without degradation.
+      ActiveAlarmView alarm;
+      alarm.severity = "WARNING";
+      alarm.sourceType = "adapter";
+      alarm.sourceId = view.adapter.adapterId;
+      alarm.protocol = view.adapter.protocol;
+      alarm.category = "COMMUNICATION";
+      alarm.message = view.session.earlyWarning;
+      alarm.sinceUtc = view.session.lastStateChangeAt;
+      report.activeAlarms.push_back(std::move(alarm));
+    }
+
+    report.adapters.push_back(std::move(view));
+  }
+
+  for (const EquipmentSnapshot &snap : snapshots)
+  {
+    if (snap.machineFault)
+    {
+      ++report.system.faultedEquipment;
+      ActiveAlarmView alarm;
+      alarm.severity = "ERROR";
+      alarm.sourceType = "equipment";
+      alarm.sourceId = snap.equipmentId;
+      alarm.protocol = snap.protocol;
+      alarm.category = "EQUIPMENT";
+      alarm.message = snap.lastError.empty() ? "Equipment machine fault active"
+                                             : snap.lastError;
+      alarm.sinceUtc = snap.observedAtUtc;
+      report.activeAlarms.push_back(std::move(alarm));
+    }
+    else if (snap.stale && snap.communicationState == ConnectionState::Faulted)
+    {
+      ++report.system.degradedEquipment;
+      ActiveAlarmView alarm;
+      alarm.severity = "ERROR";
+      alarm.sourceType = "equipment";
+      alarm.sourceId = snap.equipmentId;
+      alarm.protocol = snap.protocol;
+      alarm.category = "COMMUNICATION";
+      alarm.message = snap.lastError.empty() ? "Equipment communication faulted"
+                                             : snap.lastError;
+      alarm.sinceUtc = snap.observedAtUtc;
+      report.activeAlarms.push_back(std::move(alarm));
+    }
+    else if (snap.stale)
+    {
+      ++report.system.degradedEquipment;
+    }
+    else
+    {
+      ++report.system.healthyEquipment;
+    }
+  }
+
+  const ConfigResult validation = this->catalog_.validate();
+  if (!validation.ok)
+  {
+    ActiveAlarmView alarm;
+    alarm.severity = "ERROR";
+    alarm.sourceType = "configuration";
+    alarm.sourceId = this->configuration_path_;
+    alarm.category = "CONFIGURATION";
+    alarm.message = validation.message.empty() ? "Configuration validation failed"
+                                               : validation.message;
+    alarm.sinceUtc = report.generatedAtUtc;
+    report.activeAlarms.push_back(std::move(alarm));
+  }
+
+  report.system.warningCount = warningTotal;
+  report.system.historicalFaultCount = historicalFaults;
+  report.system.activeAlarmCount = report.activeAlarms.size();
+  report.system.mtbfStatus = "insufficient_data";
+  report.system.mtbfNote =
+      "Long-term MTBF requires persistent history across sessions. "
+      "Only session-scoped estimates are available in this process.";
+
+  if (report.system.faultedAdapters > 0 || report.system.faultedEquipment > 0)
+  {
+    report.system.overallHealth = "FAULTED";
+  }
+  else if (
+      report.system.degradedAdapters > 0 || report.system.degradedEquipment > 0
+      || !report.activeAlarms.empty())
+  {
+    report.system.overallHealth = "DEGRADED";
+  }
+  else if (report.system.configuredAdapters == 0)
+  {
+    report.system.overallHealth = "UNKNOWN";
+  }
+  else
+  {
+    report.system.overallHealth = "HEALTHY";
+  }
+
+  // Newest events last in deque; expose newest-first for operators.
+  report.recentEvents.assign(this->events_.rbegin(), this->events_.rend());
+  if (report.recentEvents.size() > 100)
+  {
+    report.recentEvents.resize(100);
+  }
+  return report;
 }
 
 AdapterManagerResult ApplicationService::ensureRuntimeAdapter(

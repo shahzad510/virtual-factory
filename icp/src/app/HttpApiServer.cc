@@ -112,6 +112,11 @@ json equipmentToJson(const EquipmentSnapshot &snap)
       {"stale", snap.stale},
       {"lastError", snap.lastError},
       {"observedAtUtc", iso8601(snap.observedAtUtc)},
+      {"lastSuccessfulTelemetryUtc",
+       snap.hasSuccessfulCommunication
+           ? json(iso8601(snap.lastSuccessfulCommunicationUtc))
+           : json(nullptr)},
+      {"hasSuccessfulCommunication", snap.hasSuccessfulCommunication},
       {"telemetry", telemetry},
   };
 }
@@ -253,6 +258,44 @@ json adapterDiagnosticsJson(const RuntimeAdapterView &view)
       {"enabled", view.enabled},
       {"equipmentCount", view.equipmentCount},
       {"connectionSummary", view.connectionSummary}};
+}
+
+json adapterDiagnosticsJson(const AdapterDiagnosticsView &view)
+{
+  json base = adapterDiagnosticsJson(view.adapter);
+  base["health"] = view.session.communicationHealth;
+  base["communicationHealth"] = view.session.communicationHealth;
+  base["earlyWarning"] =
+      view.session.earlyWarning.empty() ? json(nullptr) : json(view.session.earlyWarning);
+  base["activeFault"] = view.session.activeFault;
+  base["connectionAttempts"] = view.session.connectionAttempts;
+  base["successfulConnections"] = view.session.successfulConnections;
+  base["failedConnections"] = view.session.failedConnections;
+  base["reconnectCount"] = view.session.reconnectCount;
+  base["faultCount"] = view.session.faultCount;
+  base["warningCount"] = view.session.warningCount;
+  base["communicationFailureCount"] = view.session.communicationFailureCount;
+  base["uptimeMs"] = view.currentUptimeMs;
+  base["downtimeMs"] = view.currentDowntimeMs;
+  base["currentStateDurationMs"] = view.currentStateDurationMs;
+  base["cumulativeConnectedMs"] = view.session.cumulativeConnectedMs.count();
+  base["cumulativeDisconnectedMs"] = view.session.cumulativeDisconnectedMs.count();
+  base["connectedAtUtc"] = iso8601(view.session.connectedAt);
+  base["disconnectedAtUtc"] = iso8601(view.session.disconnectedAt);
+  base["lastSuccessfulCommunicationUtc"] =
+      view.session.hasLastSuccessfulCommunication
+          ? json(iso8601(view.session.lastSuccessfulCommunicationAt))
+          : json(nullptr);
+  base["lastWarning"] =
+      view.session.lastWarning.empty() ? json(nullptr) : json(view.session.lastWarning);
+  base["healthyEquipmentCount"] = view.healthyEquipmentCount;
+  base["degradedEquipmentCount"] = view.degradedEquipmentCount;
+  base["faultedEquipmentCount"] = view.faultedEquipmentCount;
+  base["sessionMtbfStatus"] = view.sessionMtbfStatus;
+  base["sessionMtbfMs"] =
+      view.sessionMtbfStatus == "session_only" ? json(view.sessionMtbfMs) : json(nullptr);
+  base["protocolSpecific"] = {{"available", false}, {"detail", "Not available"}};
+  return base;
 }
 
 }  // namespace
@@ -537,8 +580,7 @@ public:
     server.Post(
         R"(/api/v1/adapters/([^/]+)/reconnect)",
         [this](const httplib::Request &req, httplib::Response &res) {
-          service.disconnectAdapter(req.matches[1]);
-          AdapterManagerResult result = service.connectAdapter(req.matches[1]);
+          AdapterManagerResult result = service.reconnectAdapter(req.matches[1]);
           setJson(res, result.ok ? 200 : 400, managerResultToJson(result));
         });
 
@@ -654,6 +696,7 @@ public:
 
     server.Get("/api/v1/diagnostics", [this](const httplib::Request &, httplib::Response &res) {
       const ApplicationStatus st = service.status();
+      const DiagnosticsReport report = service.diagnosticsReport();
       const std::vector<RuntimeAdapterView> adapterViews = service.adapters();
 
       json adapters = json::array();
@@ -663,57 +706,49 @@ public:
       std::size_t gatewayConnected = 0;
       std::size_t gatewayFaulted = 0;
 
-      for (const RuntimeAdapterView &view : adapterViews)
+      for (const AdapterDiagnosticsView &view : report.adapters)
       {
-        adapters.push_back(adapterDiagnosticsJson(view));
-        if (view.implementation == "gateway")
+        const json adapterJson = adapterDiagnosticsJson(view);
+        adapters.push_back(adapterJson);
+        if (view.adapter.implementation == "gateway")
         {
-          gatewayAdapters.push_back(adapterDiagnosticsJson(view));
-          gatewayProtocols.insert(view.protocol);
-          if (view.connectionState == "CONNECTED" || view.connectionState == "SIMULATED_ACTIVE")
+          gatewayAdapters.push_back(adapterJson);
+          gatewayProtocols.insert(view.adapter.protocol);
+          if (view.adapter.connectionState == "CONNECTED"
+              || view.adapter.connectionState == "SIMULATED_ACTIVE")
           {
             ++gatewayConnected;
           }
-          if (view.connectionState == "FAULTED")
+          if (view.adapter.connectionState == "FAULTED")
           {
             ++gatewayFaulted;
           }
         }
-        else if (view.implementation == "hilscher_native")
+        else if (view.adapter.implementation == "hilscher_native")
         {
-          hilscherAdapters.push_back(adapterDiagnosticsJson(view));
+          hilscherAdapters.push_back(adapterJson);
         }
       }
 
       json equipment = json::array();
       json stale = json::array();
-      for (const EquipmentSnapshot &snap : service.equipment())
+      for (const EquipmentSnapshot &snap : report.equipment)
       {
-        json tel = json::array();
-        for (const CachedTelemetryPoint &point : snap.telemetry)
+        json eqEntry = equipmentToJson(snap);
+        std::string health = "UNKNOWN";
+        if (snap.machineFault || snap.communicationState == ConnectionState::Faulted)
         {
-          tel.push_back(
-              {{"name", point.name}, {"value", point.value}, {"unit", point.unit}});
+          health = "FAILED";
         }
-        const std::string observed = iso8601(snap.observedAtUtc);
-        const json eqEntry =
-            {{"equipmentId", snap.equipmentId},
-             {"adapterId", snap.adapterId},
-             {"protocol", snap.protocol},
-             {"type", snap.type},
-             {"communicationState", connectionStateName(snap.communicationState)},
-             {"communicationStateDisplay",
-              snap.protocol == "mock" &&
-                      snap.communicationState == ConnectionState::Connected
-                  ? "SIMULATED_ACTIVE"
-                  : connectionStateName(snap.communicationState)},
-             {"machineState", operationalStateName(snap.operationalState)},
-             {"machineFault", snap.machineFault},
-             {"stale", snap.stale},
-             {"lastError", snap.lastError},
-             {"observedAtUtc", observed},
-             {"lastSuccessfulTelemetryUtc", observed},
-             {"telemetry", tel}};
+        else if (snap.stale)
+        {
+          health = "DEGRADED";
+        }
+        else if (snap.communicationState == ConnectionState::Connected)
+        {
+          health = "HEALTHY";
+        }
+        eqEntry["health"] = health;
         equipment.push_back(eqEntry);
         if (snap.stale)
         {
@@ -722,18 +757,44 @@ public:
       }
 
       json recentErrors = json::array();
-      for (const ApplicationEvent &ev : service.events(100))
+      json recentEvents = json::array();
+      for (const ApplicationEvent &ev : report.recentEvents)
       {
-        if (ev.level == "error" || ev.level == "warn")
+        const json eventJson =
+            {{"atUtc", iso8601(ev.atUtc)},
+             {"level", ev.level},
+             {"severity",
+              ev.level == "error"     ? "ERROR"
+              : ev.level == "warn" || ev.level == "warning" ? "WARNING"
+              : ev.level == "critical" ? "CRITICAL"
+                                       : "INFO"},
+             {"category", ev.category},
+             {"message", ev.message},
+             {"adapterId", ev.adapterId},
+             {"equipmentId", ev.equipmentId},
+             {"sourceType",
+              !ev.equipmentId.empty() ? "equipment"
+              : !ev.adapterId.empty() ? "adapter"
+                                      : "system"}};
+        recentEvents.push_back(eventJson);
+        if (ev.level == "error" || ev.level == "warn" || ev.level == "warning"
+            || ev.level == "critical")
         {
-          recentErrors.push_back(
-              {{"atUtc", iso8601(ev.atUtc)},
-               {"level", ev.level},
-               {"category", ev.category},
-               {"message", ev.message},
-               {"adapterId", ev.adapterId},
-               {"equipmentId", ev.equipmentId}});
+          recentErrors.push_back(eventJson);
         }
+      }
+
+      json activeAlarms = json::array();
+      for (const ActiveAlarmView &alarm : report.activeAlarms)
+      {
+        activeAlarms.push_back(
+            {{"severity", alarm.severity},
+             {"sourceType", alarm.sourceType},
+             {"sourceId", alarm.sourceId},
+             {"protocol", alarm.protocol},
+             {"category", alarm.category},
+             {"message", alarm.message},
+             {"sinceUtc", iso8601(alarm.sinceUtc)}});
       }
 
       json protocolDistribution = json::object();
@@ -785,12 +846,30 @@ public:
              {"adapters", hilscherAdapters},
              {"hardware", hilscherHardwareToJson(hilscher)}};
       }
-      // Softing native: omitted until Softing adapters can be created (Coming Soon).
 
       setJson(
           res,
           200,
-          {{"runtime",
+          {{"generatedAtUtc", iso8601(report.generatedAtUtc)},
+           {"system",
+            {{"overallHealth", report.system.overallHealth},
+             {"configuredAdapters", report.system.configuredAdapters},
+             {"connectedAdapters", report.system.connectedAdapters},
+             {"disconnectedAdapters", report.system.disconnectedAdapters},
+             {"faultedAdapters", report.system.faultedAdapters},
+             {"warningCount", report.system.warningCount},
+             {"activeAlarmCount", report.system.activeAlarmCount},
+             {"historicalFaultCount", report.system.historicalFaultCount},
+             {"healthyAdapters", report.system.healthyAdapters},
+             {"degradedAdapters", report.system.degradedAdapters},
+             {"failedAdapters", report.system.failedAdapters},
+             {"healthyEquipment", report.system.healthyEquipment},
+             {"degradedEquipment", report.system.degradedEquipment},
+             {"faultedEquipment", report.system.faultedEquipment},
+             {"mtbfStatus", report.system.mtbfStatus},
+             {"mtbfNote", report.system.mtbfNote},
+             {"schedulerRunning", report.system.schedulerRunning}}},
+           {"runtime",
             {{"schedulerRunning", st.schedulerRunning},
              {"configuredAdapterCount", st.configuredAdapterCount},
              {"runtimeAdapterCount", st.runtimeAdapterCount},
@@ -809,6 +888,8 @@ public:
              {"cicDependency", false}}},
            {"adapters", adapters},
            {"equipment", equipment},
+           {"activeAlarms", activeAlarms},
+           {"recentEvents", recentEvents},
            {"configurationValidation", validation},
            {"staleEquipment", stale},
            {"recentErrors", recentErrors},

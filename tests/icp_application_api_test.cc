@@ -231,7 +231,58 @@ int main()
           !body["implementations"].contains("hilscher_native"),
           "mock-only: no Hilscher section");
       expect(!body.contains("hilscher"), "mock-only: no global hilscher block");
+      expect(body.contains("system"), "diagnostics: system health summary");
+      expect(body.contains("activeAlarms"), "diagnostics: activeAlarms array");
+      expect(body.contains("recentEvents"), "diagnostics: recentEvents array");
+      expect(body["system"].contains("overallHealth"), "diagnostics: overallHealth");
+      expect(body["system"]["mtbfStatus"] == "insufficient_data",
+             "diagnostics: MTBF not fabricated without history");
+      bool foundMock = false;
+      for (const auto &adapter : body["adapters"])
+      {
+        if (adapter["adapterId"] == "mock-http")
+        {
+          foundMock = true;
+          expect(adapter.contains("connectionAttempts"), "adapter connectionAttempts");
+          expect(adapter.contains("successfulConnections"), "adapter successfulConnections");
+          expect(adapter.contains("failedConnections"), "adapter failedConnections");
+          expect(adapter.contains("reconnectCount"), "adapter reconnectCount");
+          expect(adapter.contains("faultCount"), "adapter faultCount");
+          expect(adapter.contains("communicationHealth"), "adapter communicationHealth");
+          expect(adapter.contains("uptimeMs"), "adapter uptimeMs");
+          expect(adapter["successfulConnections"].get<int>() >= 1,
+                 "mock successfulConnections after connect");
+          expect(adapter["protocolSpecific"]["available"] == false,
+                 "protocol-specific not fabricated");
+        }
+      }
+      expect(foundMock, "diagnostics includes mock-http adapter metrics");
     }
+  }
+
+  {
+    auto recon = client.Post("/api/v1/adapters/mock-http/connect");
+    expect(recon && recon->status == 200, "reconnect setup: connect mock-http again");
+    auto reconnect = client.Post("/api/v1/adapters/mock-http/reconnect");
+    expect(reconnect && reconnect->status == 200, "reconnect mock-http");
+    auto diag = client.Get("/api/v1/diagnostics");
+    expect(diag && diag->status == 200, "diagnostics after reconnect");
+    if (diag)
+    {
+      auto body = json::parse(diag->body);
+      for (const auto &adapter : body["adapters"])
+      {
+        if (adapter["adapterId"] == "mock-http")
+        {
+          expect(adapter["reconnectCount"].get<int>() >= 1,
+                 "reconnectCount increments on reconnect");
+          expect(adapter["connectionAttempts"].get<int>() >= 2,
+                 "connectionAttempts include reconnect connect");
+        }
+      }
+    }
+    auto disc = client.Post("/api/v1/adapters/mock-http/disconnect");
+    expect(disc && disc->status == 200, "disconnect mock-http after reconnect test");
   }
 
   {

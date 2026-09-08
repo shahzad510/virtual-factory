@@ -35,6 +35,11 @@ EquipmentSnapshot makeSnapshot(
   snap.lastError = adapter.lastError();
   snap.stale = stale;
   snap.observedAtUtc = std::chrono::system_clock::now();
+  if (!stale && adapter.connectionState() == ConnectionState::Connected)
+  {
+    snap.lastSuccessfulCommunicationUtc = snap.observedAtUtc;
+    snap.hasSuccessfulCommunication = true;
+  }
   return snap;
 }
 
@@ -74,7 +79,15 @@ void LiveStateCache::updateFromAdapter(IndustrialAdapter &adapter)
     {
       continue;
     }
-    this->by_id_[equipment->id()] = makeSnapshot(*equipment, adapter, stale);
+    EquipmentSnapshot snap = makeSnapshot(*equipment, adapter, stale);
+    const auto existing = this->by_id_.find(equipment->id());
+    if (existing != this->by_id_.end() && !snap.hasSuccessfulCommunication
+        && existing->second.hasSuccessfulCommunication)
+    {
+      snap.lastSuccessfulCommunicationUtc = existing->second.lastSuccessfulCommunicationUtc;
+      snap.hasSuccessfulCommunication = true;
+    }
+    this->by_id_[equipment->id()] = std::move(snap);
   }
 }
 
@@ -96,7 +109,7 @@ void LiveStateCache::markAdapterCommunication(
     entry.second.lastError = lastError;
     entry.second.stale = stale;
     entry.second.observedAtUtc = now;
-    // machineFault and telemetry intentionally preserved.
+    // machineFault, telemetry, and lastSuccessfulCommunication intentionally preserved.
   }
 }
 

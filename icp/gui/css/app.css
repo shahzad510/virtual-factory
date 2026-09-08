@@ -594,3 +594,40 @@ textarea.json-editor:focus,
     min-width: 8rem;
   }
 }
+
+/* Diagnostics */
+.diag-summary-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.diag-summary-head h2 { margin: 0; }
+.diag-summary-stats { margin-bottom: 0.85rem; }
+.diag-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+.diag-note { margin: 0.35rem 0 0; font-size: 0.8rem; line-height: 1.4; }
+.diag-ok-banner {
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid #2f6b4c;
+  border-radius: 6px;
+  background: #1a3228;
+  color: #c9f0d8;
+  font-weight: 600;
+}
+.diag-table { width: 100%; }
+.diag-row-selected td { background: rgba(47, 158, 122, 0.12); }
+.diag-filters { align-items: flex-end; gap: 0.75rem; }
+.diag-filters .field { min-width: 10rem; }
+.status.HEALTHY, .status.OK, .status.INFO { color: #d8ffe9; background: #1d3d2d; border-color: #2f6b4c; }
+.status.DEGRADED, .status.WARNING, .status.WARN { color: #fff1c2; background: #3d3420; border-color: #7a6a2e; }
+.status.FAILED, .status.FAULTED, .status.CRITICAL, .status.ERROR { color: #ffe0de; background: #4a2422; border-color: #7a3a36; }
+.status.UNKNOWN { color: #d7e0ea; background: #2a323c; border-color: #3c4652; }
+
+@media (max-width: 1100px) {
+  .diag-summary-grid { grid-template-columns: 1fr; }
+  .diag-table { display: block; overflow-x: auto; }
+}
