@@ -49,8 +49,23 @@ button, input, select, textarea {
 button { cursor: pointer; background: var(--bg-elevated); }
 button.primary { background: var(--accent-dim); border-color: var(--accent); }
 button.danger, button.btn-row-danger { background: #4a2422; border-color: var(--danger); }
-button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  filter: none;
+  color: var(--muted);
+  border-color: var(--border);
+  background: var(--bg-panel);
+  box-shadow: none;
+}
+button.danger:disabled,
+button.btn-row-danger:disabled {
+  background: var(--bg-panel);
+  border-color: var(--border);
+  color: var(--muted);
+}
 button:hover:not(:disabled) { filter: brightness(1.08); }
+button:disabled:hover { filter: none; }
 input:focus, select:focus, textarea:focus {
   outline: none;
   border-color: #3d8f74;
@@ -250,14 +265,17 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   display: grid;
   gap: 0.65rem 0.75rem;
   align-items: start;
+  min-width: 0;
 }
+/* Name | Unit | NodeId (flex) | Action (fixed, fits "Remove telemetry") */
 .mapping-header.mapping-layout-opcua.tel-header,
 .tel-row.mapping-layout-opcua {
-  grid-template-columns: minmax(7.5rem, 0.9fr) minmax(5.5rem, 0.55fr) minmax(16rem, 2.6fr) 9rem;
+  grid-template-columns: minmax(6.5rem, 0.85fr) minmax(4.5rem, 0.5fr) minmax(12rem, 1fr) minmax(12.75rem, 13.25rem);
 }
+/* Command | NodeId (flex) | Action (fixed, fits "Remove command") */
 .mapping-header.mapping-layout-opcua.cmd-header,
 .cmd-row.mapping-layout-opcua {
-  grid-template-columns: minmax(8rem, 1fr) minmax(16rem, 2.4fr) 9rem;
+  grid-template-columns: minmax(7rem, 0.9fr) minmax(12rem, 1fr) minmax(12.75rem, 13.25rem);
 }
 .mapping-header.mapping-layout-opcua {
   padding: 0.15rem 0.85rem 0.4rem;
@@ -284,11 +302,13 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   flex-direction: column;
   gap: 0.25rem;
   min-width: 0;
+  overflow: hidden;
 }
 .mapping-cell input,
 .mapping-cell select {
   width: 100%;
   min-width: 0;
+  max-width: 100%;
 }
 .tel-row.mapping-layout-opcua .mapping-field-wide input,
 .cmd-row.mapping-layout-opcua .mapping-field-wide input,
@@ -296,24 +316,46 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .cmd-row.protocol-opcua .mapping-field-wide input {
   font-family: var(--mono);
   font-size: 0.82rem;
+  overflow-x: auto;
 }
 .tel-row.mapping-layout-opcua .mapping-actions,
 .cmd-row.mapping-layout-opcua .mapping-actions {
   align-items: stretch;
   justify-content: flex-end;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 .tel-row.mapping-layout-opcua .mapping-actions button,
 .cmd-row.mapping-layout-opcua .mapping-actions button {
   width: 100%;
+  max-width: 100%;
   min-height: 2.4rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+  box-sizing: border-box;
+  padding-left: 0.65rem;
+  padding-right: 0.65rem;
 }
 
 /* Legacy OPC UA class still supported if present without mapping-layout */
 .tel-row.protocol-opcua:not(.mapping-layout-opcua) {
-  grid-template-columns: minmax(7.5rem, 0.9fr) minmax(5.5rem, 0.55fr) minmax(16rem, 2.6fr) auto;
+  grid-template-columns: minmax(6.5rem, 0.85fr) minmax(4.5rem, 0.5fr) minmax(12rem, 1fr) minmax(12.75rem, 13.25rem);
 }
 .cmd-row.protocol-opcua:not(.mapping-layout-opcua) {
-  grid-template-columns: minmax(8rem, 1fr) minmax(16rem, 2.4fr) auto;
+  grid-template-columns: minmax(7rem, 0.9fr) minmax(12rem, 1fr) minmax(12.75rem, 13.25rem);
+}
+
+.table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+.table-actions button {
+  min-height: 2.1rem;
+  padding: 0.35rem 0.55rem;
 }
 
 .advanced-json {
@@ -466,7 +508,7 @@ textarea.json-editor:focus,
   .cmd-row.mapping-layout-opcua,
   .tel-row.protocol-opcua,
   .cmd-row.protocol-opcua {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
   }
   .tel-row.mapping-layout-opcua .mapping-field-wide,
   .cmd-row.mapping-layout-opcua .mapping-field-wide,
@@ -475,7 +517,9 @@ textarea.json-editor:focus,
   .tel-row.protocol-opcua .mapping-field-wide,
   .cmd-row.protocol-opcua .mapping-field-wide,
   .tel-row.protocol-opcua .mapping-actions,
-  .cmd-row.protocol-opcua .mapping-actions {
+  .cmd-row.protocol-opcua .mapping-actions,
+  .tel-row.mapping-layout-opcua .mapping-cell,
+  .cmd-row.mapping-layout-opcua .mapping-cell {
     grid-column: 1 / -1;
   }
   .mapping-cell[data-label]::before {
@@ -488,7 +532,13 @@ textarea.json-editor:focus,
     letter-spacing: 0.04em;
     margin-bottom: 0.25rem;
   }
-  .mapping-actions { justify-content: flex-start; }
+  .mapping-actions {
+    justify-content: stretch;
+  }
+  .tel-row.mapping-layout-opcua .mapping-actions button,
+  .cmd-row.mapping-layout-opcua .mapping-actions button {
+    width: 100%;
+  }
 }
 .config-actions {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem;
@@ -523,5 +573,24 @@ textarea.json-editor:focus,
   .tel-row.mapping-layout-opcua,
   .cmd-row.mapping-layout-opcua {
     grid-template-columns: 1fr;
+  }
+  .appearance-grid .field-hex {
+    flex-wrap: wrap;
+  }
+  .appearance-grid .field-hex input[type="color"] {
+    width: 2.75rem;
+    flex: 0 0 2.75rem;
+  }
+  .appearance-grid .field-hex input[type="text"] {
+    flex: 1 1 8rem;
+  }
+  #appearance-settings .row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  #appearance-settings .row-actions button {
+    flex: 1 1 auto;
+    min-width: 8rem;
   }
 }

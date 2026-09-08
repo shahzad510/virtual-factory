@@ -172,9 +172,7 @@
       .join("");
     return `<div class="panel" id="appearance-settings">
       <h2>Appearance</h2>
-      <p class="appearance-lead">UI chrome only. Stored in this browser (<code>localStorage</code> key <code>${esc(
-        APPEARANCE_STORAGE_KEY
-      )}</code>). Does not change ICP configuration, adapters, or runtime.</p>
+      <p class="appearance-lead">Appearance settings affect this browser only. They are saved locally and do not change ICP configuration, adapters, or runtime behavior.</p>
       <div class="form-grid appearance-grid">
         ${appearanceColorField("ap-bg", "Page background", a.bg)}
         ${appearanceColorField("ap-bg-panel", "Panel background", a.bgPanel)}
@@ -234,6 +232,48 @@
     const display =
       adapter.connectionStateDisplay || adapter.connectionState || "UNKNOWN";
     return statusBadge(display);
+  }
+
+  /** Normalize adapter connection state for UI action enablement (GUI-only). */
+  function adapterUiConnectionKind(adapter) {
+    const raw = String(
+      adapter.connectionState || adapter.connectionStateDisplay || "UNKNOWN"
+    )
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, "_");
+    if (raw === "CONNECTED" || raw === "SIMULATED_ACTIVE") return "connected";
+    if (raw === "CONNECTING") return "connecting";
+    return "disconnected";
+  }
+
+  /**
+   * Connect / Disconnect / Reconnect (and optional Edit/Remove) reflecting
+   * live adapter state. Does not change backend semantics.
+   */
+  function adapterLifecycleButtonsHtml(adapter, options) {
+    const opts = options || {};
+    const id = esc(adapter.adapterId);
+    const kind = adapterUiConnectionKind(adapter);
+    const connectDisabled = kind === "connected" || kind === "connecting";
+    const disconnectDisabled = kind === "disconnected";
+    const connectAttr = connectDisabled
+      ? ' disabled aria-disabled="true" title="Already connected"'
+      : "";
+    const disconnectAttr = disconnectDisabled
+      ? ' disabled aria-disabled="true" title="Not connected"'
+      : "";
+    // Reconnect remains available: existing semantics are explicit disconnect+connect.
+    let html =
+      `<button type="button" data-action="connect" data-id="${id}"${connectAttr}>Connect</button>` +
+      `<button type="button" data-action="disconnect" data-id="${id}"${disconnectAttr}>Disconnect</button>` +
+      `<button type="button" data-action="reconnect" data-id="${id}">Reconnect</button>`;
+    if (opts.includeEditorActions) {
+      html +=
+        `<button type="button" data-action="edit-adapter" data-id="${id}">Edit</button>` +
+        `<button type="button" class="danger" data-action="remove-adapter" data-id="${id}">Remove</button>`;
+    }
+    return html;
   }
 
   function equipmentCommBadge(equipment) {
@@ -1194,15 +1234,9 @@
           <td>${a.enabled ? "yes" : "no"}</td>
           <td>${esc(a.equipmentCount)}</td>
           <td class="mono">${esc(a.lastError || "")}</td>
-          <td>
-            <button data-action="connect" data-id="${esc(a.adapterId)}">Connect</button>
-            <button data-action="disconnect" data-id="${esc(a.adapterId)}">Disconnect</button>
-            <button data-action="reconnect" data-id="${esc(a.adapterId)}">Reconnect</button>
-            <button data-action="edit-adapter" data-id="${esc(a.adapterId)}">Edit</button>
-            <button class="danger" data-action="remove-adapter" data-id="${esc(
-              a.adapterId
-            )}">Remove</button>
-          </td>
+          <td class="table-actions">${adapterLifecycleButtonsHtml(a, {
+            includeEditorActions: true,
+          })}</td>
         </tr>`;
         })
         .join("");
@@ -1307,11 +1341,7 @@
         <td>${esc(a.protocol)}</td>
         <td>${adapterConnectionBadge(a)}</td>
         <td class="mono">${esc(a.lastError || "")}</td>
-        <td>
-          <button data-action="connect" data-id="${esc(a.adapterId)}">Connect</button>
-          <button data-action="disconnect" data-id="${esc(a.adapterId)}">Disconnect</button>
-          <button data-action="reconnect" data-id="${esc(a.adapterId)}">Reconnect</button>
-        </td>
+        <td class="table-actions">${adapterLifecycleButtonsHtml(a)}</td>
       </tr>`
       )
       .join("")}</tbody></table>
