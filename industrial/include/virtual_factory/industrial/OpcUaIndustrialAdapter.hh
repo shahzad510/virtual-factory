@@ -110,6 +110,7 @@ private:
 
   void bindEquipment();
   void enterFault(const std::string &reason);
+  void releaseClient();
   bool readBoolean(const OpcUaNodeRef &node, bool *value);
   bool readDouble(const OpcUaNodeRef &node, double *value);
   bool writeBoolean(const OpcUaNodeRef &node, bool value);
@@ -119,12 +120,11 @@ private:
   OpcUaAdapterConfig config_;
   ConnectionState connection_state_{ConnectionState::Disconnected};
   std::string last_error_;
+  /// Last OPC UA service status from read/write (for connectivity vs soft-fail).
+  std::uint32_t last_service_status_{0};
+  bool last_failure_was_connectivity_{false};
   std::unique_ptr<ClientHandle> client_;
   std::vector<std::unique_ptr<BoundEquipment>> bound_;
-
-  /// Temporary poll diagnostics context (set by BoundEquipment::refreshFromServer).
-  std::string debug_equipment_id_;
-  std::string debug_point_name_;
 };
 
 }  // namespace virtual_factory

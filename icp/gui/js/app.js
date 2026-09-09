@@ -248,18 +248,21 @@
       .replace(/\s+/g, "_");
     if (raw === "CONNECTED" || raw === "SIMULATED_ACTIVE") return "connected";
     if (raw === "CONNECTING") return "connecting";
+    if (raw === "FAULTED" || raw === "FAILED") return "faulted";
     return "disconnected";
   }
 
   /**
    * Connect / Disconnect / Reconnect (and optional Edit/Remove) reflecting
-   * live adapter state. Does not change backend semantics.
+   * live adapter state. Do not disable recovery merely because state is FAULTED.
    */
   function adapterLifecycleButtonsHtml(adapter, options) {
     const opts = options || {};
     const id = esc(adapter.adapterId);
     const kind = adapterUiConnectionKind(adapter);
     const connectDisabled = kind === "connected" || kind === "connecting";
+    // Disconnect must remain available for FAULTED so operators can clear a
+    // broken session before Connect/Reconnect.
     const disconnectDisabled = kind === "disconnected";
     const connectAttr = connectDisabled
       ? ' disabled aria-disabled="true" title="Already connected"'
@@ -1511,8 +1514,8 @@
   function diagSelectHint(kind) {
     const label =
       kind === "equipment"
-        ? "SELECT AN EQUIPMENT ROW TO VIEW DETAILED DIAGNOSTICS"
-        : "SELECT AN ADAPTER ROW TO VIEW DETAILED DIAGNOSTICS";
+        ? "SELECT AN EQUIPMENT ROW TO VIEW DETAILED DIAGNOSTICS — Click an equipment row for details."
+        : "SELECT AN ADAPTER ROW TO VIEW DETAILED DIAGNOSTICS — Click an adapter row for details.";
     return `<div class="diag-select-hint" role="note">
       <span class="diag-select-hint-icon" aria-hidden="true">▾</span>
       <span class="diag-select-hint-text">${label}</span>
@@ -1538,7 +1541,9 @@
         (s) =>
           `<span class="diag-legend-item"><span class="diag-swatch diag-bar-${esc(
             s.tone || "unknown"
-          )}"></span>${esc(s.label)} (${esc(s.value || 0)})</span>`
+          )}"></span>${esc(s.label)} (${esc(
+            s.display != null ? s.display : s.value || 0
+          )})</span>`
       )
       .join("");
     return `<div class="diag-chart">
@@ -1577,9 +1582,24 @@
     if (connected + disconnected <= 0) {
       return `<div class="diag-chart"><div class="diag-chart-empty">Insufficient data</div></div>`;
     }
+    // Guard against legacy epoch-derived garbage if an old process is still running.
+    const oneWeekMs = 7 * 24 * 60 * 60 * 1000;
+    if (connected > oneWeekMs || disconnected > oneWeekMs) {
+      return `<div class="diag-chart"><div class="diag-chart-empty">Insufficient data</div></div>`;
+    }
     return diagBarChart([
-      { label: "Connected", value: connected, tone: "healthy" },
-      { label: "Disconnected", value: disconnected, tone: "unknown" },
+      {
+        label: "Connected",
+        value: connected,
+        display: formatDurationMs(connected),
+        tone: "healthy",
+      },
+      {
+        label: "Disconnected",
+        value: disconnected,
+        display: formatDurationMs(disconnected),
+        tone: "unknown",
+      },
     ]);
   }
 

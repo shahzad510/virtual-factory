@@ -731,25 +731,31 @@ void ApplicationService::observeAdapterStateLocked(
   const std::string state =
       connectionState.empty() ? std::string("DISCONNECTED") : connectionState;
 
-  if (diag.lastStateChangeAt.time_since_epoch().count() != 0)
-  {
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - diag.lastStateChangeAt);
-    if (diag.lastObservedState == "CONNECTED")
-    {
-      diag.cumulativeConnectedMs += elapsed;
-    }
-    else if (
-        diag.lastObservedState == "DISCONNECTED" || diag.lastObservedState == "NOT_CONFIGURED"
-        || diag.lastObservedState == "FAULTED")
-    {
-      // Faulted counts toward downtime for session reliability stats.
-      diag.cumulativeDisconnectedMs += elapsed;
-    }
-  }
-
+  // Accumulate session totals only when leaving a state. Re-adding
+  // (now - lastStateChangeAt) on every observation caused epoch-scale garbage
+  // in cumulativeConnectedMs / cumulativeDisconnectedMs charts.
   if (state != diag.lastObservedState)
   {
+    if (diag.lastStateChangeAt.time_since_epoch().count() != 0)
+    {
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - diag.lastStateChangeAt);
+      if (elapsed.count() > 0)
+      {
+        if (diag.lastObservedState == "CONNECTED")
+        {
+          diag.cumulativeConnectedMs += elapsed;
+        }
+        else if (
+            diag.lastObservedState == "DISCONNECTED"
+            || diag.lastObservedState == "NOT_CONFIGURED"
+            || diag.lastObservedState == "FAULTED")
+        {
+          diag.cumulativeDisconnectedMs += elapsed;
+        }
+      }
+    }
+
     if (state == "FAULTED" && diag.lastObservedState != "FAULTED")
     {
       ++diag.faultCount;
@@ -948,18 +954,34 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
     {
       view.currentUptimeMs = view.currentStateDurationMs;
       view.currentDowntimeMs = 0;
+      // Include the open CONNECTED interval in session totals for charts.
+      if (view.currentStateDurationMs > 0)
+      {
+        view.session.cumulativeConnectedMs +=
+            std::chrono::milliseconds(view.currentStateDurationMs);
+      }
       ++report.system.connectedAdapters;
     }
     else if (view.adapter.connectionState == "FAULTED")
     {
       view.currentUptimeMs = 0;
       view.currentDowntimeMs = view.currentStateDurationMs;
+      if (view.currentStateDurationMs > 0)
+      {
+        view.session.cumulativeDisconnectedMs +=
+            std::chrono::milliseconds(view.currentStateDurationMs);
+      }
       ++report.system.faultedAdapters;
     }
     else
     {
       view.currentUptimeMs = 0;
       view.currentDowntimeMs = view.currentStateDurationMs;
+      if (view.currentStateDurationMs > 0)
+      {
+        view.session.cumulativeDisconnectedMs +=
+            std::chrono::milliseconds(view.currentStateDurationMs);
+      }
       ++report.system.disconnectedAdapters;
     }
 
@@ -1209,13 +1231,9 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
 AdapterManagerResult ApplicationService::ensureRuntimeAdapter(
     const AdapterConfigRecord &record)
 {
-  if (this->manager_.adapter(record.adapterId) != nullptr)
-  {
-    // Rebuild when config may have changed: remove and recreate.
-    this->manager_.removeAdapter(record.adapterId);
-    this->cache_.removeAdapterEquipment(record.adapterId);
-  }
-
+  // Build the replacement first. Never remove the live adapter until the new
+  // instance is ready — otherwise a create failure leaves runtimeAdapters=0 and
+  // the GUI reports DISCONNECTED with no recoverable runtime object.
   std::string error;
   std::unique_ptr<IndustrialAdapter> adapter =
       this->createRuntimeAdapter(record, &error);
@@ -1226,6 +1244,13 @@ AdapterManagerResult ApplicationService::ensureRuntimeAdapter(
     result.message = error.empty() ? "failed to create runtime adapter" : error;
     return result;
   }
+
+  if (this->manager_.adapter(record.adapterId) != nullptr)
+  {
+    this->manager_.removeAdapter(record.adapterId);
+    this->cache_.removeAdapterEquipment(record.adapterId);
+  }
+
   return this->manager_.addAdapter(std::move(adapter));
 }
 

@@ -366,6 +366,53 @@ int main()
   }
 
   {
+    // Duration totals must not explode across repeated diagnostics observations.
+    auto recon = client.Post("/api/v1/adapters/mock-http/connect");
+    expect(recon && recon->status == 200, "connect for duration regression");
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::int64_t firstConnected = -1;
+    for (int i = 0; i < 8; ++i)
+    {
+      auto diag = client.Get("/api/v1/diagnostics");
+      expect(diag && diag->status == 200, "diagnostics duration poll");
+      if (!diag)
+      {
+        break;
+      }
+      auto body = json::parse(diag->body);
+      for (const auto &adapter : body["adapters"])
+      {
+        if (adapter["adapterId"] != "mock-http")
+        {
+          continue;
+        }
+        const auto connected = adapter["cumulativeConnectedMs"].get<std::int64_t>();
+        const auto disconnected =
+            adapter["cumulativeDisconnectedMs"].get<std::int64_t>();
+        expect(connected >= 0, "cumulativeConnectedMs non-negative");
+        expect(disconnected >= 0, "cumulativeDisconnectedMs non-negative");
+        expect(connected < 60LL * 60LL * 1000LL,
+               "cumulativeConnectedMs not epoch garbage");
+        expect(disconnected < 60LL * 60LL * 1000LL,
+               "cumulativeDisconnectedMs not epoch garbage");
+        if (firstConnected < 0)
+        {
+          firstConnected = connected;
+        }
+        else
+        {
+          // May grow with open-interval inclusion, but must not quadratic-explode.
+          expect(connected <= firstConnected + 30LL * 1000LL,
+                 "cumulativeConnectedMs stable across diagnostics polls");
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    auto disc = client.Post("/api/v1/adapters/mock-http/disconnect");
+    expect(disc && disc->status == 200, "disconnect after duration regression");
+  }
+
+  {
     auto recon = client.Post("/api/v1/adapters/mock-http/connect");
     expect(recon && recon->status == 200, "reconnect setup: connect mock-http again");
     auto reconnect = client.Post("/api/v1/adapters/mock-http/reconnect");
@@ -799,6 +846,85 @@ int main()
       opcuaService.stop();
       ::unlink(opcuaConfigPath.c_str());
     }
+  }
+
+  // --- Lifecycle preservation: failed connect must not become phantom DISCONNECTED ---
+  {
+    const std::string lifePath =
+        "/tmp/icp-life-" + std::to_string(::getpid()) + ".json";
+    ::unlink(lifePath.c_str());
+    ApplicationService life(lifePath);
+    life.start();
+
+    virtual_factory::icp::AdapterConfigRecord opcua;
+    opcua.adapterId = "opcua-life";
+    opcua.protocol = "opcua";
+    opcua.enabled = true;
+    opcua.connection.endpointUrl = "opc.tcp://127.0.0.1:1";  // nothing listening
+    virtual_factory::icp::EquipmentMappingRecord eq;
+    eq.equipmentId = "EQ-LIFE";
+    eq.type = "plc";
+    virtual_factory::icp::TelemetryMappingRecord tel;
+    tel.name = "speed";
+    tel.address = "ns=1;s=Speed";
+    tel.namespaceIndex = 1;
+    eq.telemetry.push_back(tel);
+    opcua.equipment.push_back(eq);
+    expect(life.upsertAdapterConfig(opcua).ok, "upsert opcua-life");
+
+    auto connected = life.connectAdapter("opcua-life");
+    expect(!connected.ok, "connect to dead endpoint fails");
+    expect(life.status().runtimeAdapterCount == 1,
+           "failed connect still keeps runtime adapter object");
+    auto view = life.adapter("opcua-life");
+    expect(view.has_value(), "opcua-life view present");
+    if (view)
+    {
+      expect(view->runtimePresent, "runtimePresent true after failed connect");
+      expect(view->connectionState == "FAULTED",
+             "failed connect is FAULTED not silent DISCONNECTED");
+      expect(!view->lastError.empty(), "FAULTED has lastError");
+    }
+
+    // FAULTED remains recoverable via Disconnect / Connect API.
+    expect(life.disconnectAdapter("opcua-life").ok, "disconnect from FAULTED");
+    view = life.adapter("opcua-life");
+    expect(view.has_value() && view->connectionState == "DISCONNECTED",
+           "explicit disconnect yields DISCONNECTED");
+    expect(life.status().runtimeAdapterCount == 1,
+           "runtime adapter remains after disconnect");
+
+    // Diagnostics / Adapters share the same lifecycle vocabulary.
+    const auto report = life.diagnosticsReport();
+    expect(report.icp.overallHealth == "HEALTHY"
+               || report.icp.overallHealth == "DEGRADED",
+           "ICP self-health independent of industrial FAULTED/DISCONNECTED");
+    bool found = false;
+    for (const auto &a : report.adapters)
+    {
+      if (a.adapter.adapterId != "opcua-life")
+      {
+        continue;
+      }
+      found = true;
+      expect(a.adapter.connectionState == "DISCONNECTED",
+             "diagnostics lifecycle matches adapters()");
+      expect(a.session.communicationLifecycleState == "DISCONNECTED",
+             "diagnostics communicationLifecycleState matches");
+    }
+    expect(found, "diagnostics includes opcua-life");
+
+    // ensureRuntimeAdapter create-first: rebuild on connect must not drop count to 0.
+    for (int i = 0; i < 3; ++i)
+    {
+      (void)life.connectAdapter("opcua-life");
+      expect(life.status().runtimeAdapterCount == 1,
+             "runtimeAdapters stays 1 across failed reconnect attempts");
+      expect(life.disconnectAdapter("opcua-life").ok, "disconnect between attempts");
+    }
+
+    life.stop();
+    ::unlink(lifePath.c_str());
   }
 
   if (failures == 0)

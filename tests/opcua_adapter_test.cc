@@ -544,6 +544,53 @@ int main()
          "disconnect returns to Disconnected");
   expect(adapter.equipment().empty(), "equipment hidden after disconnect");
 
+  // Soft read failure must not tear down lifecycle (CONNECTED stays CONNECTED).
+  {
+    virtual_factory::OpcUaEquipmentMapping soft;
+    soft.id = "SOFT-EQ";
+    soft.type = "soft";
+    soft.telemetry = {
+        {"missing", virtual_factory::OpcUaNodeRef{1, "Does.Not.Exist"}, ""},
+    };
+    virtual_factory::OpcUaIndustrialAdapter softAdapter(
+        "adapter-opcua-soft-fail", oneMachineConfig(endpoint, soft));
+    expect(softAdapter.connect(), "soft-fail adapter connects");
+    softAdapter.poll();
+    expect(softAdapter.connectionState() ==
+               virtual_factory::ConnectionState::Connected,
+           "BadNodeIdUnknown keeps CONNECTED (soft failure)");
+    expect(!softAdapter.lastError().empty(),
+           "soft failure still records lastError");
+    softAdapter.poll();
+    expect(softAdapter.connectionState() ==
+               virtual_factory::ConnectionState::Connected,
+           "repeated soft failure does not escalate to FAULTED/DISCONNECTED");
+    expect(softAdapter.connect(), "connect while CONNECTED remains success");
+    softAdapter.disconnect();
+    expect(softAdapter.connect(), "connect after disconnect recovers");
+    expect(softAdapter.connectionState() ==
+               virtual_factory::ConnectionState::Connected,
+           "recovered to CONNECTED");
+    softAdapter.disconnect();
+  }
+
+  // Disconnect / Connect / Reconnect cycle after genuine session loss.
+  expect(adapter.connect(), "reconnect before cycle test");
+  expect(adapter.connected(), "connected before cycle");
+  adapter.disconnect();
+  expect(adapter.connectionState() ==
+             virtual_factory::ConnectionState::Disconnected,
+         "cycle disconnect");
+  expect(adapter.connect(), "cycle connect");
+  expect(adapter.connected(), "cycle connected");
+  adapter.poll();
+  expect(adapter.connectionState() ==
+             virtual_factory::ConnectionState::Connected,
+         "cycle poll stays connected");
+  adapter.disconnect();
+  expect(adapter.connect(), "second cycle connect");
+  adapter.disconnect();
+
   server.stop();
 
   testMultipleServers();

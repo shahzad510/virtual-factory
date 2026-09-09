@@ -305,6 +305,62 @@ void testMqttTopologyNoteWithMockMultiEquipment()
   manager.disconnectAll();
 }
 
+void testOpcUaReconnectUnderScheduler()
+{
+  virtual_factory::test::OpcUaTestServer server;
+  expect(server.start(), "opcua fixture starts for reconnect race");
+  if (server.port() == 0)
+  {
+    return;
+  }
+
+  virtual_factory::OpcUaAdapterConfig opcuaConfig;
+  opcuaConfig.endpointUrl = server.endpointUrl();
+  opcuaConfig.equipment = {mixerMapping()};
+
+  virtual_factory::icp::AdapterManager manager;
+  virtual_factory::icp::LiveStateCache cache;
+  virtual_factory::icp::PollScheduler scheduler(
+      manager, cache, std::chrono::milliseconds(30));
+
+  expect(manager
+             .addAdapter(virtual_factory::icp::AdapterFactory::createOpcUa(
+                 "opcua-race", opcuaConfig))
+             .ok,
+         "add opcua-race");
+  expect(manager.connectAdapter("opcua-race").ok, "initial connect");
+  scheduler.start();
+  std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+  expect(manager.adapter("opcua-race")->connected(),
+         "connected under scheduler");
+
+  // Simulate session loss, then recover while poll thread is active.
+  server.stop();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  expect(manager.adapter("opcua-race")->connectionState() ==
+             virtual_factory::ConnectionState::Faulted,
+         "scheduler poll marks FAULTED after server loss");
+
+  expect(server.start(), "server restart for recovery");
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  for (int i = 0; i < 5; ++i)
+  {
+    expect(manager.disconnectAdapter("opcua-race").ok, "disconnect under poll");
+    expect(manager.connectAdapter("opcua-race").ok, "connect under poll");
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+  }
+
+  expect(manager.adapter("opcua-race")->connected(),
+         "final state CONNECTED after repeated recovery under poll");
+  expect(manager.adapterCount() == 1, "runtime adapter still present");
+
+  scheduler.stop();
+  manager.disconnectAll();
+  server.stop();
+}
+
 }  // namespace
 
 int main()
@@ -315,6 +371,7 @@ int main()
   testSchedulerThreadUpdatesCache();
   testShutdownLifecycle();
   testMqttTopologyNoteWithMockMultiEquipment();
+  testOpcUaReconnectUnderScheduler();
 
   if (failures != 0)
   {

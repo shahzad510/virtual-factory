@@ -4,7 +4,6 @@
 
 #include <open62541.h>
 
-#include <cstdio>
 #include <string>
 #include <utility>
 
@@ -84,110 +83,27 @@ std::string statusCodeName(UA_StatusCode status)
   return std::string(name);
 }
 
-std::string nodeIdToString(const UA_NodeId &nodeId)
+/// True when the StatusCode indicates session/secure-channel/transport loss.
+/// Application-level failures (BadNodeIdUnknown, type mismatch, etc.) are soft.
+bool isConnectivityStatus(UA_StatusCode status)
 {
-  UA_String printed = UA_STRING_NULL;
-  const UA_StatusCode printStatus = UA_NodeId_print(&nodeId, &printed);
-  if (printStatus != UA_STATUSCODE_GOOD || printed.data == nullptr)
+  switch (status)
   {
-    UA_String_clear(&printed);
-    return "(UA_NodeId_print failed)";
+    case UA_STATUSCODE_BADCONNECTIONCLOSED:
+    case UA_STATUSCODE_BADDISCONNECT:
+    case UA_STATUSCODE_BADCONNECTIONREJECTED:
+    case UA_STATUSCODE_BADSERVERNOTCONNECTED:
+    case UA_STATUSCODE_BADSHUTDOWN:
+    case UA_STATUSCODE_BADSESSIONCLOSED:
+    case UA_STATUSCODE_BADSESSIONIDINVALID:
+    case UA_STATUSCODE_BADSESSIONNOTACTIVATED:
+    case UA_STATUSCODE_BADSECURECHANNELCLOSED:
+    case UA_STATUSCODE_BADSECURECHANNELIDINVALID:
+    case UA_STATUSCODE_BADSECURECHANNELTOKENUNKNOWN:
+      return true;
+    default:
+      return false;
   }
-  std::string out(reinterpret_cast<const char *>(printed.data), printed.length);
-  UA_String_clear(&printed);
-  return out;
-}
-
-const char *variantTypeName(const UA_Variant &variant)
-{
-  if (UA_Variant_isEmpty(&variant) || variant.type == nullptr)
-  {
-    return "(empty)";
-  }
-  if (variant.type->typeName != nullptr)
-  {
-    return variant.type->typeName;
-  }
-  return "(unknown)";
-}
-
-/// Temporary stderr diagnostics at the OPC UA read boundary.
-/// Prints runtime OpcUaNodeRef fields and the real UA_NodeId via UA_NodeId_print.
-void logOpcUaReadDebug(
-    const std::string &equipmentId,
-    const std::string &pointName,
-    const OpcUaNodeRef &node,
-    const UA_NodeId *nodeId,
-    UA_StatusCode status,
-    const UA_Variant &variant,
-    bool converted,
-    double doubleValue,
-    bool boolValue,
-    bool isBoolean)
-{
-  const std::string printedNodeId =
-      nodeId != nullptr ? nodeIdToString(*nodeId) : "(null)";
-
-  std::fprintf(
-      stderr,
-      "OPC UA DEBUG READ:\n"
-      "equipment=%s\n"
-      "telemetry=%s\n"
-      "namespaceIndex=%u\n"
-      "identifier=%s\n"
-      "nodeId=%s\n"
-      "status=0x%08x\n"
-      "statusName=%s\n",
-      equipmentId.empty() ? "(unknown)" : equipmentId.c_str(),
-      pointName.empty() ? "(unknown)" : pointName.c_str(),
-      static_cast<unsigned>(node.namespaceIndex),
-      node.identifier.c_str(),
-      printedNodeId.c_str(),
-      static_cast<unsigned>(status),
-      statusCodeName(status).c_str());
-
-  if (status == UA_STATUSCODE_GOOD)
-  {
-    const bool empty = UA_Variant_isEmpty(&variant);
-    std::fprintf(
-        stderr,
-        "variantEmpty=%s\n"
-        "variantType=%s\n",
-        empty ? "true" : "false",
-        variantTypeName(variant));
-    if (converted)
-    {
-      if (isBoolean)
-      {
-        std::fprintf(stderr, "value=%s\n", boolValue ? "true" : "false");
-      }
-      else if (
-          variant.type == &UA_TYPES[UA_TYPES_INT32]
-          || variant.type == &UA_TYPES[UA_TYPES_INT16]
-          || variant.type == &UA_TYPES[UA_TYPES_SBYTE]
-          || variant.type == &UA_TYPES[UA_TYPES_BYTE]
-          || variant.type == &UA_TYPES[UA_TYPES_UINT16]
-          || variant.type == &UA_TYPES[UA_TYPES_UINT32]
-          || variant.type == &UA_TYPES[UA_TYPES_INT64]
-          || variant.type == &UA_TYPES[UA_TYPES_UINT64])
-      {
-        // Preserve integer OPC UA types in diagnostics (e.g. Int32 → 1450).
-        std::fprintf(stderr, "value=%.0f\n", doubleValue);
-      }
-      else
-      {
-        std::fprintf(stderr, "value=%.6f\n", doubleValue);
-      }
-    }
-  }
-  else
-  {
-    std::fprintf(
-        stderr,
-        "variantEmpty=%s\n",
-        UA_Variant_isEmpty(&variant) ? "true" : "false");
-  }
-  std::fflush(stderr);
 }
 
 bool variantAsBool(const UA_Variant &value, bool *out)
@@ -373,17 +289,6 @@ public:
   {
     for (const auto &point : this->mapping_->telemetry)
     {
-      this->adapter_->debug_equipment_id_ = this->id();
-      this->adapter_->debug_point_name_ = point.name;
-      std::fprintf(
-          stderr,
-          "OPC UA DEBUG refreshFromServer: equipment=%s telemetry=%s "
-          "namespaceIndex=%u identifier=%s\n",
-          this->id().c_str(),
-          point.name.c_str(),
-          static_cast<unsigned>(point.node.namespaceIndex),
-          point.node.identifier.c_str());
-      std::fflush(stderr);
       double value = 0.0;
       if (!this->adapter_->readDouble(point.node, &value))
       {
@@ -394,16 +299,6 @@ public:
 
     if (!this->mapping_->stateNode.identifier.empty())
     {
-      this->adapter_->debug_equipment_id_ = this->id();
-      this->adapter_->debug_point_name_ = "state";
-      std::fprintf(
-          stderr,
-          "OPC UA DEBUG refreshFromServer: equipment=%s telemetry=state "
-          "namespaceIndex=%u identifier=%s\n",
-          this->id().c_str(),
-          static_cast<unsigned>(this->mapping_->stateNode.namespaceIndex),
-          this->mapping_->stateNode.identifier.c_str());
-      std::fflush(stderr);
       bool running = false;
       if (!this->adapter_->readBoolean(this->mapping_->stateNode, &running))
       {
@@ -415,16 +310,6 @@ public:
 
     if (!this->mapping_->faultNode.identifier.empty())
     {
-      this->adapter_->debug_equipment_id_ = this->id();
-      this->adapter_->debug_point_name_ = "fault";
-      std::fprintf(
-          stderr,
-          "OPC UA DEBUG refreshFromServer: equipment=%s telemetry=fault "
-          "namespaceIndex=%u identifier=%s\n",
-          this->id().c_str(),
-          static_cast<unsigned>(this->mapping_->faultNode.namespaceIndex),
-          this->mapping_->faultNode.identifier.c_str());
-      std::fflush(stderr);
       bool fault = false;
       if (!this->adapter_->readBoolean(this->mapping_->faultNode, &fault))
       {
@@ -488,12 +373,7 @@ bool OpcUaIndustrialAdapter::connect()
     return false;
   }
 
-  if (this->client_->client != nullptr)
-  {
-    UA_Client_disconnect(this->client_->client);
-    UA_Client_delete(this->client_->client);
-    this->client_->client = nullptr;
-  }
+  this->releaseClient();
 
   this->client_->client = UA_Client_new();
   if (this->client_->client == nullptr)
@@ -504,6 +384,8 @@ bool OpcUaIndustrialAdapter::connect()
 
   UA_ClientConfig *clientConfig = UA_Client_getConfig(this->client_->client);
   clientConfig->timeout = 2000;
+  // Explicit ICP lifecycle owns reconnect. open62541 must not silently rebuild
+  // a SecureChannel underneath connection_state_ (would desynchronize ICP).
   clientConfig->noReconnect = true;
   clientConfig->securityMode = UA_MESSAGESECURITYMODE_NONE;
 
@@ -511,8 +393,7 @@ bool OpcUaIndustrialAdapter::connect()
       UA_Client_connect(this->client_->client, this->config_.endpointUrl.c_str());
   if (status != UA_STATUSCODE_GOOD)
   {
-    UA_Client_delete(this->client_->client);
-    this->client_->client = nullptr;
+    this->releaseClient();
     this->enterFault(
         std::string("OPC UA connect failed: ") + UA_StatusCode_name(status));
     return false;
@@ -521,22 +402,29 @@ bool OpcUaIndustrialAdapter::connect()
   this->bindEquipment();
   this->connection_state_ = ConnectionState::Connected;
   this->last_error_.clear();
+  this->last_service_status_ = UA_STATUSCODE_GOOD;
+  this->last_failure_was_connectivity_ = false;
   return true;
 }
 
-void OpcUaIndustrialAdapter::disconnect()
+void OpcUaIndustrialAdapter::releaseClient()
 {
-  this->bound_.clear();
-
   if (this->client_ && this->client_->client != nullptr)
   {
     UA_Client_disconnect(this->client_->client);
     UA_Client_delete(this->client_->client);
     this->client_->client = nullptr;
   }
+}
 
+void OpcUaIndustrialAdapter::disconnect()
+{
+  this->bound_.clear();
+  this->releaseClient();
   this->connection_state_ = ConnectionState::Disconnected;
   this->last_error_.clear();
+  this->last_service_status_ = UA_STATUSCODE_GOOD;
+  this->last_failure_was_connectivity_ = false;
 }
 
 std::vector<Equipment *> OpcUaIndustrialAdapter::equipment()
@@ -588,15 +476,23 @@ void OpcUaIndustrialAdapter::poll()
   {
     if (!item->refreshFromServer())
     {
-      // Keep the detailed StatusCode / type error from readDouble/readBoolean.
-      // Previously this always overwrote last_error_ with the generic string.
       const std::string detail =
           this->last_error_.empty() ? "OPC UA read failed during poll"
                                     : this->last_error_;
-      this->enterFault(detail);
+      // Soft failures (BadNodeId, type mismatch, etc.) must NOT tear down the
+      // connection lifecycle. Only genuine session/channel loss → FAULTED.
+      if (this->last_failure_was_connectivity_)
+      {
+        this->enterFault(detail);
+        return;
+      }
+      // Keep CONNECTED; expose the read problem via lastError for operators.
+      this->last_error_ = detail;
       return;
     }
   }
+  this->last_error_.clear();
+  this->last_failure_was_connectivity_ = false;
 }
 
 void OpcUaIndustrialAdapter::bindEquipment()
@@ -612,20 +508,22 @@ void OpcUaIndustrialAdapter::enterFault(const std::string &reason)
 {
   this->connection_state_ = ConnectionState::Faulted;
   this->last_error_ = reason;
+  // With noReconnect, a dead SecureChannel/session is unusable. Drop the client
+  // so connection_state_ matches reality and connect()/reconnect() must create
+  // a fresh UA_Client. Keep bound_ equipment for last-known Faulted reads.
+  this->releaseClient();
 }
 
 bool OpcUaIndustrialAdapter::readBoolean(const OpcUaNodeRef &node, bool *value)
 {
   if (this->client_->client == nullptr || node.identifier.empty())
   {
+    this->last_service_status_ = UA_STATUSCODE_BADINVALIDARGUMENT;
+    // Null client while Connected means the session object is gone — connectivity.
+    this->last_failure_was_connectivity_ = (this->client_->client == nullptr);
     this->last_error_ =
         "OPC UA read failed for " + formatNodeId(node)
         + ": invalid client or empty NodeId";
-    UA_Variant empty;
-    UA_Variant_init(&empty);
-    logOpcUaReadDebug(
-        this->debug_equipment_id_, this->debug_point_name_, node, nullptr,
-        UA_STATUSCODE_BADINVALIDARGUMENT, empty, false, 0.0, false, true);
     return false;
   }
 
@@ -633,48 +531,27 @@ bool OpcUaIndustrialAdapter::readBoolean(const OpcUaNodeRef &node, bool *value)
   UA_Variant_init(&variant);
   UA_NodeId nodeId = makeNodeId(node);
 
-  std::fprintf(
-      stderr,
-      "OPC UA DEBUG READ (before UA_Client_readValueAttribute)\n"
-      "equipment=%s\n"
-      "telemetry=%s\n"
-      "namespaceIndex=%u\n"
-      "identifier=%s\n"
-      "nodeId=%s\n",
-      this->debug_equipment_id_.empty() ? "(unknown)"
-                                        : this->debug_equipment_id_.c_str(),
-      this->debug_point_name_.empty() ? "(unknown)"
-                                      : this->debug_point_name_.c_str(),
-      static_cast<unsigned>(node.namespaceIndex),
-      node.identifier.c_str(),
-      nodeIdToString(nodeId).c_str());
-  std::fflush(stderr);
-
   const UA_StatusCode status =
       UA_Client_readValueAttribute(this->client_->client, nodeId, &variant);
+  this->last_service_status_ = status;
 
   if (status != UA_STATUSCODE_GOOD)
   {
+    this->last_failure_was_connectivity_ = isConnectivityStatus(status);
     this->last_error_ =
         "OPC UA read failed for " + formatNodeId(node) + ": "
         + statusCodeName(status);
-    logOpcUaReadDebug(
-        this->debug_equipment_id_, this->debug_point_name_, node, &nodeId,
-        status, variant, false, 0.0, false, true);
     UA_NodeId_clear(&nodeId);
     UA_Variant_clear(&variant);
     return false;
   }
 
   bool converted = variantAsBool(variant, value);
-  logOpcUaReadDebug(
-      this->debug_equipment_id_, this->debug_point_name_, node, &nodeId, status,
-      variant, converted, 0.0,
-      converted && value != nullptr ? *value : false, true);
   UA_NodeId_clear(&nodeId);
 
   if (!converted)
   {
+    this->last_failure_was_connectivity_ = false;
     this->last_error_ =
         "OPC UA value type unsupported for " + formatNodeId(node);
     UA_Variant_clear(&variant);
@@ -682,6 +559,7 @@ bool OpcUaIndustrialAdapter::readBoolean(const OpcUaNodeRef &node, bool *value)
   }
 
   UA_Variant_clear(&variant);
+  this->last_failure_was_connectivity_ = false;
   return true;
 }
 
@@ -689,14 +567,11 @@ bool OpcUaIndustrialAdapter::readDouble(const OpcUaNodeRef &node, double *value)
 {
   if (this->client_->client == nullptr || node.identifier.empty())
   {
+    this->last_service_status_ = UA_STATUSCODE_BADINVALIDARGUMENT;
+    this->last_failure_was_connectivity_ = (this->client_->client == nullptr);
     this->last_error_ =
         "OPC UA read failed for " + formatNodeId(node)
         + ": invalid client or empty NodeId";
-    UA_Variant empty;
-    UA_Variant_init(&empty);
-    logOpcUaReadDebug(
-        this->debug_equipment_id_, this->debug_point_name_, node, nullptr,
-        UA_STATUSCODE_BADINVALIDARGUMENT, empty, false, 0.0, false, false);
     return false;
   }
 
@@ -704,48 +579,27 @@ bool OpcUaIndustrialAdapter::readDouble(const OpcUaNodeRef &node, double *value)
   UA_Variant_init(&variant);
   UA_NodeId nodeId = makeNodeId(node);
 
-  std::fprintf(
-      stderr,
-      "OPC UA DEBUG READ (before UA_Client_readValueAttribute)\n"
-      "equipment=%s\n"
-      "telemetry=%s\n"
-      "namespaceIndex=%u\n"
-      "identifier=%s\n"
-      "nodeId=%s\n",
-      this->debug_equipment_id_.empty() ? "(unknown)"
-                                        : this->debug_equipment_id_.c_str(),
-      this->debug_point_name_.empty() ? "(unknown)"
-                                      : this->debug_point_name_.c_str(),
-      static_cast<unsigned>(node.namespaceIndex),
-      node.identifier.c_str(),
-      nodeIdToString(nodeId).c_str());
-  std::fflush(stderr);
-
   const UA_StatusCode status =
       UA_Client_readValueAttribute(this->client_->client, nodeId, &variant);
+  this->last_service_status_ = status;
 
   if (status != UA_STATUSCODE_GOOD)
   {
+    this->last_failure_was_connectivity_ = isConnectivityStatus(status);
     this->last_error_ =
         "OPC UA read failed for " + formatNodeId(node) + ": "
         + statusCodeName(status);
-    logOpcUaReadDebug(
-        this->debug_equipment_id_, this->debug_point_name_, node, &nodeId,
-        status, variant, false, 0.0, false, false);
     UA_NodeId_clear(&nodeId);
     UA_Variant_clear(&variant);
     return false;
   }
 
   bool converted = variantAsDouble(variant, value);
-  logOpcUaReadDebug(
-      this->debug_equipment_id_, this->debug_point_name_, node, &nodeId, status,
-      variant, converted, converted && value != nullptr ? *value : 0.0,
-      false, false);
   UA_NodeId_clear(&nodeId);
 
   if (!converted)
   {
+    this->last_failure_was_connectivity_ = false;
     this->last_error_ =
         "OPC UA value type unsupported for " + formatNodeId(node);
     UA_Variant_clear(&variant);
@@ -753,6 +607,7 @@ bool OpcUaIndustrialAdapter::readDouble(const OpcUaNodeRef &node, double *value)
   }
 
   UA_Variant_clear(&variant);
+  this->last_failure_was_connectivity_ = false;
   return true;
 }
 
@@ -773,11 +628,21 @@ bool OpcUaIndustrialAdapter::writeBoolean(const OpcUaNodeRef &node, bool value)
   const UA_StatusCode status =
       UA_Client_writeValueAttribute(this->client_->client, nodeId, &variant);
   UA_NodeId_clear(&nodeId);
+  this->last_service_status_ = status;
 
   if (status != UA_STATUSCODE_GOOD)
   {
-    this->enterFault(
-        std::string("OPC UA write failed: ") + UA_StatusCode_name(status));
+    const std::string detail =
+        std::string("OPC UA write failed: ") + UA_StatusCode_name(status);
+    if (isConnectivityStatus(status))
+    {
+      this->enterFault(detail);
+    }
+    else
+    {
+      this->last_error_ = detail;
+      this->last_failure_was_connectivity_ = false;
+    }
     return false;
   }
   return true;
@@ -800,11 +665,21 @@ bool OpcUaIndustrialAdapter::writeDouble(const OpcUaNodeRef &node, double value)
   const UA_StatusCode status =
       UA_Client_writeValueAttribute(this->client_->client, nodeId, &variant);
   UA_NodeId_clear(&nodeId);
+  this->last_service_status_ = status;
 
   if (status != UA_STATUSCODE_GOOD)
   {
-    this->enterFault(
-        std::string("OPC UA write failed: ") + UA_StatusCode_name(status));
+    const std::string detail =
+        std::string("OPC UA write failed: ") + UA_StatusCode_name(status);
+    if (isConnectivityStatus(status))
+    {
+      this->enterFault(detail);
+    }
+    else
+    {
+      this->last_error_ = detail;
+      this->last_failure_was_connectivity_ = false;
+    }
     return false;
   }
   return true;
