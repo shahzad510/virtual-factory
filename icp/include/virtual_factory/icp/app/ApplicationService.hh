@@ -113,7 +113,11 @@ struct AdapterSessionDiagnostics
   std::chrono::milliseconds cumulativeConnectedMs{0};
   std::chrono::milliseconds cumulativeDisconnectedMs{0};
   std::string lastObservedState{"DISCONNECTED"};
-  std::string communicationHealth{"UNKNOWN"};
+  /// Operator health: HEALTHY | DEGRADED | FAULTED | UNKNOWN (not the same as connection state).
+  std::string health{"UNKNOWN"};
+  std::string healthReason;
+  /// Lifecycle/comms view: CONNECTED | DISCONNECTED | FAILED | UNKNOWN.
+  std::string communicationLifecycleState{"UNKNOWN"};
   std::string lastWarning;
   std::string earlyWarning;
 };
@@ -155,7 +159,8 @@ struct DiagnosticsSystemSummary
   std::size_t historicalFaultCount{0};
   std::size_t healthyAdapters{0};
   std::size_t degradedAdapters{0};
-  std::size_t failedAdapters{0};
+  std::size_t faultedHealthAdapters{0};
+  std::size_t unknownHealthAdapters{0};
   std::size_t healthyEquipment{0};
   std::size_t degradedEquipment{0};
   std::size_t faultedEquipment{0};
@@ -166,9 +171,28 @@ struct DiagnosticsSystemSummary
   bool schedulerRunning{false};
 };
 
+/// ICP software self-diagnostics (not industrial adapter health).
+struct IcpSelfDiagnostics
+{
+  std::string overallHealth{"UNKNOWN"};
+  bool serviceRunning{false};
+  bool schedulerRunning{false};
+  bool apiReachable{true};
+  bool configurationValid{false};
+  std::string configurationMessage;
+  std::size_t eventBufferSize{0};
+  std::size_t eventBufferCapacity{0};
+  std::size_t configuredAdapters{0};
+  std::size_t runtimeAdapters{0};
+  std::size_t liveEquipmentCount{0};
+  std::int64_t applicationUptimeMs{0};
+  std::vector<std::string> checks;
+};
+
 struct DiagnosticsReport
 {
   DiagnosticsSystemSummary system;
+  IcpSelfDiagnostics icp;
   std::vector<AdapterDiagnosticsView> adapters;
   std::vector<EquipmentSnapshot> equipment;
   std::vector<ActiveAlarmView> activeAlarms;

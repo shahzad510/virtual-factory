@@ -263,8 +263,11 @@ json adapterDiagnosticsJson(const RuntimeAdapterView &view)
 json adapterDiagnosticsJson(const AdapterDiagnosticsView &view)
 {
   json base = adapterDiagnosticsJson(view.adapter);
-  base["health"] = view.session.communicationHealth;
-  base["communicationHealth"] = view.session.communicationHealth;
+  base["health"] = view.session.health;
+  base["healthReason"] = view.session.healthReason;
+  // Backward-compatible alias used by older GUI bindings.
+  base["communicationHealth"] = view.session.health;
+  base["communicationLifecycleState"] = view.session.communicationLifecycleState;
   base["earlyWarning"] =
       view.session.earlyWarning.empty() ? json(nullptr) : json(view.session.earlyWarning);
   base["activeFault"] = view.session.activeFault;
@@ -286,6 +289,7 @@ json adapterDiagnosticsJson(const AdapterDiagnosticsView &view)
       view.session.hasLastSuccessfulCommunication
           ? json(iso8601(view.session.lastSuccessfulCommunicationAt))
           : json(nullptr);
+  base["hasSuccessfulCommunication"] = view.session.hasLastSuccessfulCommunication;
   base["lastWarning"] =
       view.session.lastWarning.empty() ? json(nullptr) : json(view.session.lastWarning);
   base["healthyEquipmentCount"] = view.healthyEquipmentCount;
@@ -294,7 +298,11 @@ json adapterDiagnosticsJson(const AdapterDiagnosticsView &view)
   base["sessionMtbfStatus"] = view.sessionMtbfStatus;
   base["sessionMtbfMs"] =
       view.sessionMtbfStatus == "session_only" ? json(view.sessionMtbfMs) : json(nullptr);
-  base["protocolSpecific"] = {{"available", false}, {"detail", "Not available"}};
+  base["protocolSpecific"] = {
+      {"available", false},
+      {"detail",
+       "The adapter provides the common diagnostics shown above; no additional "
+       "protocol-specific metrics are exposed by the runtime by this adapter."}};
   return base;
 }
 
@@ -708,7 +716,30 @@ public:
 
       for (const AdapterDiagnosticsView &view : report.adapters)
       {
-        const json adapterJson = adapterDiagnosticsJson(view);
+        json adapterJson = adapterDiagnosticsJson(view);
+        json associated = json::array();
+        for (const EquipmentSnapshot &snap : report.equipment)
+        {
+          if (snap.adapterId != view.adapter.adapterId)
+          {
+            continue;
+          }
+          associated.push_back(
+              {{"equipmentId", snap.equipmentId},
+               {"name", snap.equipmentId},
+               {"type", snap.type},
+               {"operationalState", operationalStateName(snap.operationalState)},
+               {"operationalStateDisplay",
+                snap.machineFault ? "FAULTED"
+                                  : operationalStateName(snap.operationalState)},
+               {"online", snap.communicationState == ConnectionState::Connected},
+               {"communicationState", connectionStateName(snap.communicationState)},
+               {"machineFault", snap.machineFault},
+               {"stale", snap.stale},
+               {"lastError", snap.lastError},
+               {"hasSuccessfulCommunication", snap.hasSuccessfulCommunication}});
+        }
+        adapterJson["associatedEquipment"] = std::move(associated);
         adapters.push_back(adapterJson);
         if (view.adapter.implementation == "gateway")
         {
@@ -736,19 +767,74 @@ public:
       {
         json eqEntry = equipmentToJson(snap);
         std::string health = "UNKNOWN";
-        if (snap.machineFault || snap.communicationState == ConnectionState::Faulted)
+        std::string healthReason = "Insufficient communication evidence.";
+        std::string operationalState = operationalStateName(snap.operationalState);
+        std::string operationalStateDisplay = operationalState;
+        if (snap.machineFault)
         {
-          health = "FAILED";
+          operationalStateDisplay = "FAULTED";
+          health = "FAULTED";
+          healthReason = "Equipment machine fault is active.";
+        }
+        else if (snap.communicationState == ConnectionState::Faulted)
+        {
+          health = "FAULTED";
+          healthReason = "Equipment communication is faulted.";
         }
         else if (snap.stale)
         {
           health = "DEGRADED";
+          healthReason = "Equipment communication is stale or not currently connected.";
         }
         else if (snap.communicationState == ConnectionState::Connected)
         {
-          health = "HEALTHY";
+          if (snap.hasSuccessfulCommunication)
+          {
+            health = "HEALTHY";
+            healthReason = "Equipment communication is connected with observed telemetry.";
+          }
+          else
+          {
+            health = "UNKNOWN";
+            healthReason =
+                "Connected, but no successful communication has been observed yet.";
+          }
         }
+        // Operational model only exposes Running/Stopped (+ fault overlay).
+        // Do not invent IDLE or other states.
         eqEntry["health"] = health;
+        eqEntry["healthReason"] = healthReason;
+        eqEntry["operationalState"] = operationalState;
+        eqEntry["operationalStateDisplay"] = operationalStateDisplay;
+        eqEntry["communicationLifecycleState"] =
+            snap.communicationState == ConnectionState::Connected   ? "CONNECTED"
+            : snap.communicationState == ConnectionState::Faulted   ? "FAILED"
+            : snap.communicationState == ConnectionState::Disconnected ? "DISCONNECTED"
+                                                                      : "UNKNOWN";
+
+        json configuredCommands = json::array();
+        // Resolve configured command names from catalog (metadata, not runtime state).
+        for (const AdapterConfigRecord &record : service.configuration().adapters)
+        {
+          if (record.adapterId != snap.adapterId)
+          {
+            continue;
+          }
+          for (const EquipmentMappingRecord &eq : record.equipment)
+          {
+            if (eq.equipmentId != snap.equipmentId)
+            {
+              continue;
+            }
+            for (const CommandMappingRecord &cmd : eq.commands)
+            {
+              configuredCommands.push_back(cmd.command);
+            }
+          }
+        }
+        eqEntry["configuredCommands"] = configuredCommands;
+        eqEntry["commandRuntimeState"] = "Not available";
+        eqEntry["name"] = snap.equipmentId;
         equipment.push_back(eqEntry);
         if (snap.stale)
         {
@@ -847,10 +933,49 @@ public:
              {"hardware", hilscherHardwareToJson(hilscher)}};
       }
 
+      const auto icpStatusLabel = [](bool ok, const char *good, const char *bad) {
+        return ok ? std::string(good) : std::string(bad);
+      };
+      json icpChecks = json::array();
+      for (const std::string &check : report.icp.checks)
+      {
+        icpChecks.push_back(check);
+      }
+
       setJson(
           res,
           200,
           {{"generatedAtUtc", iso8601(report.generatedAtUtc)},
+           {"icp",
+            {{"overallHealth", report.icp.overallHealth},
+             {"serviceStatus",
+              icpStatusLabel(report.icp.serviceRunning, "RUNNING", "STOPPED")},
+             {"httpApiStatus",
+              icpStatusLabel(report.icp.apiReachable, "REACHABLE", "UNREACHABLE")},
+             {"schedulerStatus",
+              icpStatusLabel(report.icp.schedulerRunning, "RUNNING", "STOPPED")},
+             {"adapterManagerStatus",
+              report.icp.serviceRunning ? "OK" : "STOPPED"},
+             {"liveStateCacheStatus", "OK"},
+             {"configurationStatus",
+              icpStatusLabel(report.icp.configurationValid, "VALID", "INVALID")},
+             {"configurationMessage", report.icp.configurationMessage},
+             {"eventSystemStatus", "OK"},
+             {"selfTestResult", report.icp.overallHealth},
+             {"selfTestDetail",
+              report.icp.overallHealth == "HEALTHY"
+                  ? "ICP software self-checks passed."
+                  : "One or more ICP software self-checks require attention."},
+             {"applicationUptimeMs", report.icp.applicationUptimeMs},
+             {"configuredAdapterCount", report.icp.configuredAdapters},
+             {"runtimeAdapterCount", report.icp.runtimeAdapters},
+             {"liveEquipmentCount", report.icp.liveEquipmentCount},
+             {"eventBufferSize", report.icp.eventBufferSize},
+             {"eventBufferCapacity", report.icp.eventBufferCapacity},
+             {"checks", icpChecks},
+             {"notes",
+              "ICP System Health reflects ICP software subsystems only. "
+              "Industrial adapter connectedness does not by itself fault ICP."}}},
            {"system",
             {{"overallHealth", report.system.overallHealth},
              {"configuredAdapters", report.system.configuredAdapters},
@@ -862,7 +987,9 @@ public:
              {"historicalFaultCount", report.system.historicalFaultCount},
              {"healthyAdapters", report.system.healthyAdapters},
              {"degradedAdapters", report.system.degradedAdapters},
-             {"failedAdapters", report.system.failedAdapters},
+             {"faultedHealthAdapters", report.system.faultedHealthAdapters},
+             {"unknownHealthAdapters", report.system.unknownHealthAdapters},
+             {"failedAdapters", report.system.faultedHealthAdapters},
              {"healthyEquipment", report.system.healthyEquipment},
              {"degradedEquipment", report.system.degradedEquipment},
              {"faultedEquipment", report.system.faultedEquipment},

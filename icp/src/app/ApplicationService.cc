@@ -461,6 +461,15 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
         AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
         ++diag.successfulConnections;
         this->observeAdapterStateLocked(adapterId, "CONNECTED");
+        for (const EquipmentSnapshot &snap : this->cache_.equipment())
+        {
+          if (snap.adapterId == adapterId && snap.hasSuccessfulCommunication)
+          {
+            diag.hasLastSuccessfulCommunication = true;
+            diag.lastSuccessfulCommunicationAt = snap.lastSuccessfulCommunicationUtc;
+          }
+        }
+        this->observeAdapterStateLocked(adapterId, "CONNECTED");
       }
     }
     else
@@ -752,8 +761,8 @@ void ApplicationService::observeAdapterStateLocked(
       diag.connectedAt = now;
       diag.everConnected = true;
       diag.activeFault = false;
-      diag.lastSuccessfulCommunicationAt = now;
-      diag.hasLastSuccessfulCommunication = true;
+      // Do not mark successful communication on connect alone; wait for observed
+      // Connected poll/cache refresh evidence.
     }
     if (state == "DISCONNECTED" || state == "NOT_CONFIGURED")
     {
@@ -769,50 +778,76 @@ void ApplicationService::observeAdapterStateLocked(
   }
   else if (state == "CONNECTED")
   {
-    diag.lastSuccessfulCommunicationAt = now;
-    diag.hasLastSuccessfulCommunication = true;
     diag.activeFault = false;
   }
 
-  // Rule-based early warning from session counters (not predictive / ML).
-  diag.earlyWarning.clear();
-  if (diag.reconnectCount >= 5)
-  {
-    diag.earlyWarning =
-        "Communication degradation detected: "
-        + std::to_string(diag.reconnectCount)
-        + " reconnects in this session.";
-  }
-  else if (diag.faultCount >= 3)
-  {
-    diag.earlyWarning =
-        "Communication degradation detected: "
-        + std::to_string(diag.faultCount)
-        + " faulted-state entries in this session.";
-  }
-  else if (diag.failedConnections >= 3 && diag.successfulConnections == 0)
-  {
-    diag.earlyWarning =
-        "Communication degradation detected: repeated connection failures "
-        "with no successful connection in this session.";
-  }
-
+  // Separate communication lifecycle from health.
   if (state == "CONNECTED")
   {
-    diag.communicationHealth = diag.earlyWarning.empty() ? "HEALTHY" : "DEGRADED";
+    diag.communicationLifecycleState = "CONNECTED";
   }
   else if (state == "FAULTED")
   {
-    diag.communicationHealth = "FAILED";
+    diag.communicationLifecycleState = "FAILED";
+  }
+  else if (state == "DISCONNECTED" || state == "NOT_CONFIGURED")
+  {
+    diag.communicationLifecycleState = "DISCONNECTED";
   }
   else
   {
-    diag.communicationHealth = diag.everConnected ? "UNKNOWN" : "UNKNOWN";
+    diag.communicationLifecycleState = "UNKNOWN";
+  }
+
+  // Active early warning / DEGRADED must reflect CURRENT conditions so recovery
+  // clears stale alarms. Session reconnect/fault counters remain in reliability
+  // stats and event history; they alone must not permanently force DEGRADED.
+  diag.earlyWarning.clear();
+  diag.healthReason.clear();
+  if (state == "FAULTED")
+  {
+    diag.health = "FAULTED";
+    diag.healthReason = "Adapter communication/runtime is faulted.";
+  }
+  else if (state == "CONNECTED")
+  {
+    if (!diag.hasLastSuccessfulCommunication)
+    {
+      diag.health = "UNKNOWN";
+      diag.healthReason =
+          "Connected, but no successful communication has been observed yet.";
+    }
+    else if (diag.failedConnections >= 3 && diag.successfulConnections == 0)
+    {
+      // Defensive: connected without a counted success is unusual; treat as degraded.
+      diag.health = "DEGRADED";
+      diag.earlyWarning =
+          "Communication degradation detected: repeated connection failures "
+          "with no successful connection counted in this session.";
+      diag.healthReason = diag.earlyWarning;
+    }
+    else
+    {
+      diag.health = "HEALTHY";
+      diag.healthReason = "Connected with observed successful communication.";
+    }
+  }
+  else
+  {
+    diag.health = "UNKNOWN";
+    diag.healthReason = "Adapter is not connected; health is not evaluated.";
+    if (diag.failedConnections >= 3 && diag.successfulConnections == 0)
+    {
+      diag.earlyWarning =
+          "Communication degradation detected: repeated connection failures "
+          "with no successful connection in this session.";
+    }
   }
 }
 
 void ApplicationService::refreshAllAdapterObservationsLocked() const
 {
+  const auto snapshots = this->cache_.equipment();
   for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
   {
     std::string state = "DISCONNECTED";
@@ -821,6 +856,35 @@ void ApplicationService::refreshAllAdapterObservationsLocked() const
       state = connectionStateName(runtime->connectionState());
     }
     this->observeAdapterStateLocked(record.adapterId, state);
+
+    if (state == "CONNECTED")
+    {
+      AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
+      bool sawGood = false;
+      auto latestGood = diag.lastSuccessfulCommunicationAt;
+      for (const EquipmentSnapshot &snap : snapshots)
+      {
+        if (snap.adapterId != record.adapterId)
+        {
+          continue;
+        }
+        if (snap.hasSuccessfulCommunication)
+        {
+          sawGood = true;
+          if (snap.lastSuccessfulCommunicationUtc > latestGood)
+          {
+            latestGood = snap.lastSuccessfulCommunicationUtc;
+          }
+        }
+      }
+      if (sawGood)
+      {
+        diag.hasLastSuccessfulCommunication = true;
+        diag.lastSuccessfulCommunicationAt = latestGood;
+        // Recompute health now that communication evidence exists.
+        this->observeAdapterStateLocked(record.adapterId, state);
+      }
+    }
   }
 }
 
@@ -933,17 +997,33 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
       view.sessionMtbfMs = 0;
     }
 
-    if (view.session.communicationHealth == "HEALTHY")
+    // Observational DEGRADED: connected with prior success, but live equipment
+    // evidence shows stale/incomplete communication (intermittent path).
+    if (view.session.health == "HEALTHY"
+        && (view.degradedEquipmentCount > 0 || view.faultedEquipmentCount > 0))
+    {
+      view.session.health = "DEGRADED";
+      view.session.earlyWarning =
+          "Communication degradation detected: one or more associated equipment "
+          "points are stale or not fully communicating while the adapter is connected.";
+      view.session.healthReason = view.session.earlyWarning;
+    }
+
+    if (view.session.health == "HEALTHY")
     {
       ++report.system.healthyAdapters;
     }
-    else if (view.session.communicationHealth == "DEGRADED")
+    else if (view.session.health == "DEGRADED")
     {
       ++report.system.degradedAdapters;
     }
-    else if (view.session.communicationHealth == "FAILED")
+    else if (view.session.health == "FAULTED")
     {
-      ++report.system.failedAdapters;
+      ++report.system.faultedHealthAdapters;
+    }
+    else
+    {
+      ++report.system.unknownHealthAdapters;
     }
 
     historicalFaults += view.session.faultCount;
@@ -963,12 +1043,8 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
       report.activeAlarms.push_back(std::move(alarm));
     }
     else if (
-        !view.session.earlyWarning.empty()
-        && view.session.communicationHealth == "DEGRADED")
+        !view.session.earlyWarning.empty() && view.session.health == "DEGRADED")
     {
-      // Early-warning alarms only while currently connected but degraded.
-      // Historical reconnect/fault counts alone do not keep alarms active
-      // after disconnect or after a healthy recovery without degradation.
       ActiveAlarmView alarm;
       alarm.severity = "WARNING";
       alarm.sourceType = "adapter";
@@ -1045,7 +1121,8 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
       "Long-term MTBF requires persistent history across sessions. "
       "Only session-scoped estimates are available in this process.";
 
-  if (report.system.faultedAdapters > 0 || report.system.faultedEquipment > 0)
+  if (report.system.faultedAdapters > 0 || report.system.faultedHealthAdapters > 0
+      || report.system.faultedEquipment > 0)
   {
     report.system.overallHealth = "FAULTED";
   }
@@ -1059,9 +1136,65 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
   {
     report.system.overallHealth = "UNKNOWN";
   }
+  else if (report.system.unknownHealthAdapters > 0 && report.system.healthyAdapters == 0)
+  {
+    report.system.overallHealth = "UNKNOWN";
+  }
   else
   {
     report.system.overallHealth = "HEALTHY";
+  }
+
+  // ICP software self-diagnostics (independent of industrial adapter connection).
+  report.icp.serviceRunning = this->running_;
+  report.icp.schedulerRunning = report.system.schedulerRunning;
+  report.icp.apiReachable = true;
+  report.icp.configurationValid = validation.ok;
+  report.icp.configurationMessage =
+      validation.ok ? "Configuration validates." : validation.message;
+  report.icp.eventBufferSize = this->events_.size();
+  report.icp.eventBufferCapacity = kMaxEvents;
+  report.icp.configuredAdapters = this->catalog_.adapterCount();
+  report.icp.runtimeAdapters = this->manager_.adapterCount();
+  report.icp.liveEquipmentCount = snapshots.size();
+  report.icp.applicationUptimeMs =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          report.generatedAtUtc - this->service_started_at_)
+          .count();
+  report.icp.checks.clear();
+  report.icp.checks.push_back(
+      report.icp.serviceRunning ? "ICP service: running" : "ICP service: stopped");
+  report.icp.checks.push_back(
+      report.icp.schedulerRunning ? "Poll scheduler: running"
+                                  : "Poll scheduler: not running");
+  report.icp.checks.push_back("Application API: reachable");
+  report.icp.checks.push_back(
+      report.icp.configurationValid ? "Configuration: valid"
+                                    : "Configuration: invalid");
+  report.icp.checks.push_back(
+      "Event buffer: " + std::to_string(report.icp.eventBufferSize) + "/"
+      + std::to_string(report.icp.eventBufferCapacity));
+  report.icp.checks.push_back(
+      "Live-state cache equipment: " + std::to_string(report.icp.liveEquipmentCount));
+  report.icp.checks.push_back(
+      "Runtime adapters: " + std::to_string(report.icp.runtimeAdapters) + "/"
+      + std::to_string(report.icp.configuredAdapters) + " configured");
+
+  if (!report.icp.serviceRunning || !report.icp.configurationValid)
+  {
+    report.icp.overallHealth = "FAULTED";
+  }
+  else if (this->running_ && !report.icp.schedulerRunning)
+  {
+    report.icp.overallHealth = "DEGRADED";
+  }
+  else if (!report.icp.serviceRunning)
+  {
+    report.icp.overallHealth = "UNKNOWN";
+  }
+  else
+  {
+    report.icp.overallHealth = "HEALTHY";
   }
 
   // Newest events last in deque; expose newest-first for operators.

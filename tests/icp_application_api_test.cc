@@ -232,11 +232,23 @@ int main()
           "mock-only: no Hilscher section");
       expect(!body.contains("hilscher"), "mock-only: no global hilscher block");
       expect(body.contains("system"), "diagnostics: system health summary");
+      expect(body.contains("icp"), "diagnostics: ICP system self-health");
       expect(body.contains("activeAlarms"), "diagnostics: activeAlarms array");
       expect(body.contains("recentEvents"), "diagnostics: recentEvents array");
       expect(body["system"].contains("overallHealth"), "diagnostics: overallHealth");
+      expect(body["system"].contains("faultedHealthAdapters"),
+             "diagnostics: faultedHealthAdapters count");
+      expect(body["system"].contains("unknownHealthAdapters"),
+             "diagnostics: unknownHealthAdapters count");
       expect(body["system"]["mtbfStatus"] == "insufficient_data",
              "diagnostics: MTBF not fabricated without history");
+      expect(body["icp"].contains("overallHealth"), "icp overallHealth present");
+      expect(body["icp"].contains("serviceStatus"), "icp serviceStatus present");
+      expect(body["icp"].contains("selfTestResult"), "icp selfTestResult present");
+      expect(
+          body["icp"]["overallHealth"] == "HEALTHY"
+              || body["icp"]["overallHealth"] == "DEGRADED",
+          "icp health independent of industrial adapters (running service)");
       bool foundMock = false;
       for (const auto &adapter : body["adapters"])
       {
@@ -248,16 +260,109 @@ int main()
           expect(adapter.contains("failedConnections"), "adapter failedConnections");
           expect(adapter.contains("reconnectCount"), "adapter reconnectCount");
           expect(adapter.contains("faultCount"), "adapter faultCount");
-          expect(adapter.contains("communicationHealth"), "adapter communicationHealth");
+          expect(adapter.contains("communicationHealth"), "adapter communicationHealth alias");
+          expect(adapter.contains("health"), "adapter health field");
+          expect(adapter.contains("healthReason"), "adapter healthReason field");
+          expect(adapter.contains("communicationLifecycleState"),
+                 "adapter communicationLifecycleState");
+          expect(adapter.contains("associatedEquipment"),
+                 "adapter associatedEquipment list");
           expect(adapter.contains("uptimeMs"), "adapter uptimeMs");
           expect(adapter["successfulConnections"].get<int>() >= 1,
                  "mock successfulConnections after connect");
           expect(adapter["protocolSpecific"]["available"] == false,
                  "protocol-specific not fabricated");
+          expect(
+              adapter["protocolSpecific"]["detail"].get<std::string>().find(
+                  "no additional protocol-specific metrics")
+                  != std::string::npos,
+              "protocol-specific wording present");
+          // Diagnostics block runs after disconnect: session counters remain,
+          // but health must not be conflated with connection lifecycle.
+          const std::string health = adapter["health"].get<std::string>();
+          expect(health == "HEALTHY" || health == "UNKNOWN" || health == "DEGRADED"
+                     || health == "FAULTED",
+                 "mock health uses HEALTHY/DEGRADED/FAULTED/UNKNOWN vocabulary");
+          expect(health != "FAILED", "health must not use FAILED (use FAULTED)");
+          expect(adapter["communicationLifecycleState"] == "DISCONNECTED"
+                     || adapter["communicationLifecycleState"] == "UNKNOWN",
+                 "disconnected mock lifecycle is DISCONNECTED/UNKNOWN");
+          expect(adapter["communicationHealth"] == health,
+                 "communicationHealth alias matches health");
+          expect(adapter.contains("healthReason"), "healthReason explains UNKNOWN/etc");
+          expect(adapter.contains("connectionState"), "connectionState still present");
         }
       }
       expect(foundMock, "diagnostics includes mock-http adapter metrics");
+
+      // Active alarms must not include recovered early-warning noise for a healthy mock.
+      for (const auto &alarm : body["activeAlarms"])
+      {
+        if (alarm["sourceId"] == "mock-http" && alarm["category"] == "COMMUNICATION")
+        {
+          expect(false, "disconnected mock should not keep COMMUNICATION active alarm");
+        }
+      }
+
+      for (const auto &eq : body["equipment"])
+      {
+        if (eq["adapterId"] == "mock-http")
+        {
+          expect(eq.contains("health"), "equipment health present");
+          expect(eq.contains("healthReason"), "equipment healthReason present");
+          expect(eq.contains("operationalStateDisplay"),
+                 "equipment operationalStateDisplay present");
+          expect(eq.contains("configuredCommands"), "equipment configuredCommands");
+          expect(eq["commandRuntimeState"] == "Not available",
+                 "command runtime not fabricated");
+        }
+      }
     }
+  }
+
+  {
+    // Connected health semantics: CONNECTED must not auto-map to HEALTHY.
+    auto recon = client.Post("/api/v1/adapters/mock-http/connect");
+    expect(recon && recon->status == 200, "connect mock-http for health semantics");
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    auto diag = client.Get("/api/v1/diagnostics");
+    expect(diag && diag->status == 200, "diagnostics while mock connected");
+    if (diag)
+    {
+      auto body = json::parse(diag->body);
+      for (const auto &adapter : body["adapters"])
+      {
+        if (adapter["adapterId"] != "mock-http")
+        {
+          continue;
+        }
+        expect(adapter["communicationLifecycleState"] == "CONNECTED",
+               "lifecycle CONNECTED while connected");
+        const std::string health = adapter["health"].get<std::string>();
+        expect(health == "HEALTHY" || health == "UNKNOWN" || health == "DEGRADED",
+               "connected health is HEALTHY/UNKNOWN/DEGRADED (not auto-FAILED)");
+        expect(adapter.contains("healthReason"), "connected healthReason present");
+        if (health == "UNKNOWN")
+        {
+          expect(
+              adapter["healthReason"].get<std::string>().find("no successful communication")
+                  != std::string::npos,
+              "UNKNOWN health explains missing successful communication");
+        }
+        if (health == "HEALTHY")
+        {
+          expect(adapter["hasSuccessfulCommunication"] == true,
+                 "HEALTHY requires observed successful communication");
+        }
+      }
+      // ICP software health must not fault solely because of industrial adapters.
+      expect(body["icp"]["overallHealth"] != "FAULTED"
+                 || body["icp"]["configurationStatus"] == "INVALID"
+                 || body["icp"]["serviceStatus"] == "STOPPED",
+             "ICP FAULTED only for software/config issues");
+    }
+    auto disc = client.Post("/api/v1/adapters/mock-http/disconnect");
+    expect(disc && disc->status == 200, "disconnect after health semantics");
   }
 
   {
