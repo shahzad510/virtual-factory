@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -50,6 +51,7 @@ int main()
 {
   using json = nlohmann::json;
   using virtual_factory::icp::ApplicationService;
+  using virtual_factory::icp::EquipmentCommandResult;
   using virtual_factory::icp::HttpApiServer;
 
   const std::string configPath = tempConfigPath();
@@ -313,8 +315,28 @@ int main()
           expect(eq.contains("operationalStateDisplay"),
                  "equipment operationalStateDisplay present");
           expect(eq.contains("configuredCommands"), "equipment configuredCommands");
-          expect(eq["commandRuntimeState"] == "Not available",
-                 "command runtime not fabricated");
+          expect(eq.contains("commands"), "equipment commands diagnostic array");
+          expect(eq["commandRuntimeState"] != "Not available",
+                 "command runtime placeholder replaced");
+          // Never-executed configured commands must not be treated as errors.
+          if (eq["commands"].is_array())
+          {
+            for (const auto &cmd : eq["commands"])
+            {
+              expect(cmd.contains("availability"), "command availability");
+              expect(cmd.contains("execution"), "command execution");
+              expect(cmd["execution"] == "NOT_EXECUTED" || cmd["execution"] == "SUCCESS"
+                         || cmd["execution"] == "FAILED" || cmd["execution"] == "UNKNOWN",
+                     "command execution vocabulary");
+              if (cmd["execution"] == "NOT_EXECUTED")
+              {
+                expect(cmd["availability"] == "CONFIGURED"
+                           || cmd["availability"] == "AVAILABLE"
+                           || cmd["availability"] == "UNAVAILABLE",
+                       "not-executed availability is CONFIGURED/AVAILABLE/UNAVAILABLE");
+              }
+            }
+          }
         }
       }
     }
@@ -925,6 +947,163 @@ int main()
 
     life.stop();
     ::unlink(lifePath.c_str());
+  }
+
+  {
+    // --- Command diagnostics + richer lifecycle/health events ---
+    const std::string cmdPath = tempConfigPath() + "-cmd.json";
+    ::unlink(cmdPath.c_str());
+    ApplicationService svc(cmdPath);
+    svc.start();
+
+    virtual_factory::icp::AdapterConfigRecord mock;
+    mock.adapterId = "mock-cmd";
+    mock.protocol = "mock";
+    mock.enabled = true;
+    mock.description = "command diagnostics";
+    virtual_factory::icp::EquipmentMappingRecord eq;
+    eq.equipmentId = "EQ-CMD";
+    eq.type = "mixer";
+    eq.capabilities = {"start", "stop"};
+    virtual_factory::icp::TelemetryMappingRecord tel;
+    tel.name = "speed";
+    tel.unit = "rpm";
+    eq.telemetry.push_back(tel);
+    virtual_factory::icp::CommandMappingRecord startCmd;
+    startCmd.command = "start";
+    eq.commands.push_back(startCmd);
+    virtual_factory::icp::CommandMappingRecord stopCmd;
+    stopCmd.command = "stop";
+    eq.commands.push_back(stopCmd);
+    virtual_factory::icp::CommandMappingRecord customCmd;
+    customCmd.command = "cmd1";
+    eq.commands.push_back(customCmd);
+    mock.equipment.push_back(eq);
+    expect(svc.upsertAdapterConfig(mock).ok, "upsert mock-cmd");
+    expect(svc.connectAdapter("mock-cmd").ok, "connect mock-cmd");
+
+    {
+      auto cmds = svc.commandDiagnosticsForEquipment("mock-cmd", "EQ-CMD");
+      expect(!cmds.empty(), "configured commands exposed");
+      bool foundStart = false;
+      for (const auto &c : cmds)
+      {
+        if (c.command != "start")
+        {
+          continue;
+        }
+        foundStart = true;
+        expect(c.execution == "NOT_EXECUTED", "configured start not auto-executed");
+        expect(c.availability == "CONFIGURED" || c.availability == "AVAILABLE",
+               "never-executed start is CONFIGURED or AVAILABLE");
+        expect(c.lastError.empty(), "never-executed has no error");
+      }
+      expect(foundStart, "start command present in diagnostics");
+    }
+
+    {
+      const auto before = svc.events(200);
+      const std::size_t beforeCount = before.size();
+      // Repeated observations must not duplicate lifecycle events.
+      (void)svc.diagnosticsReport();
+      (void)svc.diagnosticsReport();
+      const auto after = svc.events(200);
+      std::size_t lifecycleEvents = 0;
+      for (const auto &ev : after)
+      {
+        if (ev.adapterId == "mock-cmd" && ev.eventType == "lifecycle_changed")
+        {
+          ++lifecycleEvents;
+          expect(!ev.previousState.empty() && !ev.newState.empty(),
+                 "lifecycle event has previous/new state");
+        }
+      }
+      expect(lifecycleEvents >= 1, "at least one lifecycle transition event recorded");
+      expect(after.size() - beforeCount < 8,
+             "diagnostics polls do not flood duplicate lifecycle events");
+    }
+
+    {
+      EquipmentCommandResult ok = svc.executeEquipmentCommand("EQ-CMD", "start", 0.0);
+      expect(ok.ok, "execute start succeeds on mock");
+      auto cmds = svc.commandDiagnosticsForEquipment("mock-cmd", "EQ-CMD");
+      bool found = false;
+      for (const auto &c : cmds)
+      {
+        if (c.command != "start")
+        {
+          continue;
+        }
+        found = true;
+        expect(c.execution == "SUCCESS", "start execution SUCCESS");
+        expect(c.availability == "AVAILABLE", "successful command AVAILABLE");
+        expect(c.hasLastExecution, "last execution timestamp set");
+      }
+      expect(found, "start runtime diagnostic updated");
+    }
+
+    {
+      EquipmentCommandResult bad =
+          svc.executeEquipmentCommand("EQ-CMD", "not_a_real_command", 0.0);
+      expect(!bad.ok, "unknown command fails");
+      bool sawCommandEvent = false;
+      for (const auto &ev : svc.events(50))
+      {
+        if (ev.category == "command" && ev.eventType == "command_failed")
+        {
+          sawCommandEvent = true;
+          expect(ev.command == "not_a_real_command"
+                     || ev.message.find("not_a_real_command") != std::string::npos,
+                 "failed command event names the command");
+        }
+      }
+      expect(sawCommandEvent, "failed command produces command event");
+    }
+
+    expect(svc.disconnectAdapter("mock-cmd").ok, "disconnect mock-cmd");
+    {
+      auto cmds = svc.commandDiagnosticsForEquipment("mock-cmd", "EQ-CMD");
+      for (const auto &c : cmds)
+      {
+        if (c.command == "stop" && !c.hasLastExecution)
+        {
+          expect(c.availability == "UNAVAILABLE",
+                 "disconnected never-executed command is UNAVAILABLE");
+          expect(c.execution == "NOT_EXECUTED", "still NOT_EXECUTED when disconnected");
+        }
+      }
+      bool recoveredAlarmClear = true;
+      for (const auto &alarm : svc.diagnosticsReport().activeAlarms)
+      {
+        if (alarm.sourceId == "mock-cmd" && alarm.category == "CONNECTION")
+        {
+          recoveredAlarmClear = false;
+        }
+      }
+      expect(recoveredAlarmClear, "no active CONNECTION alarm after clean disconnect");
+    }
+
+    expect(svc.connectAdapter("mock-cmd").ok, "reconnect mock-cmd");
+    expect(svc.reconnectAdapter("mock-cmd").ok, "explicit reconnect mock-cmd");
+    {
+      bool sawRecovery = false;
+      for (const auto &ev : svc.events(100))
+      {
+        if (ev.adapterId == "mock-cmd"
+            && (ev.category == "recovery" || ev.recovery == "successful"))
+        {
+          sawRecovery = true;
+        }
+      }
+      expect(sawRecovery, "recovery event retained in recent events");
+    }
+
+    const auto icpHealth = svc.diagnosticsReport().icp.overallHealth;
+    expect(icpHealth == "HEALTHY" || icpHealth == "DEGRADED",
+           "ICP health independent after command/lifecycle exercises");
+
+    svc.stop();
+    ::unlink(cmdPath.c_str());
   }
 
   if (failures == 0)

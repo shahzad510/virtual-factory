@@ -306,6 +306,76 @@ json adapterDiagnosticsJson(const AdapterDiagnosticsView &view)
   return base;
 }
 
+json applicationEventToJson(const ApplicationEvent &ev)
+{
+  const std::string severity = ev.level == "error"       ? "ERROR"
+                               : ev.level == "warn" || ev.level == "warning" ? "WARNING"
+                               : ev.level == "critical"  ? "CRITICAL"
+                                                         : "INFO";
+  json out = {
+      {"atUtc", iso8601(ev.atUtc)},
+      {"level", ev.level},
+      {"severity", severity},
+      {"category", ev.category},
+      {"message", ev.message},
+      {"adapterId", ev.adapterId},
+      {"equipmentId", ev.equipmentId},
+      {"sourceType",
+       !ev.equipmentId.empty() ? "equipment"
+       : !ev.adapterId.empty() ? "adapter"
+                               : "system"}};
+  auto put = [&](const char *key, const std::string &value) {
+    if (!value.empty())
+    {
+      out[key] = value;
+    }
+    else
+    {
+      out[key] = nullptr;
+    }
+  };
+  put("eventType", ev.eventType);
+  put("protocol", ev.protocol);
+  put("reason", ev.reason);
+  put("errorCode", ev.errorCode);
+  put("errorDetails", ev.errorDetails);
+  put("previousState", ev.previousState);
+  put("newState", ev.newState);
+  put("previousHealth", ev.previousHealth);
+  put("newHealth", ev.newHealth);
+  put("command", ev.command);
+  put("recovery", ev.recovery);
+  put("correlationId", ev.correlationId);
+  if (ev.durationMs >= 0)
+  {
+    out["durationMs"] = ev.durationMs;
+  }
+  else
+  {
+    out["durationMs"] = nullptr;
+  }
+  return out;
+}
+
+json commandDiagnosticToJson(const CommandDiagnostic &cmd)
+{
+  json out = {
+      {"command", cmd.command},
+      {"name", cmd.command},
+      {"target", cmd.target.empty() ? json(nullptr) : json(cmd.target)},
+      {"availability", cmd.availability},
+      {"execution", cmd.execution},
+      {"reason", cmd.reason.empty() ? json(nullptr) : json(cmd.reason)},
+      {"lastError", cmd.lastError.empty() ? json(nullptr) : json(cmd.lastError)},
+      {"errorCode", cmd.errorCode.empty() ? json(nullptr) : json(cmd.errorCode)},
+      {"errorMessage",
+       cmd.errorMessage.empty() ? json(nullptr) : json(cmd.errorMessage)},
+      {"lastExecutionAtUtc",
+       cmd.hasLastExecution ? json(iso8601(cmd.lastExecutionAtUtc)) : json(nullptr)},
+      {"hasLastExecution", cmd.hasLastExecution}};
+  return out;
+}
+
 }  // namespace
 
 class HttpApiServer::Impl
@@ -353,13 +423,7 @@ public:
       json recentEvents = json::array();
       for (const ApplicationEvent &event : recent)
       {
-        recentEvents.push_back(
-            {{"atUtc", iso8601(event.atUtc)},
-             {"level", event.level},
-             {"category", event.category},
-             {"message", event.message},
-             {"adapterId", event.adapterId},
-             {"equipmentId", event.equipmentId}});
+        recentEvents.push_back(applicationEventToJson(event));
       }
       setJson(
           res,
@@ -808,32 +872,63 @@ public:
         eqEntry["operationalStateDisplay"] = operationalStateDisplay;
         eqEntry["communicationLifecycleState"] =
             snap.communicationState == ConnectionState::Connected   ? "CONNECTED"
-            : snap.communicationState == ConnectionState::Faulted   ? "FAILED"
+            : snap.communicationState == ConnectionState::Faulted   ? "FAULTED"
             : snap.communicationState == ConnectionState::Disconnected ? "DISCONNECTED"
                                                                       : "UNKNOWN";
 
         json configuredCommands = json::array();
-        // Resolve configured command names from catalog (metadata, not runtime state).
-        for (const AdapterConfigRecord &record : service.configuration().adapters)
+        json commands = json::array();
+        const std::vector<CommandDiagnostic> cmdDiags =
+            service.commandDiagnosticsForEquipment(snap.adapterId, snap.equipmentId);
+        for (const CommandDiagnostic &cmd : cmdDiags)
         {
-          if (record.adapterId != snap.adapterId)
-          {
-            continue;
-          }
-          for (const EquipmentMappingRecord &eq : record.equipment)
-          {
-            if (eq.equipmentId != snap.equipmentId)
-            {
-              continue;
-            }
-            for (const CommandMappingRecord &cmd : eq.commands)
-            {
-              configuredCommands.push_back(cmd.command);
-            }
-          }
+          configuredCommands.push_back(cmd.command);
+          commands.push_back(commandDiagnosticToJson(cmd));
         }
         eqEntry["configuredCommands"] = configuredCommands;
-        eqEntry["commandRuntimeState"] = "Not available";
+        eqEntry["commands"] = commands;
+        // Backward-compatible summary: never-executed is not an error.
+        if (commands.empty())
+        {
+          eqEntry["commandRuntimeState"] = "NONE_CONFIGURED";
+        }
+        else
+        {
+          bool anyFailed = false;
+          bool anySuccess = false;
+          bool anyExecuted = false;
+          for (const CommandDiagnostic &cmd : cmdDiags)
+          {
+            if (cmd.hasLastExecution)
+            {
+              anyExecuted = true;
+            }
+            if (cmd.execution == "FAILED")
+            {
+              anyFailed = true;
+            }
+            if (cmd.execution == "SUCCESS")
+            {
+              anySuccess = true;
+            }
+          }
+          if (!anyExecuted)
+          {
+            eqEntry["commandRuntimeState"] = "CONFIGURED_NOT_EXECUTED";
+          }
+          else if (anyFailed)
+          {
+            eqEntry["commandRuntimeState"] = "FAILED";
+          }
+          else if (anySuccess)
+          {
+            eqEntry["commandRuntimeState"] = "SUCCESS";
+          }
+          else
+          {
+            eqEntry["commandRuntimeState"] = "UNKNOWN";
+          }
+        }
         eqEntry["name"] = snap.equipmentId;
         equipment.push_back(eqEntry);
         if (snap.stale)
@@ -846,22 +941,7 @@ public:
       json recentEvents = json::array();
       for (const ApplicationEvent &ev : report.recentEvents)
       {
-        const json eventJson =
-            {{"atUtc", iso8601(ev.atUtc)},
-             {"level", ev.level},
-             {"severity",
-              ev.level == "error"     ? "ERROR"
-              : ev.level == "warn" || ev.level == "warning" ? "WARNING"
-              : ev.level == "critical" ? "CRITICAL"
-                                       : "INFO"},
-             {"category", ev.category},
-             {"message", ev.message},
-             {"adapterId", ev.adapterId},
-             {"equipmentId", ev.equipmentId},
-             {"sourceType",
-              !ev.equipmentId.empty() ? "equipment"
-              : !ev.adapterId.empty() ? "adapter"
-                                      : "system"}};
+        const json eventJson = applicationEventToJson(ev);
         recentEvents.push_back(eventJson);
         if (ev.level == "error" || ev.level == "warn" || ev.level == "warning"
             || ev.level == "critical")
@@ -1038,15 +1118,18 @@ public:
       json arr = json::array();
       for (const ApplicationEvent &event : service.events(limit))
       {
-        arr.push_back(
-            {{"atUtc", iso8601(event.atUtc)},
-             {"level", event.level},
-             {"category", event.category},
-             {"message", event.message},
-             {"adapterId", event.adapterId},
-             {"equipmentId", event.equipmentId}});
+        arr.push_back(applicationEventToJson(event));
       }
-      setJson(res, 200, {{"events", arr}});
+      setJson(
+          res,
+          200,
+          {{"events", arr},
+           {"retention",
+            {{"bounded", true},
+             {"scope", "runtime_session"},
+             {"note",
+              "Recent events only. Historical data is bounded to the current "
+              "runtime/session; long-term persistence is not implemented."}}}});
     });
 
     server.Get("/api/v1/health", [](const httplib::Request &, httplib::Response &res) {

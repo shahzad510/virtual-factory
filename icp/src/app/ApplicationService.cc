@@ -414,7 +414,14 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
     AdapterManagerResult result;
     result.ok = false;
     result.message = "adapter '" + adapterId + "' is not in configuration";
-    this->recordEvent("error", "connection", result.message, adapterId);
+    ApplicationEvent ev;
+    ev.level = "error";
+    ev.category = "connection";
+    ev.eventType = "connect_failed";
+    ev.message = result.message;
+    ev.adapterId = adapterId;
+    ev.reason = result.message;
+    this->recordEvent(std::move(ev));
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
@@ -439,7 +446,15 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
   AdapterManagerResult ensured = this->ensureRuntimeAdapter(*record);
   if (!ensured.ok)
   {
-    this->recordEvent("error", "connection", ensured.message, adapterId);
+    ApplicationEvent ev;
+    ev.level = "error";
+    ev.category = "connection";
+    ev.eventType = "connect_failed";
+    ev.message = ensured.message;
+    ev.adapterId = adapterId;
+    ev.protocol = record->protocol;
+    ev.reason = ensured.message;
+    this->recordEvent(std::move(ev));
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       // Creation failure is a failed connection attempt, not a live FAULTED session.
@@ -455,7 +470,6 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
     if (connected.ok)
     {
       this->cache_.updateFromAdapter(*runtime);
-      this->recordEvent("info", "connection", "Adapter connected", adapterId);
       {
         std::lock_guard<std::mutex> lock(this->mutex_);
         AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
@@ -499,7 +513,16 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
         }
       }
       connected.message = message;
-      this->recordEvent("error", "connection", connected.message, adapterId);
+      ApplicationEvent ev;
+      ev.level = "error";
+      ev.category = "connection";
+      ev.eventType = "connect_failed";
+      ev.message = connected.message;
+      ev.adapterId = adapterId;
+      ev.protocol = record->protocol;
+      ev.reason = connected.message;
+      ev.errorDetails = runtime->lastError();
+      this->recordEvent(std::move(ev));
       {
         std::lock_guard<std::mutex> lock(this->mutex_);
         AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
@@ -521,11 +544,8 @@ AdapterManagerResult ApplicationService::disconnectAdapter(
   this->cache_.removeAdapterEquipment(adapterId);
   if (result.ok)
   {
-    this->recordEvent("info", "connection", "Adapter disconnected", adapterId);
-    {
-      std::lock_guard<std::mutex> lock(this->mutex_);
-      this->observeAdapterStateLocked(adapterId, "DISCONNECTED");
-    }
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    this->observeAdapterStateLocked(adapterId, "DISCONNECTED");
   }
   return result;
 }
@@ -535,16 +555,25 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     ++this->diagnosticsFor(adapterId).reconnectCount;
+    this->reconnect_in_progress_[adapterId] = true;
   }
   this->disconnectAdapter(adapterId);
   AdapterManagerResult connected = this->connectAdapter(adapterId);
-  if (connected.ok)
   {
-    this->recordEvent("info", "connection", "Adapter reconnected", adapterId);
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    this->reconnect_in_progress_.erase(adapterId);
   }
-  else
+  if (!connected.ok)
   {
-    this->recordEvent("error", "connection", "Adapter reconnect failed: " + connected.message, adapterId);
+    ApplicationEvent ev;
+    ev.level = "error";
+    ev.category = "recovery";
+    ev.eventType = "reconnect_failed";
+    ev.message = "Adapter reconnect failed: " + connected.message;
+    ev.adapterId = adapterId;
+    ev.reason = connected.message;
+    ev.recovery = "failed";
+    this->recordEvent(std::move(ev));
   }
   return connected;
 }
@@ -573,7 +602,29 @@ EquipmentCommandResult ApplicationService::executeEquipmentCommand(
   if (equipment == nullptr)
   {
     out.message = "equipment '" + equipmentId + "' not found or not connected";
-    this->recordEvent("error", "command", out.message, {}, equipmentId);
+    ApplicationEvent ev;
+    ev.level = "error";
+    ev.category = "command";
+    ev.eventType = "command_failed";
+    ev.message = out.message;
+    ev.equipmentId = equipmentId;
+    ev.command = command;
+    ev.reason = out.message;
+    ev.errorDetails = out.message;
+    this->recordEvent(std::move(ev));
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      CommandDiagnostic &rt =
+          this->command_runtime_[commandRuntimeKey(equipmentId, command)];
+      rt.command = command;
+      rt.execution = "FAILED";
+      rt.availability = "UNAVAILABLE";
+      rt.reason = "Equipment is not present in a connected runtime adapter.";
+      rt.lastError = out.message;
+      rt.errorMessage = out.message;
+      rt.lastExecutionAtUtc = std::chrono::system_clock::now();
+      rt.hasLastExecution = true;
+    }
     return out;
   }
 
@@ -587,14 +638,45 @@ EquipmentCommandResult ApplicationService::executeEquipmentCommand(
   if (owner == nullptr)
   {
     out.message = "no adapter owns equipment '" + equipmentId + "'";
-    this->recordEvent("error", "command", out.message, {}, equipmentId);
+    ApplicationEvent ev;
+    ev.level = "error";
+    ev.category = "command";
+    ev.eventType = "command_failed";
+    ev.message = out.message;
+    ev.equipmentId = equipmentId;
+    ev.command = command;
+    ev.reason = out.message;
+    this->recordEvent(std::move(ev));
     return out;
   }
 
   if (owner->connectionState() != ConnectionState::Connected)
   {
     out.message = "adapter '" + owner->id() + "' is not connected";
-    this->recordEvent("error", "command", out.message, owner->id(), equipmentId);
+    ApplicationEvent ev;
+    ev.level = "error";
+    ev.category = "command";
+    ev.eventType = "command_unavailable";
+    ev.message = out.message;
+    ev.adapterId = owner->id();
+    ev.equipmentId = equipmentId;
+    ev.command = command;
+    ev.reason = "communication lifecycle is not CONNECTED";
+    ev.newState = connectionStateName(owner->connectionState());
+    this->recordEvent(std::move(ev));
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      CommandDiagnostic &rt =
+          this->command_runtime_[commandRuntimeKey(equipmentId, command)];
+      rt.command = command;
+      rt.availability = "UNAVAILABLE";
+      rt.execution = "FAILED";
+      rt.reason = "Adapter communication lifecycle is not CONNECTED.";
+      rt.lastError = out.message;
+      rt.errorMessage = out.message;
+      rt.lastExecutionAtUtc = std::chrono::system_clock::now();
+      rt.hasLastExecution = true;
+    }
     return out;
   }
 
@@ -602,12 +684,195 @@ EquipmentCommandResult ApplicationService::executeEquipmentCommand(
   this->cache_.updateFromAdapter(*owner);
   out.ok = executed.accepted;
   out.message = executed.message;
-  this->recordEvent(
-      executed.accepted ? "info" : "error",
-      "command",
-      command + ": " + executed.message,
-      owner->id(),
-      equipmentId);
+
+  std::string availability = "AVAILABLE";
+  std::string execution = executed.accepted ? "SUCCESS" : "FAILED";
+  if (!executed.accepted)
+  {
+    const std::string lower = executed.message;
+    if (lower.find("unknown command") != std::string::npos
+        || lower.find("unsupported") != std::string::npos)
+    {
+      availability = "UNSUPPORTED";
+      execution = "FAILED";
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    CommandDiagnostic &rt =
+        this->command_runtime_[commandRuntimeKey(equipmentId, command)];
+    rt.command = command;
+    rt.availability = availability;
+    rt.execution = execution;
+    rt.reason.clear();
+    rt.lastError = executed.accepted ? std::string{} : executed.message;
+    rt.errorMessage = rt.lastError;
+    rt.lastExecutionAtUtc = std::chrono::system_clock::now();
+    rt.hasLastExecution = true;
+  }
+
+  ApplicationEvent ev;
+  ev.level = executed.accepted ? "info" : "error";
+  ev.category = "command";
+  ev.eventType = executed.accepted ? "command_succeeded" : "command_failed";
+  ev.message = command + ": " + executed.message;
+  ev.adapterId = owner->id();
+  ev.equipmentId = equipmentId;
+  ev.command = command;
+  ev.reason = executed.message;
+  if (!executed.accepted)
+  {
+    ev.errorDetails = executed.message;
+  }
+  this->recordEvent(std::move(ev));
+  return out;
+}
+
+std::string ApplicationService::commandRuntimeKey(
+    const std::string &equipmentId, const std::string &command)
+{
+  return equipmentId + "\x1f" + command;
+}
+
+std::string ApplicationService::commandTargetSummary(
+    const AdapterConfigRecord &record, const CommandMappingRecord &cmd)
+{
+  if (!cmd.address.empty())
+  {
+    return cmd.address;
+  }
+  if (record.protocol == "modbus")
+  {
+    std::string target = cmd.table.empty() ? "holding" : cmd.table;
+    target += ":" + std::to_string(cmd.registerAddress);
+    if (cmd.unitId > 0)
+    {
+      target += " unit=" + std::to_string(cmd.unitId);
+    }
+    return target;
+  }
+  if (!cmd.method.empty())
+  {
+    return cmd.method;
+  }
+  if (cmd.outputByteOffset > 0 || !cmd.valueType.empty())
+  {
+    return "offset=" + std::to_string(cmd.outputByteOffset);
+  }
+  return {};
+}
+
+std::vector<CommandDiagnostic> ApplicationService::commandDiagnosticsForEquipment(
+    const std::string &adapterId, const std::string &equipmentId) const
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  std::vector<CommandDiagnostic> out;
+
+  const AdapterConfigRecord *record = this->catalog_.adapter(adapterId);
+  if (record == nullptr)
+  {
+    return out;
+  }
+
+  const EquipmentMappingRecord *eqRecord = nullptr;
+  for (const EquipmentMappingRecord &eq : record->equipment)
+  {
+    if (eq.equipmentId == equipmentId)
+    {
+      eqRecord = &eq;
+      break;
+    }
+  }
+  if (eqRecord == nullptr)
+  {
+    return out;
+  }
+
+  std::string lifecycle = "DISCONNECTED";
+  bool runtimePresent = false;
+  bool connected = false;
+  std::vector<std::string> liveCommands;
+  if (const IndustrialAdapter *runtime = this->manager_.adapter(adapterId))
+  {
+    runtimePresent = true;
+    lifecycle = connectionStateName(runtime->connectionState());
+    connected = runtime->connectionState() == ConnectionState::Connected;
+  }
+  else if (this->adapter_diagnostics_.count(adapterId) != 0)
+  {
+    lifecycle = this->adapter_diagnostics_.at(adapterId).lastObservedState;
+  }
+  if (Equipment *equipment =
+          const_cast<ApplicationService *>(this)->manager_.equipmentById(equipmentId))
+  {
+    liveCommands = equipment->commands();
+  }
+
+  for (const CommandMappingRecord &cmd : eqRecord->commands)
+  {
+    CommandDiagnostic view;
+    view.command = cmd.command;
+    view.target = commandTargetSummary(*record, cmd);
+    view.execution = "NOT_EXECUTED";
+    view.availability = "CONFIGURED";
+
+    const auto it = this->command_runtime_.find(
+        commandRuntimeKey(equipmentId, cmd.command));
+    if (it != this->command_runtime_.end())
+    {
+      view = it->second;
+      if (view.target.empty())
+      {
+        view.target = commandTargetSummary(*record, cmd);
+      }
+    }
+
+    if (!connected)
+    {
+      view.availability = "UNAVAILABLE";
+      view.reason = "Adapter communication lifecycle is " + lifecycle + ".";
+      // Preserve last execution outcome; never-executed stays NOT_EXECUTED.
+      if (!view.hasLastExecution)
+      {
+        view.execution = "NOT_EXECUTED";
+        view.lastError.clear();
+        view.errorMessage.clear();
+      }
+    }
+    else if (!view.hasLastExecution)
+    {
+      // Connected and never invoked: CONFIGURED, or AVAILABLE if live equipment
+      // lists the command (evidence of usability without inventing execution).
+      const bool listed =
+          std::find(liveCommands.begin(), liveCommands.end(), cmd.command)
+          != liveCommands.end();
+      if (listed)
+      {
+        view.availability = "AVAILABLE";
+        view.reason = "Command is present on the connected equipment command list.";
+      }
+      else if (runtimePresent)
+      {
+        view.availability = "CONFIGURED";
+        view.reason =
+            "Command is configured; runtime has not established live availability.";
+      }
+      else
+      {
+        view.availability = "CONFIGURED";
+      }
+      view.execution = "NOT_EXECUTED";
+    }
+    else if (view.execution == "SUCCESS")
+    {
+      view.availability = "AVAILABLE";
+      view.reason.clear();
+    }
+
+    out.push_back(std::move(view));
+  }
+
   return out;
 }
 
@@ -686,14 +951,30 @@ void ApplicationService::recordEvent(
     const std::string &adapterId,
     const std::string &equipmentId)
 {
-  std::lock_guard<std::mutex> lock(this->mutex_);
   ApplicationEvent event;
-  event.atUtc = std::chrono::system_clock::now();
   event.level = level;
   event.category = category;
   event.message = message;
   event.adapterId = adapterId;
   event.equipmentId = equipmentId;
+  this->recordEvent(std::move(event));
+}
+
+void ApplicationService::recordEvent(ApplicationEvent event)
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  this->recordEventLocked(std::move(event));
+}
+
+void ApplicationService::recordEventLocked(ApplicationEvent event)
+{
+  if (event.atUtc.time_since_epoch().count() == 0)
+  {
+    event.atUtc = std::chrono::system_clock::now();
+  }
+  const std::string level = event.level;
+  const std::string adapterId = event.adapterId;
+  const std::string message = event.message;
   this->events_.push_back(std::move(event));
   while (this->events_.size() > kMaxEvents)
   {
@@ -705,6 +986,93 @@ void ApplicationService::recordEvent(
     ++diag.warningCount;
     diag.lastWarning = message;
   }
+}
+
+void ApplicationService::emitLifecycleTransitionLocked(
+    const std::string &adapterId,
+    const std::string &previousState,
+    const std::string &newState,
+    std::int64_t durationMs) const
+{
+  const bool recovering = this->reconnect_in_progress_.count(adapterId) != 0
+                          && this->reconnect_in_progress_.at(adapterId)
+                          && newState == "CONNECTED";
+
+  ApplicationEvent ev;
+  ev.adapterId = adapterId;
+  ev.eventType = "lifecycle_changed";
+  ev.previousState = previousState;
+  ev.newState = newState;
+  if (durationMs >= 0)
+  {
+    ev.durationMs = durationMs;
+  }
+
+  if (const AdapterConfigRecord *record = this->catalog_.adapter(adapterId))
+  {
+    ev.protocol = record->protocol;
+  }
+
+  if (recovering)
+  {
+    ev.level = "info";
+    ev.category = "recovery";
+    ev.recovery = "successful";
+    ev.message = "Adapter recovered to CONNECTED (" + previousState + " → CONNECTED)";
+    ev.reason = "Explicit reconnect completed successfully.";
+  }
+  else if (newState == "FAULTED")
+  {
+    ev.level = "error";
+    ev.category = "connection";
+    ev.message = "Adapter lifecycle FAULTED (" + previousState + " → FAULTED)";
+    IndustrialAdapter *runtime =
+        const_cast<ApplicationService *>(this)->manager_.adapter(adapterId);
+    if (runtime != nullptr && !runtime->lastError().empty())
+    {
+      ev.reason = runtime->lastError();
+      ev.errorDetails = runtime->lastError();
+    }
+    else
+    {
+      ev.reason = "Communication/runtime fault observed.";
+    }
+  }
+  else if (newState == "DISCONNECTED" || newState == "NOT_CONFIGURED")
+  {
+    ev.level = "info";
+    ev.category = "connection";
+    ev.message =
+        "Adapter lifecycle DISCONNECTED (" + previousState + " → DISCONNECTED)";
+    ev.reason = previousState == "FAULTED"
+                    ? "Faulted adapter was disconnected."
+                    : "Adapter disconnected.";
+    ev.newState = "DISCONNECTED";
+  }
+  else if (newState == "CONNECTED")
+  {
+    ev.level = "info";
+    ev.category = "connection";
+    ev.message = "Adapter lifecycle CONNECTED (" + previousState + " → CONNECTED)";
+    ev.reason = previousState == "FAULTED"
+                    ? "Adapter returned to CONNECTED after fault."
+                    : "Adapter connected.";
+    if (previousState == "FAULTED")
+    {
+      ev.category = "recovery";
+      ev.recovery = "successful";
+    }
+  }
+  else
+  {
+    ev.level = "info";
+    ev.category = "connection";
+    ev.message =
+        "Adapter lifecycle changed (" + previousState + " → " + newState + ")";
+  }
+
+  // const_cast path: observe is const but mutates diagnostics/events via mutable members.
+  const_cast<ApplicationService *>(this)->recordEventLocked(std::move(ev));
 }
 
 AdapterSessionDiagnostics &
@@ -731,17 +1099,21 @@ void ApplicationService::observeAdapterStateLocked(
   const std::string state =
       connectionState.empty() ? std::string("DISCONNECTED") : connectionState;
 
+  std::int64_t leftStateDurationMs = -1;
+
   // Accumulate session totals only when leaving a state. Re-adding
   // (now - lastStateChangeAt) on every observation caused epoch-scale garbage
   // in cumulativeConnectedMs / cumulativeDisconnectedMs charts.
   if (state != diag.lastObservedState)
   {
+    const std::string previous = diag.lastObservedState;
     if (diag.lastStateChangeAt.time_since_epoch().count() != 0)
     {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           now - diag.lastStateChangeAt);
       if (elapsed.count() > 0)
       {
+        leftStateDurationMs = elapsed.count();
         if (diag.lastObservedState == "CONNECTED")
         {
           diag.cumulativeConnectedMs += elapsed;
@@ -781,6 +1153,9 @@ void ApplicationService::observeAdapterStateLocked(
     }
     diag.lastStateChangeAt = now;
     diag.lastObservedState = state;
+
+    this->emitLifecycleTransitionLocked(
+        adapterId, previous, state, leftStateDurationMs);
   }
   else if (state == "CONNECTED")
   {
@@ -794,7 +1169,7 @@ void ApplicationService::observeAdapterStateLocked(
   }
   else if (state == "FAULTED")
   {
-    diag.communicationLifecycleState = "FAILED";
+    diag.communicationLifecycleState = "FAULTED";
   }
   else if (state == "DISCONNECTED" || state == "NOT_CONFIGURED")
   {
@@ -848,6 +1223,34 @@ void ApplicationService::observeAdapterStateLocked(
           "Communication degradation detected: repeated connection failures "
           "with no successful connection in this session.";
     }
+  }
+
+  // Health transition events only when health actually changes.
+  if (!diag.hasEmittedHealth || diag.health != diag.lastEmittedHealth)
+  {
+    const std::string previousHealth =
+        diag.hasEmittedHealth ? diag.lastEmittedHealth : std::string("UNKNOWN");
+    if (diag.hasEmittedHealth || diag.health != "UNKNOWN")
+    {
+      ApplicationEvent ev;
+      ev.level = diag.health == "FAULTED"     ? "error"
+                 : diag.health == "DEGRADED"  ? "warning"
+                                              : "info";
+      ev.category = "health";
+      ev.eventType = "health_changed";
+      ev.adapterId = adapterId;
+      ev.previousHealth = previousHealth;
+      ev.newHealth = diag.health;
+      ev.reason = diag.healthReason;
+      ev.message = "Adapter health " + previousHealth + " → " + diag.health;
+      if (const AdapterConfigRecord *record = this->catalog_.adapter(adapterId))
+      {
+        ev.protocol = record->protocol;
+      }
+      const_cast<ApplicationService *>(this)->recordEventLocked(std::move(ev));
+    }
+    diag.lastEmittedHealth = diag.health;
+    diag.hasEmittedHealth = true;
   }
 }
 

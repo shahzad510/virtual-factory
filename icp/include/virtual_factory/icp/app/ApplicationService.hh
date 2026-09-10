@@ -39,6 +39,22 @@ struct EquipmentCommandResult
   std::string command;
 };
 
+/// Protocol-agnostic command diagnostic snapshot (config + last execution).
+/// Availability/execution use only states the runtime can establish.
+struct CommandDiagnostic
+{
+  std::string command;
+  std::string target;
+  std::string availability{"CONFIGURED"};
+  std::string execution{"NOT_EXECUTED"};
+  std::string reason;
+  std::string lastError;
+  std::string errorCode;
+  std::string errorMessage;
+  std::chrono::system_clock::time_point lastExecutionAtUtc{};
+  bool hasLastExecution{false};
+};
+
 struct ApplicationEvent
 {
   std::chrono::system_clock::time_point atUtc{};
@@ -47,6 +63,20 @@ struct ApplicationEvent
   std::string message;
   std::string adapterId;
   std::string equipmentId;
+  /// Optional structured fields — empty when unknown (do not fabricate).
+  std::string eventType;
+  std::string protocol;
+  std::string reason;
+  std::string errorCode;
+  std::string errorDetails;
+  std::string previousState;
+  std::string newState;
+  std::string previousHealth;
+  std::string newHealth;
+  std::string command;
+  std::string recovery;
+  std::string correlationId;
+  std::int64_t durationMs{-1};
 };
 
 struct ApplicationStatus
@@ -116,10 +146,13 @@ struct AdapterSessionDiagnostics
   /// Operator health: HEALTHY | DEGRADED | FAULTED | UNKNOWN (not the same as connection state).
   std::string health{"UNKNOWN"};
   std::string healthReason;
-  /// Lifecycle/comms view: CONNECTED | DISCONNECTED | FAILED | UNKNOWN.
+  /// Lifecycle/comms view: CONNECTED | DISCONNECTED | FAULTED | UNKNOWN.
   std::string communicationLifecycleState{"UNKNOWN"};
   std::string lastWarning;
   std::string earlyWarning;
+  /// Last health value for which a health transition event was emitted.
+  std::string lastEmittedHealth;
+  bool hasEmittedHealth{false};
 };
 
 struct AdapterDiagnosticsView
@@ -260,6 +293,10 @@ public:
       const std::string &command,
       double parameter = 0.0);
 
+  /// Generic command diagnostics for one equipment (configured + last execution).
+  std::vector<CommandDiagnostic> commandDiagnosticsForEquipment(
+      const std::string &adapterId, const std::string &equipmentId) const;
+
   HilscherDiagnosticsView hilscherDiagnostics() const;
   std::vector<ApplicationEvent> events(std::size_t limit = 100) const;
 
@@ -281,6 +318,9 @@ public:
       const std::string &adapterId = {},
       const std::string &equipmentId = {});
 
+  /// Record a structured event (optional fields may be left empty).
+  void recordEvent(ApplicationEvent event);
+
 private:
   AdapterManagerResult ensureRuntimeAdapter(const AdapterConfigRecord &record);
   std::unique_ptr<IndustrialAdapter> createRuntimeAdapter(
@@ -289,11 +329,21 @@ private:
   static std::string connectionStateDisplay(
       const std::string &protocol, const std::string &connectionState);
   static std::string connectionSummary(const AdapterConfigRecord &record);
+  static std::string commandRuntimeKey(
+      const std::string &equipmentId, const std::string &command);
+  static std::string commandTargetSummary(
+      const AdapterConfigRecord &record, const CommandMappingRecord &cmd);
 
   AdapterSessionDiagnostics &diagnosticsFor(const std::string &adapterId) const;
   void observeAdapterStateLocked(
       const std::string &adapterId, const std::string &connectionState) const;
   void refreshAllAdapterObservationsLocked() const;
+  void recordEventLocked(ApplicationEvent event);
+  void emitLifecycleTransitionLocked(
+      const std::string &adapterId,
+      const std::string &previousState,
+      const std::string &newState,
+      std::int64_t durationMs) const;
 
   mutable std::mutex mutex_;
   std::string configuration_path_;
@@ -307,6 +357,10 @@ private:
   std::deque<ApplicationEvent> events_;
   static constexpr std::size_t kMaxEvents = 500;
   mutable std::unordered_map<std::string, AdapterSessionDiagnostics> adapter_diagnostics_;
+  /// Last observed execution outcome per equipment+command (process lifetime).
+  mutable std::unordered_map<std::string, CommandDiagnostic> command_runtime_;
+  /// Adapters currently inside reconnectAdapter() (for recovery event category).
+  mutable std::unordered_map<std::string, bool> reconnect_in_progress_;
   std::chrono::system_clock::time_point service_started_at_{};
 };
 

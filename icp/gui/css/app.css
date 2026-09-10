@@ -681,6 +681,18 @@ textarea.json-editor:focus,
   background: #161b22;
 }
 .diag-cmd-list { margin: 0.35rem 0; padding-left: 1.2rem; }
+.diag-cmd-blocks { display: grid; gap: 0.75rem; margin-top: 0.35rem; }
+.diag-cmd-block {
+  border: 1px solid var(--border, #3d4b5c);
+  background: var(--bg-elevated, #1c2531);
+  padding: 0.65rem 0.75rem;
+}
+.diag-cmd-title { margin-bottom: 0.35rem; font-weight: 600; }
+#events-table tr.events-row { cursor: pointer; }
+#events-table tr.events-row.selected-row,
+#events-table tr.events-row:hover {
+  background: rgba(47, 158, 122, 0.12);
+}
 .diag-check-list {
   margin: 0.35rem 0 0.75rem;
   padding-left: 1.2rem;

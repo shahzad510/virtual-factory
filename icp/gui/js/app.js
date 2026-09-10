@@ -28,6 +28,11 @@
     _diagEquipmentId: null,
     _diagSeverityFilter: "all",
     _diagAdapterFilter: "all",
+    _eventsSeverityFilter: "all",
+    _eventsCategoryFilter: "all",
+    _eventsAdapterFilter: "all",
+    _eventsEquipmentFilter: "all",
+    _eventsSelectedKey: null,
   };
 
   const APPEARANCE_STORAGE_KEY = "icp.gui.appearance";
@@ -1126,6 +1131,21 @@
       });
     }
 
+    const bindEventsFilter = (id, stateKey) => {
+      const el = document.getElementById(id);
+      if (el && !el.dataset.bound) {
+        el.dataset.bound = "1";
+        el.addEventListener("change", async () => {
+          state[stateKey] = el.value || "all";
+          await render({ skipDraftCapture: true });
+        });
+      }
+    };
+    bindEventsFilter("events-severity-filter", "_eventsSeverityFilter");
+    bindEventsFilter("events-category-filter", "_eventsCategoryFilter");
+    bindEventsFilter("events-adapter-filter", "_eventsAdapterFilter");
+    bindEventsFilter("events-equipment-filter", "_eventsEquipmentFilter");
+
     // Highlight validation issues after render.
     if (state._editingAdapter && state._editingAdapter._validationIssues) {
       const box = $("#editor-result");
@@ -1665,6 +1685,48 @@
       .join("")}</tbody></table>`;
   }
 
+  function commandDiagnosticsHtml(eq) {
+    const cmds = eq.commands || [];
+    if (!cmds.length) {
+      const legacy = eq.configuredCommands || [];
+      if (!legacy.length) {
+        return `<p class="muted">No commands configured for this equipment.</p>`;
+      }
+      return `<ul class="diag-cmd-list">${legacy
+        .map((c) => `<li><code>${esc(typeof c === "string" ? c : c.command || c.name || "")}</code></li>`)
+        .join("")}</ul>
+        <p class="muted">Command runtime: configured names only (detailed state unavailable).</p>`;
+    }
+    return `<div class="diag-cmd-blocks">${cmds
+      .map((c) => {
+        const name = c.command || c.name || "";
+        return `<div class="diag-cmd-block">
+          <div class="diag-cmd-title"><code>${esc(name)}</code></div>
+          <dl class="kv compact">
+            <dt>Target</dt><dd class="mono">${esc(na(c.target, "—"))}</dd>
+            <dt>Availability</dt><dd>${esc(c.availability || "UNKNOWN")}</dd>
+            <dt>Execution</dt><dd>${esc(c.execution || "UNKNOWN")}</dd>
+            <dt>Last execution</dt><dd class="mono">${
+              c.hasLastExecution && c.lastExecutionAtUtc
+                ? esc(c.lastExecutionAtUtc) +
+                  " (" +
+                  relativeTimeLabel(c.lastExecutionAtUtc) +
+                  ")"
+                : "—"
+            }</dd>
+            <dt>Last error</dt><dd class="mono">${esc(na(c.lastError || c.errorMessage, "—"))}</dd>
+            ${
+              c.reason
+                ? `<dt>Reason</dt><dd class="muted">${esc(c.reason)}</dd>`
+                : ""
+            }
+          </dl>
+        </div>`;
+      })
+      .join("")}</div>
+      <p class="muted">Configured commands are not executed automatically. NOT_EXECUTED is not an error.</p>`;
+  }
+
   function diagnosticsDetailPanel(selectedAdapter, selectedEquipment, d) {
     const protocolWording =
       "The adapter provides the common diagnostics shown above; no additional protocol-specific metrics are exposed by the runtime by this adapter.";
@@ -1684,7 +1746,6 @@
             )}</td></tr>`
         )
         .join("");
-      const cmds = eq.configuredCommands || [];
       const opState =
         eq.operationalStateDisplay || eq.operationalState || eq.machineState || "UNKNOWN";
       return `<div class="panel diag-details-panel" id="diag-details">
@@ -1722,16 +1783,7 @@
             : `<p class="muted">No telemetry points in cache.</p>`
         }
         <h3>Commands</h3>
-        ${
-          cmds.length
-            ? `<ul class="diag-cmd-list">${cmds
-                .map((c) => `<li><code>${esc(c)}</code></li>`)
-                .join("")}</ul>
-               <p class="muted">Command runtime state: ${esc(
-                 eq.commandRuntimeState || "Not available"
-               )}</p>`
-            : `<p class="muted">Command information not available.</p>`
-        }
+        ${commandDiagnosticsHtml(eq)}
         <p class="muted">${esc(protocolWording)}</p>
         <div class="row-actions"><button type="button" data-action="diag-clear-detail">Close details</button></div>
       </div>`;
@@ -1767,7 +1819,6 @@
                 )}</td></tr>`
             )
             .join("");
-          const cmds = eq.configuredCommands || [];
           const op =
             eq.operationalStateDisplay ||
             eq.operationalState ||
@@ -1797,15 +1848,8 @@
                 ? `<table class="diag-table"><thead><tr><th>Telemetry</th><th>Value</th><th>Unit</th></tr></thead><tbody>${tel}</tbody></table>`
                 : `<p class="muted">No telemetry points in cache.</p>`
             }
-            ${
-              cmds.length
-                ? `<p class="muted">Configured commands: ${cmds
-                    .map((c) => `<code>${esc(c)}</code>`)
-                    .join(", ")}. Runtime command state: ${esc(
-                    eq.commandRuntimeState || "Not available"
-                  )}.</p>`
-                : `<p class="muted">Command information not available.</p>`
-            }
+            <h5>Commands</h5>
+            ${commandDiagnosticsHtml(eq)}
           </div>`;
         })
         .join("");
@@ -1879,12 +1923,215 @@
   }
 
   function diagnosticsControlsBusy() {
-    if (state.route !== "diagnostics") return false;
+    if (state.route !== "diagnostics" && state.route !== "events") return false;
     const ae = document.activeElement;
     if (!ae) return false;
-    if (ae.id === "diag-severity-filter" || ae.id === "diag-adapter-filter") return true;
+    if (
+      ae.id === "diag-severity-filter" ||
+      ae.id === "diag-adapter-filter" ||
+      ae.id === "events-severity-filter" ||
+      ae.id === "events-category-filter" ||
+      ae.id === "events-adapter-filter" ||
+      ae.id === "events-equipment-filter"
+    ) {
+      return true;
+    }
     if (ae.tagName === "SELECT" && ae.closest("#content")) return true;
     return false;
+  }
+
+  function eventRowKey(e) {
+    return [
+      e.atUtc || "",
+      e.category || "",
+      e.eventType || "",
+      e.adapterId || "",
+      e.equipmentId || "",
+      e.command || "",
+      e.message || "",
+    ].join("|");
+  }
+
+  function eventDetailPanel(ev) {
+    if (!ev) {
+      return `<div class="panel diag-details-panel" id="event-details">
+        <h2>Selected Event</h2>
+        <p class="muted select-row-hint">SELECT AN EVENT ROW — Click an event for details.</p>
+      </div>`;
+    }
+    const row = (label, value) =>
+      value === undefined || value === null || value === ""
+        ? ""
+        : `<dt>${esc(label)}</dt><dd>${value}</dd>`;
+    return `<div class="panel diag-details-panel" id="event-details">
+      <h2>Selected Event</h2>
+      <dl class="kv">
+        ${row("Time", `<span class="mono">${esc(ev.atUtc || "")}</span>`)}
+        ${row("Level", esc(String(ev.level || "").toUpperCase()))}
+        ${row("Severity", severityBadge(ev.severity || ev.level))}
+        ${row("Category", esc(ev.category || ""))}
+        ${row("Event", esc(na(ev.eventType, "—")))}
+        ${row("Adapter", esc(na(ev.adapterId, "—")))}
+        ${row("Protocol", esc(na(ev.protocol, "—")))}
+        ${row("Equipment", esc(na(ev.equipmentId, "—")))}
+        ${row("Command", esc(na(ev.command, "—")))}
+        ${row("Previous state", esc(na(ev.previousState, "—")))}
+        ${row("New state", esc(na(ev.newState, "—")))}
+        ${row("Previous health", esc(na(ev.previousHealth, "—")))}
+        ${row("New health", esc(na(ev.newHealth, "—")))}
+        ${row("Reason", esc(na(ev.reason, "—")))}
+        ${row("Error code", `<span class="mono">${esc(na(ev.errorCode, "—"))}</span>`)}
+        ${row("Error", `<span class="mono">${esc(na(ev.errorDetails || ev.message, "—"))}</span>`)}
+        ${row("Recovery", esc(na(ev.recovery, "—")))}
+        ${row(
+          "Duration",
+          ev.durationMs == null || ev.durationMs < 0
+            ? "—"
+            : formatDurationMs(ev.durationMs)
+        )}
+        ${row("Correlation id", esc(na(ev.correlationId, "—")))}
+        ${row("Message", esc(ev.message || ""))}
+      </dl>
+      <div class="row-actions"><button type="button" data-action="events-clear-detail">Close details</button></div>
+    </div>`;
+  }
+
+  async function renderEvents() {
+    const [evRes, adRes, eqRes] = await Promise.all([
+      IcpApi.events(200),
+      IcpApi.adapters(),
+      IcpApi.equipment(),
+    ]);
+    const events = ((evRes.data && evRes.data.events) || []).slice().reverse();
+    const retention = (evRes.data && evRes.data.retention) || {};
+    const adapters = (adRes.data && adRes.data.adapters) || [];
+    const equipment = (eqRes.data && eqRes.data.equipment) || [];
+
+    const severityFilter = state._eventsSeverityFilter || "all";
+    const categoryFilter = state._eventsCategoryFilter || "all";
+    const adapterFilter = state._eventsAdapterFilter || "all";
+    const equipmentFilter = state._eventsEquipmentFilter || "all";
+
+    const categories = [
+      "runtime",
+      "configuration",
+      "connection",
+      "communication",
+      "health",
+      "equipment",
+      "telemetry",
+      "command",
+      "error",
+      "recovery",
+      "self-test",
+    ];
+
+    const filtered = events.filter((e) => {
+      const sev = String(e.severity || e.level || "").toUpperCase();
+      if (severityFilter !== "all") {
+        const want = severityFilter.toUpperCase();
+        if (want === "WARNING" && !(sev === "WARNING" || sev === "WARN")) return false;
+        if (want !== "WARNING" && sev !== want) return false;
+      }
+      if (categoryFilter !== "all") {
+        if (String(e.category || "").toLowerCase() !== categoryFilter.toLowerCase()) return false;
+      }
+      if (adapterFilter !== "all" && (e.adapterId || "") !== adapterFilter) return false;
+      if (equipmentFilter !== "all" && (e.equipmentId || "") !== equipmentFilter) return false;
+      return true;
+    });
+
+    let selected = null;
+    if (state._eventsSelectedKey) {
+      selected = filtered.find((e) => eventRowKey(e) === state._eventsSelectedKey) || null;
+    }
+
+    const adapterOpts =
+      `<option value="all"${adapterFilter === "all" ? " selected" : ""}>All adapters</option>` +
+      adapters
+        .map(
+          (a) =>
+            `<option value="${esc(a.adapterId)}"${
+              adapterFilter === a.adapterId ? " selected" : ""
+            }>${esc(a.adapterId)}</option>`
+        )
+        .join("");
+    const equipmentOpts =
+      `<option value="all"${equipmentFilter === "all" ? " selected" : ""}>All equipment</option>` +
+      equipment
+        .map(
+          (e) =>
+            `<option value="${esc(e.equipmentId)}"${
+              equipmentFilter === e.equipmentId ? " selected" : ""
+            }>${esc(e.equipmentId)}</option>`
+        )
+        .join("");
+    const categoryOpts =
+      `<option value="all"${categoryFilter === "all" ? " selected" : ""}>All</option>` +
+      categories
+        .map(
+          (c) =>
+            `<option value="${c}"${
+              categoryFilter === c ? " selected" : ""
+            }>${esc(c)}</option>`
+        )
+        .join("");
+
+    return `<div class="panel">
+      <h2>Recent events</h2>
+      <p class="muted diag-note">${esc(
+        retention.note ||
+          "Recent events only. Historical data is bounded to the current runtime/session."
+      )}</p>
+      <div class="toolbar diag-filters">
+        <label class="field">
+          <span class="field-label">Severity</span>
+          <select id="events-severity-filter">
+            <option value="all"${severityFilter === "all" ? " selected" : ""}>All</option>
+            <option value="INFO"${severityFilter === "INFO" ? " selected" : ""}>INFO</option>
+            <option value="WARNING"${severityFilter === "WARNING" ? " selected" : ""}>WARNING</option>
+            <option value="ERROR"${severityFilter === "ERROR" ? " selected" : ""}>ERROR</option>
+            <option value="CRITICAL"${severityFilter === "CRITICAL" ? " selected" : ""}>CRITICAL</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Category</span>
+          <select id="events-category-filter">${categoryOpts}</select>
+        </label>
+        <label class="field">
+          <span class="field-label">Adapter</span>
+          <select id="events-adapter-filter">${adapterOpts}</select>
+        </label>
+        <label class="field">
+          <span class="field-label">Equipment</span>
+          <select id="events-equipment-filter">${equipmentOpts}</select>
+        </label>
+      </div>
+      ${
+        !filtered.length
+          ? `<p class="muted">No events match the current filters.</p>`
+          : `<table class="diag-table" id="events-table"><thead><tr>
+              <th>Time</th><th>Severity</th><th>Category</th><th>Event</th><th>Adapter</th><th>Equipment</th><th>Message</th>
+            </tr></thead><tbody>${filtered
+              .map((e) => {
+                const key = eventRowKey(e);
+                const sel = key === state._eventsSelectedKey ? " selected-row" : "";
+                return `<tr class="events-row${sel}" data-action="events-select" data-event-key="${esc(
+                  key
+                )}">
+                  <td class="mono">${esc(e.atUtc || "")}</td>
+                  <td>${severityBadge(e.severity || e.level)}</td>
+                  <td>${esc(e.category || "")}</td>
+                  <td>${esc(na(e.eventType, "—"))}</td>
+                  <td>${esc(e.adapterId || "")}</td>
+                  <td>${esc(e.equipmentId || "")}</td>
+                  <td>${esc(e.message || "")}</td>
+                </tr>`;
+              })
+              .join("")}</tbody></table>`
+      }
+    </div>
+    ${eventDetailPanel(selected)}`;
   }
 
   async function renderDiagnostics() {
@@ -2287,23 +2534,6 @@
     return html;
   }
 
-  async function renderEvents() {
-    const res = await IcpApi.events(200);
-    const events = (res.data && res.data.events) || [];
-    if (!events.length) {
-      return `<div class="empty"><strong>No events</strong></div>`;
-    }
-    return `<div class="panel"><table><thead><tr><th>Time</th><th>Level</th><th>Category</th><th>Adapter</th><th>Message</th></tr></thead><tbody>${events
-      .slice()
-      .reverse()
-      .map(
-        (e) => `<tr><td class="mono">${esc(e.atUtc)}</td><td>${esc(e.level)}</td><td>${esc(
-          e.category
-        )}</td><td>${esc(e.adapterId || "")}</td><td>${esc(e.message)}</td></tr>`
-      )
-      .join("")}</tbody></table></div>`;
-  }
-
   async function renderSettings() {
     const st = await IcpApi.status();
     const s = st.data || {};
@@ -2424,6 +2654,18 @@
       if (action === "diag-clear-detail") {
         state._diagAdapterId = null;
         state._diagEquipmentId = null;
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "events-select") {
+        // Prefer dataset; fall back to attribute (handles encoded keys).
+        state._eventsSelectedKey =
+          (el && (el.dataset.eventKey || el.getAttribute("data-event-key"))) || null;
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "events-clear-detail") {
+        state._eventsSelectedKey = null;
         await render({ skipDraftCapture: true });
         return;
       }
@@ -2839,8 +3081,10 @@
       // Do not overwrite unsaved adapter editor or configuration editor during poll.
       if (state._editingAdapter && state.route === "adapters") return;
       if (state._cfgEditorDirty && state.route === "configuration") return;
-      // Do not recreate diagnostics DOM while a filter <select> is open/focused.
+      // Do not recreate diagnostics/events DOM while a filter <select> is open/focused.
       if (diagnosticsControlsBusy()) return;
+      // Keep selected event detail stable; resume live refresh after Close details.
+      if (state.route === "events" && state._eventsSelectedKey) return;
       if (["dashboard", "equipment", "connections", "diagnostics", "events", "adapters"].includes(
         state.route
       )) {
