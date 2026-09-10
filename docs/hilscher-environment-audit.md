@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-30  
 **Host:** Cloud Agent VM (Ubuntu 24.04, x86_64)  
-**Branch:** `cursor/icp-native-fieldbus-hilscher-a88d`  
-**Purpose:** Verify whether legitimate Hilscher SDK, drivers, firmware, or hardware are available before native PROFINET/PROFIBUS integration.
+**Branch:** `cursor/icp-hilscher-native-development-a88d` (isolated)  
+**Purpose:** Distinguish gitignored local SDK extracts from plant hardware.
 
 ---
 
@@ -11,18 +11,18 @@
 
 | Item | Result |
 | --- | --- |
-| Hilscher cifX SDK (`cifXAPI.h`, `libcifx`) | **NOT FOUND** |
-| NXDRV / driver packages | **NOT FOUND** |
+| Hilscher cifX SDK (`cifXUser.h`, `libcifx`) | **FOUND locally** in gitignored `.deps/libcifx` (nxdrvlinux). **Not in Git.** |
+| NXDRV / `uio_netx` loaded | **NOT PRESENT** on this host |
 | PROFINET firmware (NXLFW-PNM) | **NOT FOUND** |
 | PROFIBUS firmware (NXLFW-DPM / CIFXDPM.NXF) | **NOT FOUND** |
 | License files (NXLIC-MASTER) | **NOT FOUND** |
-| Hilscher PCI/USB hardware | **NOT FOUND** |
-| Environment variables (`HILSCHER_CIFX_ROOT`, `CIFX_SDK_ROOT`) | **NOT SET** |
-| Vendor smoke test | **NOT RUN** — blocked by missing SDK/hardware |
-| Native PROFINET production integration | **BLOCKED BY SDK/HARDWARE** |
-| Native PROFIBUS production integration | **BLOCKED BY SDK/HARDWARE** |
+| Hilscher PCI/USB hardware | **NOT FOUND** (`lspci` empty) |
+| Native PROFINET plant integration | **HARDWARE VALIDATION PENDING** |
+| Native PROFIBUS plant integration | **HARDWARE VALIDATION PENDING** |
 
-**No proprietary SDK or firmware was downloaded during this audit.** Per project policy, proprietary material must not be committed to Git without authorization.
+Finding libcifx does **not** enable native fieldbus. Flags default OFF. Proprietary firmware was **not** committed.
+
+The earlier Stage A audit looked for `cifXAPI.h` (wrong name). The public header is `cifXUser.h`.
 
 ---
 
@@ -77,18 +77,20 @@ When SDK is absent, adapters compile with stub private backends and `connect()` 
 
 ## Platform matrix (honest labels)
 
-Labels: **SUPPORTED** | **VERIFIED** | **TECHNICALLY POSSIBLE** | **UNKNOWN** | **UNSUPPORTED** | **BLOCKED**
+Labels: **SUPPORTED** | **TECHNICALLY POSSIBLE** | **NOT VERIFIED** | **UNSUPPORTED**
+
+See [`hilscher-platform-and-docker.md`](hilscher-platform-and-docker.md) for the authoritative matrix.
 
 | Platform | Native Hilscher PROFINET | Native Hilscher PROFIBUS | Notes |
 | --- | --- | --- | --- |
-| Windows 10 | **UNKNOWN** | **UNKNOWN** | Vendor documents NXDRV-WIN; not tested in this environment |
-| Windows 11 | **TECHNICALLY POSSIBLE** | **TECHNICALLY POSSIBLE** | Hilscher documents Win11 driver verification; ICP not validated |
-| Windows Server | **UNKNOWN** | **UNKNOWN** | Hilscher does not default-test Server; do not mark production-supported |
-| Ubuntu 24.04 LTS | **BLOCKED** (this host) | **BLOCKED** (this host) | NXDRV-LINUX exists upstream; not installed here |
-| Docker Linux (default) | **UNSUPPORTED** (default) | **UNSUPPORTED** (default) | Requires PCIe/device passthrough; prefer host agent pattern |
-| Docker Desktop Windows | **UNSUPPORTED** | **UNSUPPORTED** | No reliable plant fieldbus without nested HW passthrough |
+| Windows 10 | **TECHNICALLY POSSIBLE** / **NOT VERIFIED** | **TECHNICALLY POSSIBLE** / **NOT VERIFIED** | NXDRV-WIN |
+| Windows 11 | **TECHNICALLY POSSIBLE** / **NOT VERIFIED** | **TECHNICALLY POSSIBLE** / **NOT VERIFIED** | Vendor Win11 driver path exists; ICP not validated |
+| Windows Server | **NOT VERIFIED** | **NOT VERIFIED** | **Requires vendor verification** |
+| Ubuntu 24.04 LTS | **TECHNICALLY POSSIBLE** / **NOT VERIFIED** | **TECHNICALLY POSSIBLE** / **NOT VERIFIED** | NXDRV-LINUX exists; **requires vendor verification** for 24.04 |
+| Docker Linux (default) | **UNSUPPORTED** (default) | **UNSUPPORTED** (default) | Prefer host-level Hilscher agent |
+| Docker Desktop Windows | **UNSUPPORTED** | **UNSUPPORTED** | No plant fieldbus claim |
 
-See [`profinet-hilscher-final-gate.md`](profinet-hilscher-final-gate.md) and [`profibus-native-evaluation.md`](profibus-native-evaluation.md) for target SKUs and deployment guidance.
+See [`profinet-hilscher-final-gate.md`](profinet-hilscher-final-gate.md) and [`profibus-native-evaluation.md`](profibus-native-evaluation.md) for target SKUs.
 
 ---
 
@@ -103,15 +105,15 @@ Simultaneous PN + PB on one host requires **two cards** (RE + DP), not one RE ca
 
 ---
 
-## Next steps when SDK/hardware arrives
+## Next steps when hardware arrives
 
-1. Install NXDRV + development headers; set `HILSCHER_CIFX_ROOT`.
-2. Record exact SDK version, driver version, firmware, and license serial.
-3. Build smallest official vendor sample; verify host ↔ card communication.
-4. Enable `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS` in CMake.
-5. Implement real `profinet_session` / `profibus_session` backends (separate `.cc` files).
-6. Run vendor smoke tests per [`native-fieldbus-implementation-status.md`](native-fieldbus-implementation-status.md).
-7. Only then mark native connectivity **TESTED** / **VALIDATED** under documented conditions.
+1. Follow [`hilscher-hardware-validation-procedure.md`](hilscher-hardware-validation-procedure.md).
+2. Install NXDRV + firmware + license; set `HILSCHER_CIFX_ROOT`.
+3. Enable `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS`.
+4. Run `hilscher_hardware_readiness_test` — expect progress toward `READY_FOR_TEST` (host preflight only).
+5. Engineer SYCON artifacts; connect real IO-Device / DP slave (see [`hilscher-test-peer-options.md`](hilscher-test-peer-options.md)).
+6. Fill [`templates/hilscher-hardware-test-report.md`](templates/hilscher-hardware-test-report.md).
+7. Only then mark native connectivity **VALIDATED** under documented conditions.
 
 ---
 
@@ -119,10 +121,12 @@ Simultaneous PN + PB on one host requires **two cards** (RE + DP), not one RE ca
 
 | Item | Status |
 | --- | --- |
-| Environment audit | **COMPLETE** |
-| SDK present | **NO** |
-| Hardware present | **NO** |
-| Smoke test | **NOT RUN** |
-| Stage A scaffolding | **IMPLEMENTED** / **TESTED** (stub backends) |
-| Stage B native PROFINET | **BLOCKED BY SDK/HARDWARE** |
-| Stage C native PROFIBUS | **BLOCKED BY SDK/HARDWARE** |
+| Environment audit | **COMPLETE** (updated 2026-08-30) |
+| libcifx extract on this agent | **FOUND** (gitignored `.deps`) |
+| NXDRV / card on this agent | **NO** |
+| Firmware / license in Git | **NO** (correct) |
+| Smoke test on hardware | **NOT RUN** |
+| Stage A scaffolding on master | **IMPLEMENTED** / **TESTED** (stubs) |
+| Software boundary on this branch | **IMPLEMENTED TO SOFTWARE BOUNDARY** |
+| Hardware readiness tooling | **IMPLEMENTED** (preflight; not plant proof) |
+| Native plant IO | **HARDWARE VALIDATION PENDING** |

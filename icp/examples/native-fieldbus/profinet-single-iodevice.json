@@ -1,0 +1,66 @@
+{
+  "schema": "virtual-factory.icp.config",
+  "version": 1,
+  "name": "hilscher-profinet-single-iodevice-example",
+  "adapters": [
+    {
+      "adapterId": "pn-controller-1",
+      "protocol": "profinet",
+      "enabled": true,
+      "description": "Example: one PROFINET controller + one IO-Device (placeholders only)",
+      "connection": {
+        "boardId": "cifx0",
+        "channel": 0,
+        "interfaceName": "eth-pn",
+        "stationName": "icp-pn-controller",
+        "configArtifactPath": "/opt/cifx/config/profinet/config.nxd",
+        "expectedFirmwareName": "PROFINET",
+        "pollTimeoutMs": 1000
+      },
+      "credentials": {},
+      "equipment": [
+        {
+          "equipmentId": "PN-IO-001",
+          "type": "remote_io",
+          "capabilities": ["start", "stop"],
+          "stationName": "io-device-1",
+          "ipAddress": "192.168.0.20",
+          "vendorId": 42,
+          "deviceId": 257,
+          "submodules": [
+            {"slot": 0, "subslot": 1, "inputLength": 0, "outputLength": 0},
+            {"slot": 1, "subslot": 1, "inputLength": 8, "outputLength": 4}
+          ],
+          "telemetry": [
+            {
+              "name": "speed",
+              "unit": "rpm",
+              "inputByteOffset": 0,
+              "valueType": "Int16"
+            }
+          ],
+          "commands": [
+            {
+              "command": "start",
+              "outputByteOffset": 0,
+              "bitOffset": 0,
+              "valueType": "Bool"
+            }
+          ],
+          "state": {
+            "mapped": true,
+            "inputByteOffset": 2,
+            "bitOffset": 0,
+            "valueType": "Bool"
+          },
+          "fault": {
+            "mapped": true,
+            "inputByteOffset": 2,
+            "bitOffset": 1,
+            "valueType": "Bool"
+          }
+        }
+      ]
+    }
+  ]
+}

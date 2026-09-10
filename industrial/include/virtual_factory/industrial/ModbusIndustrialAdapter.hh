@@ -23,6 +23,12 @@ enum class ModbusTable
   InputRegister
 };
 
+enum class ModbusTransport
+{
+  Tcp,
+  Rtu
+};
+
 struct ModbusRef
 {
   std::uint8_t unitId{1};
@@ -63,29 +69,47 @@ struct ModbusEquipmentMapping
   ModbusRef faultCoil;
 };
 
-/// Config for one Modbus TCP endpoint (one TCP session).
-/// One adapter instance = one host:port (ADR-026 analogue).
+/// Config for one Modbus endpoint (one TCP session or one serial RTU session).
+/// One adapter instance = one transport session (ADR-026 analogue).
 struct ModbusAdapterConfig
 {
+  ModbusTransport transport{ModbusTransport::Tcp};
+
+  /// TCP
   std::string host{"127.0.0.1"};
   std::uint16_t port{502};
+
+  /// RTU / RS-485 serial
+  std::string serialDevice;
+  int baudRate{9600};
+  char parity{'N'};  ///< 'N' | 'E' | 'O'
+  int dataBits{8};
+  int stopBits{1};
+
   int timeoutMs{2000};
+  /// Used for RTU link verification when no equipment mappings exist.
+  std::uint8_t linkUnitId{1};
+
   std::vector<ModbusEquipmentMapping> equipment;
 };
 
-/// Production Modbus TCP adapter (SoT Phase 6).
+/// Production Modbus adapter (TCP and RTU / RS-485).
 ///
 /// Translates configured coils/registers into the normalized Equipment model.
 /// Does not expose Modbus addresses, function codes, or client types through
 /// Equipment.
 ///
-/// One instance owns one TCP session to one endpoint. A factory with N Modbus
-/// TCP devices uses N adapter instances. Independent connect/poll/fault/
-/// reconnect; IndustrialAdapter::connectionState() stays per-source.
+/// One instance owns one transport session. A factory with N Modbus devices
+/// uses N adapter instances. Independent connect/poll/fault/reconnect;
+/// IndustrialAdapter::connectionState() stays per-source.
 ///
 /// Commands named `set_*` write the execute() double as a holding-register
 /// uint16 (or coil true/false). Other commands write coil `true` (0xFF00) or
 /// register 1. Discrete inputs and input registers are read-only.
+///
+/// RTU `connect()` opens the serial port and verifies Modbus framing with a
+/// lightweight probe (mapped register preferred; otherwise holding 0 on
+/// linkUnitId). A Modbus exception response counts as link OK; timeout does not.
 ///
 /// `connect()` after Faulted recreates the client session. Background
 /// auto-reconnect is not implemented.
@@ -111,6 +135,11 @@ public:
 
   void poll() override;
 
+  const ModbusAdapterConfig &config() const
+  {
+    return this->config_;
+  }
+
 private:
   class BoundEquipment;
   friend class BoundEquipment;
@@ -119,6 +148,8 @@ private:
 
   void bindEquipment();
   void enterFault(const std::string &reason);
+  bool openSession();
+  bool verifyRtuLink();
   bool readBoolean(const ModbusRef &ref, bool *value);
   bool readDouble(const ModbusRef &ref, double *value);
   bool writeBoolean(const ModbusRef &ref, bool value);

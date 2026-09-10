@@ -54,6 +54,16 @@ void PollScheduler::pollOnce()
 {
   this->manager_.forEachAdapter(
       [this](IndustrialAdapter &adapter) { this->pollAdapterLocked(adapter); });
+
+  std::function<void()> hook;
+  {
+    std::lock_guard<std::mutex> lock(this->hook_mutex_);
+    hook = this->after_poll_hook_;
+  }
+  if (hook)
+  {
+    hook();
+  }
 }
 
 void PollScheduler::setInterval(std::chrono::milliseconds interval)
@@ -67,6 +77,12 @@ std::chrono::milliseconds PollScheduler::interval() const
 {
   std::lock_guard<std::mutex> lock(this->interval_mutex_);
   return this->interval_;
+}
+
+void PollScheduler::setAfterPollHook(std::function<void()> hook)
+{
+  std::lock_guard<std::mutex> lock(this->hook_mutex_);
+  this->after_poll_hook_ = std::move(hook);
 }
 
 void PollScheduler::threadMain()

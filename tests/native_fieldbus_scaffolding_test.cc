@@ -77,16 +77,22 @@ int main()
 
   ProfinetIndustrialAdapter pn("pn-native", sampleProfinetConfig());
   expect(pn.protocol() == "profinet", "profinet protocol id");
-  expect(!pn.hilscherSdkPresent(), "Hilscher SDK absent in CI");
   expect(
       pn.connectionState() == ConnectionState::Disconnected,
       "profinet starts disconnected");
 
-  expect(!pn.connect(), "profinet connect blocked without SDK");
+  expect(!pn.connect(), "profinet connect blocked without plant hardware");
   expect(
       pn.connectionState() == ConnectionState::Faulted,
       "profinet connect failure becomes faulted");
   expect(!pn.lastError().empty(), "profinet lastError set");
+  if (!pn.hilscherSdkPresent())
+  {
+    expect(
+        pn.lastError().find("BLOCKED BY SDK/HARDWARE") != std::string::npos
+            || pn.lastError().find("cannot read") != std::string::npos,
+        "Hilscher SDK absent in default CI build");
+  }
 
   pn.disconnect();
   expect(
@@ -101,8 +107,7 @@ int main()
 
   ProfibusIndustrialAdapter pb("pb-native", sampleProfibusConfig());
   expect(pb.protocol() == "profibus", "profibus protocol id");
-  expect(!pb.hilscherSdkPresent(), "profibus SDK absent in CI");
-  expect(!pb.connect(), "profibus connect blocked without SDK");
+  expect(!pb.connect(), "profibus connect blocked without plant hardware");
   expect(
       pb.connectionState() == ConnectionState::Faulted,
       "profibus connect failure becomes faulted");

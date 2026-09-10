@@ -38,6 +38,9 @@ public:
 
   void simulateCommunicationFailure(std::string reason);
   void clearCommunicationFailure();
+  /// Clears the simulated endpoint outage without changing connectionState.
+  /// Used so ICP auto-reconnect can connect() from FAULTED once the peer is back.
+  void clearForcedOutage();
 
   std::string id() const override;
   std::string protocol() const override;
@@ -76,6 +79,8 @@ private:
   std::string id_;
   ConnectionState connection_state_{ConnectionState::Disconnected};
   std::string last_error_;
+  bool force_communication_failure_{false};
+  std::string forced_failure_reason_;
   std::vector<DeviceConfig> devices_;
   std::vector<std::unique_ptr<BoundEquipment>> bound_;
 };
