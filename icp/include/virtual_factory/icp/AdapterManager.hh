@@ -28,7 +28,11 @@ struct AdapterManagerResult
 /// One adapter = one industrial source/session (ADR-026 family). Not a
 /// mega-adapter. Not MES. Not CIC. Not persistent config (ICP-1B).
 ///
-/// Ownership: unique_ptr. Equipment* from adapters remain non-owning views.
+/// Ownership: shared_ptr so connect/poll/disconnect I/O can run without holding
+/// the manager mutex (prevents HTTP/scheduler deadlocks on slow OPC UA peers).
+/// Each adapter also has a dedicated I/O mutex so poll cannot race connect /
+/// disconnect / remove on the same protocol client.
+/// Equipment* from adapters remain non-owning views.
 class AdapterManager
 {
 public:
@@ -63,20 +67,40 @@ public:
   /// Snapshot of registered adapter ids for the poller (thread-safe copy).
   std::vector<std::string> snapshotAdapterIds() const;
 
-  /// Invoke fn for each adapter while holding the manager lock.
-  /// Prefer for short operations; poll() is bounded by adapter contracts.
+  /// Shared ownership handle for one adapter (empty if missing).
+  std::shared_ptr<IndustrialAdapter> sharedAdapter(const std::string &adapterId);
+  std::shared_ptr<const IndustrialAdapter> sharedAdapter(
+      const std::string &adapterId) const;
+
+  /// Snapshot of adapter shared_ptrs (lock released before caller uses them).
+  std::vector<std::shared_ptr<IndustrialAdapter>> snapshotAdapters();
+
+  /// Invoke fn for each adapter WITHOUT holding the manager lock during fn.
+  /// Uses a shared_ptr snapshot so removeAdapter cannot destroy under fn.
+  /// Serializes each adapter's I/O against connect/disconnect for that adapter.
   void forEachAdapter(const std::function<void(IndustrialAdapter &)> &fn);
 
 private:
   struct Entry
   {
-    std::unique_ptr<IndustrialAdapter> adapter;
+    std::shared_ptr<IndustrialAdapter> adapter;
+    /// Shared so poll/connect/disconnect/remove can serialize the same adapter
+    /// after the manager map lock is released.
+    std::shared_ptr<std::mutex> io_mutex;
+  };
+
+  struct Handle
+  {
+    std::shared_ptr<IndustrialAdapter> adapter;
+    std::shared_ptr<std::mutex> io_mutex;
   };
 
   AdapterManagerResult checkEquipmentIdCollisions(
       IndustrialAdapter &candidate) const;
   Entry *findEntry(const std::string &adapterId);
   const Entry *findEntry(const std::string &adapterId) const;
+  Handle handleFor(const std::string &adapterId);
+  std::vector<Handle> snapshotHandles();
 
   mutable std::mutex mutex_;
   std::unordered_map<std::string, Entry> adapters_;

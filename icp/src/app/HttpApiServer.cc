@@ -339,6 +339,7 @@ json applicationEventToJson(const ApplicationEvent &ev)
   put("reason", ev.reason);
   put("errorCode", ev.errorCode);
   put("errorDetails", ev.errorDetails);
+  put("nodeId", ev.nodeId);
   put("previousState", ev.previousState);
   put("newState", ev.newState);
   put("previousHealth", ev.previousHealth);

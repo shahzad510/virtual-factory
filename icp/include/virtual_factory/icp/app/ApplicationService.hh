@@ -69,6 +69,7 @@ struct ApplicationEvent
   std::string reason;
   std::string errorCode;
   std::string errorDetails;
+  std::string nodeId;
   std::string previousState;
   std::string newState;
   std::string previousHealth;
@@ -153,6 +154,18 @@ struct AdapterSessionDiagnostics
   /// Last health value for which a health transition event was emitted.
   std::string lastEmittedHealth;
   bool hasEmittedHealth{false};
+
+  /// Wall-clock time of the most recent transition into FAULTED (session).
+  std::chrono::system_clock::time_point faultedAt{};
+  bool hasFaultedAt{false};
+  std::string lastFaultError;
+  std::string lastFaultNodeId;
+
+  /// ICP-owned auto-reconnect scheduling (steady clock; not persisted).
+  std::chrono::steady_clock::time_point nextAutoReconnectAt{};
+  std::chrono::milliseconds autoReconnectBackoffMs{1000};
+  std::size_t autoReconnectAttempts{0};
+  bool autoReconnectInFlight{false};
 };
 
 struct AdapterDiagnosticsView
@@ -344,6 +357,9 @@ private:
       const std::string &previousState,
       const std::string &newState,
       std::int64_t durationMs) const;
+  void onPollCycle();
+  void scheduleAutoReconnectLocked(const std::string &adapterId) const;
+  static void enrichCommunicationErrorFields(ApplicationEvent *event);
 
   mutable std::mutex mutex_;
   std::string configuration_path_;

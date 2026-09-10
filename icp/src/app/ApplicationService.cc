@@ -138,6 +138,7 @@ void ApplicationService::start()
     }
     this->scheduler_ = std::make_unique<PollScheduler>(
         this->manager_, this->cache_, std::chrono::milliseconds(250));
+    this->scheduler_->setAfterPollHook([this]() { this->onPollCycle(); });
     this->scheduler_->start();
     this->running_ = true;
   }
@@ -998,9 +999,10 @@ void ApplicationService::emitLifecycleTransitionLocked(
                           && this->reconnect_in_progress_.at(adapterId)
                           && newState == "CONNECTED";
 
+  AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+
   ApplicationEvent ev;
   ev.adapterId = adapterId;
-  ev.eventType = "lifecycle_changed";
   ev.previousState = previousState;
   ev.newState = newState;
   if (durationMs >= 0)
@@ -1013,37 +1015,81 @@ void ApplicationService::emitLifecycleTransitionLocked(
     ev.protocol = record->protocol;
   }
 
+  IndustrialAdapter *runtime =
+      const_cast<ApplicationService *>(this)->manager_.adapter(adapterId);
+  const std::string runtimeError =
+      (runtime != nullptr) ? runtime->lastError() : std::string{};
+
   if (recovering)
   {
     ev.level = "info";
     ev.category = "recovery";
+    ev.eventType = "communication_recovered";
     ev.recovery = "successful";
-    ev.message = "Adapter recovered to CONNECTED (" + previousState + " → CONNECTED)";
-    ev.reason = "Explicit reconnect completed successfully.";
+    ev.message = "OPC UA communication recovered" ;
+    if (ev.protocol != "opcua")
+    {
+      ev.message = "Industrial communication recovered";
+    }
+    ev.message += " (" + previousState + " → CONNECTED)";
+    ev.reason = "Automatic or explicit reconnect completed successfully.";
+    if (diag.hasFaultedAt)
+    {
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now() - diag.faultedAt);
+      if (elapsed.count() >= 0)
+      {
+        ev.durationMs = elapsed.count();
+      }
+    }
+    if (!diag.lastFaultError.empty())
+    {
+      ev.errorDetails = diag.lastFaultError;
+    }
+    if (!diag.lastFaultNodeId.empty())
+    {
+      ev.nodeId = diag.lastFaultNodeId;
+    }
   }
   else if (newState == "FAULTED")
   {
     ev.level = "error";
-    ev.category = "connection";
-    ev.message = "Adapter lifecycle FAULTED (" + previousState + " → FAULTED)";
-    IndustrialAdapter *runtime =
-        const_cast<ApplicationService *>(this)->manager_.adapter(adapterId);
-    if (runtime != nullptr && !runtime->lastError().empty())
+    ev.category = "communication";
+    ev.eventType = "communication_fault";
+    ev.recovery = "pending";
+    ev.message = "Industrial communication fault (" + previousState + " → FAULTED)";
+    if (ev.protocol == "opcua")
     {
-      ev.reason = runtime->lastError();
-      ev.errorDetails = runtime->lastError();
+      ev.message = "OPC UA communication fault (" + previousState + " → FAULTED)";
+    }
+    if (!runtimeError.empty())
+    {
+      ev.reason = "OPC UA read/connect failed";
+      if (ev.protocol != "opcua")
+      {
+        ev.reason = "Communication/runtime fault observed.";
+      }
+      ev.errorDetails = runtimeError;
     }
     else
     {
       ev.reason = "Communication/runtime fault observed.";
     }
+    enrichCommunicationErrorFields(&ev);
+    diag.faultedAt = std::chrono::system_clock::now();
+    diag.hasFaultedAt = true;
+    diag.lastFaultError = ev.errorDetails.empty() ? runtimeError : ev.errorDetails;
+    diag.lastFaultNodeId = ev.nodeId;
+    diag.nextAutoReconnectAt =
+        std::chrono::steady_clock::now() + diag.autoReconnectBackoffMs;
   }
   else if (newState == "DISCONNECTED" || newState == "NOT_CONFIGURED")
   {
     ev.level = "info";
     ev.category = "connection";
+    ev.eventType = "lifecycle_changed";
     ev.message =
-        "Adapter lifecycle DISCONNECTED (" + previousState + " → DISCONNECTED)";
+        "Adapter disconnected (" + previousState + " → DISCONNECTED)";
     ev.reason = previousState == "FAULTED"
                     ? "Faulted adapter was disconnected."
                     : "Adapter disconnected.";
@@ -1053,27 +1099,66 @@ void ApplicationService::emitLifecycleTransitionLocked(
   {
     ev.level = "info";
     ev.category = "connection";
-    ev.message = "Adapter lifecycle CONNECTED (" + previousState + " → CONNECTED)";
+    ev.eventType = "lifecycle_changed";
+    ev.message = "Adapter connected (" + previousState + " → CONNECTED)";
     ev.reason = previousState == "FAULTED"
                     ? "Adapter returned to CONNECTED after fault."
                     : "Adapter connected.";
     if (previousState == "FAULTED")
     {
       ev.category = "recovery";
+      ev.eventType = "communication_recovered";
       ev.recovery = "successful";
+      ev.message = (ev.protocol == "opcua"
+                        ? "OPC UA communication recovered"
+                        : "Industrial communication recovered")
+                   + std::string(" (FAULTED → CONNECTED)");
+      if (diag.hasFaultedAt)
+      {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now() - diag.faultedAt);
+        if (elapsed.count() >= 0)
+        {
+          ev.durationMs = elapsed.count();
+        }
+      }
+      if (!diag.lastFaultError.empty())
+      {
+        ev.errorDetails = diag.lastFaultError;
+      }
+      if (!diag.lastFaultNodeId.empty())
+      {
+        ev.nodeId = diag.lastFaultNodeId;
+      }
     }
   }
   else
   {
     ev.level = "info";
     ev.category = "connection";
+    ev.eventType = "lifecycle_changed";
     ev.message =
         "Adapter lifecycle changed (" + previousState + " → " + newState + ")";
   }
 
-  // const_cast path: observe is const but mutates diagnostics/events via mutable members.
+  // Capture health transition context when available.
+  if (diag.hasEmittedHealth)
+  {
+    ev.previousHealth = diag.lastEmittedHealth;
+  }
+  // newHealth filled after observe updates health below; for FAULTED set now.
+  if (newState == "FAULTED")
+  {
+    ev.newHealth = "FAULTED";
+  }
+  else if (newState == "CONNECTED" && previousState == "FAULTED")
+  {
+    ev.previousHealth = "FAULTED";
+  }
+
   const_cast<ApplicationService *>(this)->recordEventLocked(std::move(ev));
 }
+
 
 AdapterSessionDiagnostics &
 ApplicationService::diagnosticsFor(const std::string &adapterId) const
@@ -1089,6 +1174,162 @@ ApplicationService::diagnosticsFor(const std::string &adapterId) const
     diag.disconnectedAt = now;
   }
   return diag;
+}
+
+
+void ApplicationService::enrichCommunicationErrorFields(ApplicationEvent *event)
+{
+  if (event == nullptr || event->errorDetails.empty())
+  {
+    return;
+  }
+  const std::string &detail = event->errorDetails;
+  // Typical OPC UA adapter text:
+  // "OPC UA read failed for ns=2;s=MotorSpeed: BadSecureChannelClosed"
+  const std::string forToken = " for ";
+  const std::size_t forPos = detail.find(forToken);
+  const std::size_t colonPos = detail.rfind(": ");
+  if (forPos != std::string::npos && colonPos != std::string::npos
+      && colonPos > forPos + forToken.size())
+  {
+    if (event->nodeId.empty())
+    {
+      event->nodeId =
+          detail.substr(forPos + forToken.size(), colonPos - (forPos + forToken.size()));
+    }
+    if (event->errorCode.empty())
+    {
+      event->errorCode = detail.substr(colonPos + 2);
+    }
+  }
+  else if (event->errorCode.empty())
+  {
+    // Fallback: last token that looks like Bad*
+    const std::size_t badPos = detail.rfind("Bad");
+    if (badPos != std::string::npos)
+    {
+      event->errorCode = detail.substr(badPos);
+    }
+  }
+}
+
+void ApplicationService::scheduleAutoReconnectLocked(const std::string &adapterId) const
+{
+  AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+  if (diag.autoReconnectBackoffMs.count() <= 0)
+  {
+    diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
+  }
+  diag.nextAutoReconnectAt =
+      std::chrono::steady_clock::now() + diag.autoReconnectBackoffMs;
+}
+
+void ApplicationService::onPollCycle()
+{
+  std::vector<std::string> due;
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    if (!this->running_)
+    {
+      return;
+    }
+    this->refreshAllAdapterObservationsLocked();
+
+    const auto now = std::chrono::steady_clock::now();
+    for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
+    {
+      if (!record.enabled)
+      {
+        continue;
+      }
+      IndustrialAdapter *runtime = this->manager_.adapter(record.adapterId);
+      if (runtime == nullptr)
+      {
+        continue;
+      }
+      if (runtime->connectionState() != ConnectionState::Faulted)
+      {
+        continue;
+      }
+      AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
+      if (diag.autoReconnectInFlight)
+      {
+        continue;
+      }
+      // Explicit GUI/API reconnect owns the attempt.
+      if (this->reconnect_in_progress_.count(record.adapterId) != 0
+          && this->reconnect_in_progress_.at(record.adapterId))
+      {
+        continue;
+      }
+      if (diag.nextAutoReconnectAt.time_since_epoch().count() == 0)
+      {
+        diag.nextAutoReconnectAt = now + diag.autoReconnectBackoffMs;
+      }
+      if (now >= diag.nextAutoReconnectAt)
+      {
+        diag.autoReconnectInFlight = true;
+        due.push_back(record.adapterId);
+      }
+    }
+  }
+
+  for (const std::string &adapterId : due)
+  {
+    // From FAULTED, connect() recreates the client — do not disconnect first
+    // (would clear lastError / skip FAULTED history).
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      ++this->diagnosticsFor(adapterId).autoReconnectAttempts;
+      ++this->diagnosticsFor(adapterId).reconnectCount;
+      this->reconnect_in_progress_[adapterId] = true;
+    }
+
+    AdapterManagerResult connected = this->manager_.connectAdapter(adapterId);
+    IndustrialAdapter *runtime = this->manager_.adapter(adapterId);
+    if (connected.ok && runtime != nullptr)
+    {
+      this->cache_.updateFromAdapter(*runtime);
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+      ++diag.successfulConnections;
+      diag.autoReconnectInFlight = false;
+      diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
+      diag.nextAutoReconnectAt = {};
+      this->observeAdapterStateLocked(adapterId, "CONNECTED");
+      this->reconnect_in_progress_.erase(adapterId);
+    }
+    else
+    {
+      if (runtime != nullptr)
+      {
+        this->cache_.markAdapterCommunication(
+            adapterId, runtime->connectionState(), runtime->lastError());
+      }
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+      diag.autoReconnectInFlight = false;
+      ++diag.failedConnections;
+      // Stay FAULTED — do not emit another identical fault event.
+      this->observeAdapterStateLocked(
+          adapterId,
+          runtime != nullptr ? connectionStateName(runtime->connectionState())
+                             : std::string("FAULTED"));
+      // Exponential backoff, capped.
+      auto next = diag.autoReconnectBackoffMs * 2;
+      if (next > std::chrono::milliseconds(10000))
+      {
+        next = std::chrono::milliseconds(10000);
+      }
+      if (next < std::chrono::milliseconds(1000))
+      {
+        next = std::chrono::milliseconds(1000);
+      }
+      diag.autoReconnectBackoffMs = next;
+      diag.nextAutoReconnectAt = std::chrono::steady_clock::now() + next;
+      this->reconnect_in_progress_.erase(adapterId);
+    }
+  }
 }
 
 void ApplicationService::observeAdapterStateLocked(
@@ -1133,12 +1374,37 @@ void ApplicationService::observeAdapterStateLocked(
       ++diag.faultCount;
       diag.activeFault = true;
       ++diag.communicationFailureCount;
+      if (!diag.hasFaultedAt)
+      {
+        diag.faultedAt = now;
+        diag.hasFaultedAt = true;
+      }
+      else
+      {
+        diag.faultedAt = now;
+      }
+      IndustrialAdapter *runtime =
+          const_cast<ApplicationService *>(this)->manager_.adapter(adapterId);
+      if (runtime != nullptr && !runtime->lastError().empty())
+      {
+        diag.lastFaultError = runtime->lastError();
+      }
+      if (diag.autoReconnectBackoffMs.count() <= 0)
+      {
+        diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
+      }
+      diag.nextAutoReconnectAt =
+          std::chrono::steady_clock::now() + diag.autoReconnectBackoffMs;
     }
     if (state == "CONNECTED")
     {
       diag.connectedAt = now;
       diag.everConnected = true;
       diag.activeFault = false;
+      diag.autoReconnectInFlight = false;
+      diag.autoReconnectAttempts = 0;
+      diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
+      diag.nextAutoReconnectAt = {};
       // Do not mark successful communication on connect alone; wait for observed
       // Connected poll/cache refresh evidence.
     }
@@ -1700,6 +1966,8 @@ std::unique_ptr<IndustrialAdapter> ApplicationService::createRuntimeAdapter(
   {
     OpcUaAdapterConfig config;
     config.endpointUrl = record.connection.endpointUrl;
+    config.timeoutMs =
+        record.connection.timeoutMs > 0 ? record.connection.timeoutMs : 2000;
     for (const EquipmentMappingRecord &eq : record.equipment)
     {
       OpcUaEquipmentMapping mapped;

@@ -201,7 +201,7 @@ void testMultiAdapterIsolationAndCache()
   auto fan = cache.equipmentById("FAN-001");
   expect(fan.has_value() && !fan->stale, "FAN-001 still fresh");
 
-  // Explicit reconnect (no auto-reconnect).
+  // Explicit reconnect at AdapterManager level (ApplicationService owns auto-reconnect).
   mockA->clearCommunicationFailure();
   expect(manager.connectAdapter("mock-a").ok, "explicit reconnect");
   scheduler.pollOnce();
@@ -336,11 +336,19 @@ void testOpcUaReconnectUnderScheduler()
          "connected under scheduler");
 
   // Simulate session loss, then recover while poll thread is active.
+  // OPC UA client timeout is ~2s; wait past one bounded read failure.
   server.stop();
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  expect(manager.adapter("opcua-race")->connectionState() ==
-             virtual_factory::ConnectionState::Faulted,
-         "scheduler poll marks FAULTED after server loss");
+  bool sawFaulted = false;
+  for (int i = 0; i < 40 && !sawFaulted; ++i)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (manager.adapter("opcua-race")->connectionState() ==
+        virtual_factory::ConnectionState::Faulted)
+    {
+      sawFaulted = true;
+    }
+  }
+  expect(sawFaulted, "scheduler poll marks FAULTED after server loss");
 
   expect(server.start(), "server restart for recovery");
   std::this_thread::sleep_for(std::chrono::milliseconds(50));

@@ -100,6 +100,13 @@ bool isConnectivityStatus(UA_StatusCode status)
     case UA_STATUSCODE_BADSECURECHANNELCLOSED:
     case UA_STATUSCODE_BADSECURECHANNELIDINVALID:
     case UA_STATUSCODE_BADSECURECHANNELTOKENUNKNOWN:
+    // Dead/unreachable peer during sync I/O (blackhole, stalled TCP, etc.).
+    case UA_STATUSCODE_BADTIMEOUT:
+    case UA_STATUSCODE_BADNOTCONNECTED:
+    case UA_STATUSCODE_BADCOMMUNICATIONERROR:
+    case UA_STATUSCODE_BADTCPINTERNALERROR:
+    case UA_STATUSCODE_BADTCPSERVERTOOBUSY:
+    case UA_STATUSCODE_BADTCPNOTENOUGHRESOURCES:
       return true;
     default:
       return false;
@@ -383,7 +390,7 @@ bool OpcUaIndustrialAdapter::connect()
   }
 
   UA_ClientConfig *clientConfig = UA_Client_getConfig(this->client_->client);
-  clientConfig->timeout = 2000;
+  clientConfig->timeout = static_cast<UA_UInt32>(this->resolvedTimeoutMs());
   // Explicit ICP lifecycle owns reconnect. open62541 must not silently rebuild
   // a SecureChannel underneath connection_state_ (would desynchronize ICP).
   clientConfig->noReconnect = true;
@@ -407,13 +414,34 @@ bool OpcUaIndustrialAdapter::connect()
   return true;
 }
 
+int OpcUaIndustrialAdapter::resolvedTimeoutMs() const
+{
+  return this->config_.timeoutMs > 0 ? this->config_.timeoutMs : 2000;
+}
+
+
 void OpcUaIndustrialAdapter::releaseClient()
 {
   if (this->client_ && this->client_->client != nullptr)
   {
-    UA_Client_disconnect(this->client_->client);
-    UA_Client_delete(this->client_->client);
+    UA_Client *client = this->client_->client;
     this->client_->client = nullptr;
+
+    // Bound teardown: a dead peer must not block ICP. Shrink the client timeout
+    // and delete. Do NOT call UA_Client_disconnectSecureChannel here — open62541
+    // can wait in an unbounded "while channel not CLOSED" loop on a wedged peer.
+    // UA_Client_delete performs cleanup; with a short timeout, request waits are
+    // bounded by clientConfig->timeout.
+    UA_ClientConfig *clientConfig = UA_Client_getConfig(client);
+    if (clientConfig != nullptr)
+    {
+      const UA_UInt32 teardownMs = 250;
+      const UA_UInt32 configured =
+          static_cast<UA_UInt32>(this->resolvedTimeoutMs());
+      clientConfig->timeout = configured < teardownMs ? configured : teardownMs;
+      clientConfig->noReconnect = true;
+    }
+    UA_Client_delete(client);
   }
 }
 
@@ -613,9 +641,15 @@ bool OpcUaIndustrialAdapter::readDouble(const OpcUaNodeRef &node, double *value)
 
 bool OpcUaIndustrialAdapter::writeBoolean(const OpcUaNodeRef &node, bool value)
 {
-  if (this->client_->client == nullptr || node.identifier.empty())
+  if (node.identifier.empty())
   {
-    this->enterFault("OPC UA write failed: invalid node or client");
+    this->last_failure_was_connectivity_ = false;
+    this->last_error_ = "OPC UA write failed: empty NodeId";
+    return false;
+  }
+  if (this->client_->client == nullptr)
+  {
+    this->enterFault("OPC UA write failed: invalid client");
     return false;
   }
 
@@ -650,9 +684,15 @@ bool OpcUaIndustrialAdapter::writeBoolean(const OpcUaNodeRef &node, bool value)
 
 bool OpcUaIndustrialAdapter::writeDouble(const OpcUaNodeRef &node, double value)
 {
-  if (this->client_->client == nullptr || node.identifier.empty())
+  if (node.identifier.empty())
   {
-    this->enterFault("OPC UA write failed: invalid node or client");
+    this->last_failure_was_connectivity_ = false;
+    this->last_error_ = "OPC UA write failed: empty NodeId";
+    return false;
+  }
+  if (this->client_->client == nullptr)
+  {
+    this->enterFault("OPC UA write failed: invalid client");
     return false;
   }
 

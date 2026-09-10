@@ -65,6 +65,9 @@ struct OpcUaAdapterConfig
 {
   /// e.g. opc.tcp://192.168.1.10:4840 — this adapter's single endpoint
   std::string endpointUrl;
+  /// Bound OPC UA client request timeout (connect/read/write/disconnect).
+  /// When <= 0, the adapter uses 2000 ms.
+  int timeoutMs{2000};
   std::vector<OpcUaEquipmentMapping> equipment;
 };
 
@@ -111,6 +114,7 @@ private:
   void bindEquipment();
   void enterFault(const std::string &reason);
   void releaseClient();
+  int resolvedTimeoutMs() const;
   bool readBoolean(const OpcUaNodeRef &node, bool *value);
   bool readDouble(const OpcUaNodeRef &node, double *value);
   bool writeBoolean(const OpcUaNodeRef &node, bool value);

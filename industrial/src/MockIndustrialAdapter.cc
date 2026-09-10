@@ -170,18 +170,28 @@ void MockIndustrialAdapter::setSourceTelemetry(
 
 void MockIndustrialAdapter::simulateCommunicationFailure(std::string reason)
 {
+  this->force_communication_failure_ = true;
+  this->forced_failure_reason_ = reason;
   this->connection_state_ = ConnectionState::Faulted;
   this->last_error_ = std::move(reason);
 }
 
 void MockIndustrialAdapter::clearCommunicationFailure()
 {
+  this->force_communication_failure_ = false;
+  this->forced_failure_reason_.clear();
   if (this->connection_state_ == ConnectionState::Faulted)
   {
     this->connection_state_ = ConnectionState::Disconnected;
     this->bound_.clear();
     this->last_error_.clear();
   }
+}
+
+void MockIndustrialAdapter::clearForcedOutage()
+{
+  this->force_communication_failure_ = false;
+  this->forced_failure_reason_.clear();
 }
 
 std::string MockIndustrialAdapter::id() const
@@ -211,10 +221,22 @@ bool MockIndustrialAdapter::connect()
     return true;
   }
 
+  // Allow connect() from Faulted — ICP owns reconnect (same as OPC UA/Modbus).
+  // If the simulated outage is still active, fail with a bounded error.
+  if (this->force_communication_failure_)
+  {
+    this->connection_state_ = ConnectionState::Faulted;
+    this->last_error_ = this->forced_failure_reason_.empty()
+                            ? "simulated link still unavailable"
+                            : this->forced_failure_reason_;
+    return false;
+  }
+
   if (this->connection_state_ == ConnectionState::Faulted)
   {
-    this->last_error_ = "cannot connect while faulted";
-    return false;
+    this->bound_.clear();
+    this->last_error_.clear();
+    this->connection_state_ = ConnectionState::Disconnected;
   }
 
   this->bindDevices();

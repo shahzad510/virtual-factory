@@ -3,6 +3,7 @@
 #include <virtual_factory/icp/app/ApplicationService.hh>
 #include <virtual_factory/icp/app/HttpApiServer.hh>
 #include <virtual_factory/industrial/IndustrialAdapter.hh>
+#include <virtual_factory/industrial/MockIndustrialAdapter.hh>
 #include <virtual_factory/industrial/OpcUaIndustrialAdapter.hh>
 
 #include <chrono>
@@ -1104,6 +1105,334 @@ int main()
 
     svc.stop();
     ::unlink(cmdPath.c_str());
+  }
+
+
+  {
+    // Communication fault history, auto-reconnect, and responsiveness.
+    const std::string faultPath = tempConfigPath() + "-fault.json";
+    ::unlink(faultPath.c_str());
+    ApplicationService svc(faultPath);
+    svc.start();
+
+    virtual_factory::icp::AdapterConfigRecord mock;
+    mock.adapterId = "mock-fault";
+    mock.protocol = "mock";
+    mock.enabled = true;
+    mock.description = "fault history";
+    virtual_factory::icp::EquipmentMappingRecord eq;
+    eq.equipmentId = "EQ-FAULT";
+    eq.type = "pump";
+    eq.capabilities = {"start", "stop"};
+    mock.equipment.push_back(eq);
+    expect(svc.upsertAdapterConfig(mock).ok, "upsert mock-fault");
+    expect(svc.connectAdapter("mock-fault").ok, "connect mock-fault");
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+
+    auto *mockRuntime = dynamic_cast<virtual_factory::MockIndustrialAdapter *>(
+        svc.manager().adapter("mock-fault"));
+    expect(mockRuntime != nullptr, "mock-fault runtime pointer");
+    if (mockRuntime == nullptr)
+    {
+      svc.stop();
+      ::unlink(faultPath.c_str());
+    }
+    else
+    {
+      mockRuntime->simulateCommunicationFailure(
+          "OPC UA read failed for ns=2;s=MotorSpeed: BadSecureChannelClosed");
+
+      bool sawFaultEvent = false;
+      bool sawAlarm = false;
+      for (int i = 0; i < 50 && !(sawFaultEvent && sawAlarm); ++i)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        for (const auto &ev : svc.events(100))
+        {
+          if (ev.adapterId == "mock-fault"
+              && (ev.eventType == "communication_fault" || ev.newState == "FAULTED"))
+          {
+            if (ev.level == "error" || ev.eventType == "communication_fault")
+            {
+              sawFaultEvent = true;
+              expect(!ev.errorDetails.empty() || !ev.reason.empty(),
+                     "fault event carries error details");
+              if (!ev.errorDetails.empty())
+              {
+                expect(
+                    ev.errorDetails.find("BadSecureChannelClosed") != std::string::npos,
+                    "fault event preserves OPC UA status text");
+              }
+              if (!ev.nodeId.empty())
+              {
+                expect(ev.nodeId.find("MotorSpeed") != std::string::npos,
+                       "fault event captures nodeId");
+              }
+            }
+          }
+        }
+        for (const auto &alarm : svc.diagnosticsReport().activeAlarms)
+        {
+          if (alarm.sourceId == "mock-fault")
+          {
+            sawAlarm = true;
+          }
+        }
+      }
+      expect(sawFaultEvent, "historical communication fault event recorded by poll hook");
+      expect(sawAlarm, "active alarm while faulted");
+      expect(svc.manager().adapter("mock-fault")->connectionState()
+                 == virtual_factory::ConnectionState::Faulted,
+             "adapter currently FAULTED");
+
+      const auto icpDuring = svc.diagnosticsReport().icp.overallHealth;
+      expect(icpDuring == "HEALTHY" || icpDuring == "DEGRADED",
+             "ICP software health independent of industrial fault");
+
+      std::size_t faultEvents = 0;
+      std::this_thread::sleep_for(std::chrono::milliseconds(900));
+      for (const auto &ev : svc.events(200))
+      {
+        if (ev.adapterId == "mock-fault" && ev.eventType == "communication_fault")
+        {
+          ++faultEvents;
+        }
+      }
+      expect(faultEvents == 1, "no communication_fault poll flood");
+
+      const auto t0 = std::chrono::steady_clock::now();
+      for (int i = 0; i < 25; ++i)
+      {
+        (void)svc.status();
+        (void)svc.diagnosticsReport();
+        (void)svc.events(10);
+      }
+      const auto elapsedMs =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - t0)
+              .count();
+      expect(elapsedMs < 2000, "service remains responsive during outage");
+
+      // Peer available again; keep FAULTED so ICP auto-reconnect can connect().
+      mockRuntime->clearForcedOutage();
+      bool recovered = false;
+      bool faultHistoryKept = false;
+      bool recoveryEvent = false;
+      for (int i = 0; i < 60 && !recovered; ++i)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (svc.manager().adapter("mock-fault")->connectionState()
+            == virtual_factory::ConnectionState::Connected)
+        {
+          recovered = true;
+        }
+      }
+      expect(recovered, "automatic reconnect restores CONNECTED without GUI");
+
+      for (const auto &ev : svc.events(200))
+      {
+        if (ev.adapterId != "mock-fault")
+        {
+          continue;
+        }
+        if (ev.eventType == "communication_fault")
+        {
+          faultHistoryKept = true;
+        }
+        if (ev.eventType == "communication_recovered" || ev.recovery == "successful")
+        {
+          recoveryEvent = true;
+        }
+      }
+      expect(faultHistoryKept, "fault history survives recovery");
+      expect(recoveryEvent, "recovery event recorded");
+
+      bool alarmCleared = true;
+      for (const auto &alarm : svc.diagnosticsReport().activeAlarms)
+      {
+        if (alarm.sourceId == "mock-fault")
+        {
+          alarmCleared = false;
+        }
+      }
+      expect(alarmCleared, "active alarm cleared after recovery");
+
+      // Second outage/recovery cycle.
+      mockRuntime->simulateCommunicationFailure(
+          "OPC UA read failed for ns=2;s=MotorSpeed: BadConnectionClosed");
+      bool secondFault = false;
+      for (int i = 0; i < 50 && !secondFault; ++i)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::size_t faults = 0;
+        for (const auto &ev : svc.events(200))
+        {
+          if (ev.adapterId == "mock-fault" && ev.eventType == "communication_fault")
+          {
+            ++faults;
+          }
+        }
+        if (faults >= 2)
+        {
+          secondFault = true;
+        }
+      }
+      expect(secondFault, "second outage creates another historical fault event");
+      mockRuntime->clearForcedOutage();
+      bool secondRecovery = false;
+      for (int i = 0; i < 60 && !secondRecovery; ++i)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (svc.manager().adapter("mock-fault")->connectionState()
+            == virtual_factory::ConnectionState::Connected)
+        {
+          secondRecovery = true;
+        }
+      }
+      expect(secondRecovery, "second automatic recovery succeeds");
+
+      std::size_t recoveries = 0;
+      std::size_t faults = 0;
+      for (const auto &ev : svc.events(300))
+      {
+        if (ev.adapterId != "mock-fault")
+        {
+          continue;
+        }
+        if (ev.eventType == "communication_fault")
+        {
+          ++faults;
+        }
+        if (ev.eventType == "communication_recovered" || ev.recovery == "successful")
+        {
+          ++recoveries;
+        }
+      }
+      expect(faults >= 2, "repeated outages keep fault history");
+      expect(recoveries >= 2, "repeated recoveries keep recovery history");
+
+      svc.stop();
+      ::unlink(faultPath.c_str());
+    }
+  }
+
+
+  {
+    // Real open62541 outage: durable fault event + automatic recovery.
+    const std::string opcuaPath = tempConfigPath() + "-opcua-outage.json";
+    ::unlink(opcuaPath.c_str());
+    virtual_factory::test::OpcUaTestServer server;
+    expect(server.start(), "open62541 fixture starts for outage test");
+    if (server.port() != 0)
+    {
+      ApplicationService svc(opcuaPath);
+      svc.start();
+
+      virtual_factory::icp::AdapterConfigRecord opcua;
+      opcua.adapterId = "opcua-outage";
+      opcua.protocol = "opcua";
+      opcua.enabled = true;
+      opcua.connection.endpointUrl = server.endpointUrl();
+      opcua.connection.timeoutMs = 1000;
+      virtual_factory::icp::EquipmentMappingRecord eq;
+      eq.equipmentId = virtual_factory::test::OpcUaTestServer::kMixerId;
+      eq.type = "mixer";
+      eq.capabilities = {"start", "stop"};
+      virtual_factory::icp::TelemetryMappingRecord tel;
+      tel.name = "speed";
+      tel.address =
+          std::string("ns=1;s=") + virtual_factory::test::OpcUaTestServer::kMixerSpeedActual;
+      tel.namespaceIndex = 1;
+      eq.telemetry.push_back(tel);
+      opcua.equipment.push_back(eq);
+      expect(svc.upsertAdapterConfig(opcua).ok, "upsert opcua-outage");
+      expect(svc.connectAdapter("opcua-outage").ok, "connect opcua-outage");
+
+      bool healthy = false;
+      for (int i = 0; i < 40 && !healthy; ++i)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (svc.manager().adapter("opcua-outage") != nullptr
+            && svc.manager().adapter("opcua-outage")->connectionState()
+                   == virtual_factory::ConnectionState::Connected)
+        {
+          healthy = true;
+        }
+      }
+      expect(healthy, "opcua-outage CONNECTED with live open62541 server");
+
+      server.stop();
+
+      bool sawFault = false;
+      const auto tFault0 = std::chrono::steady_clock::now();
+      for (int i = 0; i < 50 && !sawFault; ++i)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Service must remain responsive while the peer is gone.
+        (void)svc.status();
+        (void)svc.diagnosticsReport();
+        for (const auto &ev : svc.events(100))
+        {
+          if (ev.adapterId == "opcua-outage"
+              && (ev.eventType == "communication_fault" || ev.newState == "FAULTED")
+              && (ev.level == "error" || ev.eventType == "communication_fault"))
+          {
+            sawFault = true;
+            expect(!ev.errorDetails.empty() || !ev.reason.empty(),
+                   "opcua fault event retains protocol error");
+          }
+        }
+      }
+      const auto faultDetectMs =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - tFault0)
+              .count();
+      expect(sawFault, "killing open62541 creates durable communication_fault event");
+      expect(faultDetectMs < 8000, "fault detection remains bounded");
+      expect(svc.manager().adapter("opcua-outage")->connectionState()
+                 == virtual_factory::ConnectionState::Faulted,
+             "opcua-outage FAULTED after server kill");
+      const auto icpDuring = svc.diagnosticsReport().icp.overallHealth;
+      expect(icpDuring == "HEALTHY" || icpDuring == "DEGRADED",
+             "ICP remains healthy during OPC UA outage");
+
+      expect(server.start(), "restart open62541 for auto-recovery");
+      bool recovered = false;
+      for (int i = 0; i < 80 && !recovered; ++i)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        (void)svc.status();
+        if (svc.manager().adapter("opcua-outage")->connectionState()
+            == virtual_factory::ConnectionState::Connected)
+        {
+          recovered = true;
+        }
+      }
+      expect(recovered, "OPC UA auto-reconnect restores CONNECTED without GUI Reconnect");
+
+      bool faultKept = false;
+      bool recoverySeen = false;
+      for (const auto &ev : svc.events(200))
+      {
+        if (ev.adapterId != "opcua-outage")
+        {
+          continue;
+        }
+        if (ev.eventType == "communication_fault")
+        {
+          faultKept = true;
+        }
+        if (ev.eventType == "communication_recovered" || ev.recovery == "successful")
+        {
+          recoverySeen = true;
+        }
+      }
+      expect(faultKept, "OPC UA fault history retained after recovery");
+      expect(recoverySeen, "OPC UA recovery event recorded");
+
+      svc.stop();
+    }
+    ::unlink(opcuaPath.c_str());
   }
 
   if (failures == 0)

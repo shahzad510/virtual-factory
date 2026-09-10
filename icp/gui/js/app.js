@@ -1982,6 +1982,7 @@
         ${row("Reason", esc(na(ev.reason, "—")))}
         ${row("Error code", `<span class="mono">${esc(na(ev.errorCode, "—"))}</span>`)}
         ${row("Error", `<span class="mono">${esc(na(ev.errorDetails || ev.message, "—"))}</span>`)}
+        ${row("Node", `<span class="mono">${esc(na(ev.nodeId, "—"))}</span>`)}
         ${row("Recovery", esc(na(ev.recovery, "—")))}
         ${row(
           "Duration",
