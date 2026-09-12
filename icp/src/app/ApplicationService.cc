@@ -299,6 +299,9 @@ ConfigResult ApplicationService::loadConfiguration()
           "configuration",
           "Configuration loaded from " + this->configuration_path_);
     }
+    // Materialize only — never connect here. Peer-down must not block ICP
+    // startup / HTTP. Background recovery (onPollCycle) owns first connect.
+    this->materializeEnabledAdaptersForRecovery();
   }
   else
   {
@@ -441,7 +444,10 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
 
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
-    ++this->diagnosticsFor(adapterId).connectionAttempts;
+    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+    ++diag.connectionAttempts;
+    // Explicit Connect arms ICP-owned recovery for later outages.
+    diag.autoConnectDesired = true;
   }
 
   AdapterManagerResult ensured = this->ensureRuntimeAdapter(*record);
@@ -546,6 +552,11 @@ AdapterManagerResult ApplicationService::disconnectAdapter(
   if (result.ok)
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
+    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+    // Explicit Disconnect must remain sticky for this process lifetime.
+    diag.autoConnectDesired = false;
+    diag.autoReconnectInFlight = false;
+    diag.nextAutoReconnectAt = {};
     this->observeAdapterStateLocked(adapterId, "DISCONNECTED");
   }
   return result;
@@ -1213,6 +1224,49 @@ void ApplicationService::enrichCommunicationErrorFields(ApplicationEvent *event)
   }
 }
 
+void ApplicationService::materializeEnabledAdaptersForRecovery()
+{
+  // Create missing enabled adapters without connecting. First/peer-down connect
+  // is owned exclusively by onPollCycle so ICP HTTP/control plane can start
+  // while industrial endpoints are unavailable.
+  for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
+  {
+    if (!record.enabled)
+    {
+      continue;
+    }
+    if (this->manager_.adapter(record.adapterId) != nullptr)
+    {
+      continue;
+    }
+
+    AdapterManagerResult ensured = this->ensureRuntimeAdapter(record);
+    if (!ensured.ok)
+    {
+      ApplicationEvent ev;
+      ev.level = "error";
+      ev.category = "configuration";
+      ev.eventType = "materialize_failed";
+      ev.adapterId = record.adapterId;
+      ev.protocol = record.protocol;
+      ev.message = ensured.message;
+      ev.reason = ensured.message;
+      this->recordEvent(std::move(ev));
+      continue;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
+      diag.autoConnectDesired = true;
+      // Eligible on the next poll cycle — do not sleep/connect on this thread.
+      diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
+      diag.nextAutoReconnectAt = std::chrono::steady_clock::now();
+      this->observeAdapterStateLocked(record.adapterId, "DISCONNECTED");
+    }
+  }
+}
+
 void ApplicationService::scheduleAutoReconnectLocked(const std::string &adapterId) const
 {
   AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
@@ -1247,11 +1301,15 @@ void ApplicationService::onPollCycle()
       {
         continue;
       }
-      if (runtime->connectionState() != ConnectionState::Faulted)
+      AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
+      const ConnectionState state = runtime->connectionState();
+      const bool eligible =
+          state == ConnectionState::Faulted
+          || (state == ConnectionState::Disconnected && diag.autoConnectDesired);
+      if (!eligible)
       {
         continue;
       }
-      AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
       if (diag.autoReconnectInFlight)
       {
         continue;
@@ -1277,12 +1335,19 @@ void ApplicationService::onPollCycle()
   for (const std::string &adapterId : due)
   {
     // From FAULTED, connect() recreates the client — do not disconnect first
-    // (would clear lastError / skip FAULTED history).
+    // (would clear lastError / skip FAULTED history). From DISCONNECTED with
+    // autoConnectDesired, this is the deferred startup connect.
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       ++this->diagnosticsFor(adapterId).autoReconnectAttempts;
       ++this->diagnosticsFor(adapterId).reconnectCount;
-      this->reconnect_in_progress_[adapterId] = true;
+      IndustrialAdapter *before = this->manager_.adapter(adapterId);
+      // Only FAULTED→CONNECTED is a recovery event; first deferred connect is not.
+      if (before != nullptr
+          && before->connectionState() == ConnectionState::Faulted)
+      {
+        this->reconnect_in_progress_[adapterId] = true;
+      }
     }
 
     AdapterManagerResult connected = this->manager_.connectAdapter(adapterId);
