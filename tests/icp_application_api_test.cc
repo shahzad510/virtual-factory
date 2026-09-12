@@ -1435,6 +1435,186 @@ int main()
     ::unlink(opcuaPath.c_str());
   }
 
+
+  {
+    // Scenario A: OPC UA DOWN BEFORE ICP START — ICP must become available,
+    // then auto-recover when the fixture starts (no ICP restart, no GUI Connect).
+    // Continues into a runtime outage cycle (scenario B) on the same session.
+    const std::string startupPath = tempConfigPath() + "-opcua-startup-down.json";
+    ::unlink(startupPath.c_str());
+
+    virtual_factory::test::OpcUaTestServer server;
+    // Reserve a port for the fixture but do not start it yet.
+    {
+      virtual_factory::test::OpcUaTestServer probe;
+      expect(probe.start(), "probe free OPC UA port");
+      server.setPort(probe.port());
+      probe.stop();
+    }
+    const std::string endpoint = server.endpointUrl();
+
+    {
+      ApplicationService writer(startupPath);
+      virtual_factory::icp::AdapterConfigRecord opcua;
+      opcua.adapterId = "opcua-startup-down";
+      opcua.protocol = "opcua";
+      opcua.enabled = true;
+      opcua.connection.endpointUrl = endpoint;
+      opcua.connection.timeoutMs = 1000;
+      virtual_factory::icp::EquipmentMappingRecord eq;
+      eq.equipmentId = virtual_factory::test::OpcUaTestServer::kMixerId;
+      eq.type = "mixer";
+      eq.capabilities = {"start", "stop"};
+      virtual_factory::icp::TelemetryMappingRecord tel;
+      tel.name = "speed";
+      tel.address =
+          std::string("ns=1;s=") + virtual_factory::test::OpcUaTestServer::kMixerSpeedActual;
+      tel.namespaceIndex = 1;
+      eq.telemetry.push_back(tel);
+      opcua.equipment.push_back(eq);
+      expect(writer.upsertAdapterConfig(opcua).ok, "persist opcua-startup-down config");
+      expect(writer.saveConfiguration().ok, "save opcua-startup-down config");
+    }
+
+    const auto tStart = std::chrono::steady_clock::now();
+    ApplicationService svc(startupPath);
+    svc.start();
+    expect(svc.loadConfiguration().ok, "load config while OPC UA peer is down");
+    const int httpPort = freePort() + 17;
+    HttpApiServer api(svc, "icp/gui", "127.0.0.1", httpPort);
+    expect(api.start(), "HTTP starts while OPC UA peer is down");
+    const auto startupMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - tStart)
+                               .count();
+    expect(startupMs < 3000, "ICP startup remains bounded with OPC UA down");
+
+    httplib::Client client("127.0.0.1", httpPort);
+    client.set_connection_timeout(2, 0);
+    client.set_read_timeout(2, 0);
+    auto diagResp = client.Get("/api/v1/diagnostics");
+    expect(diagResp && diagResp->status == 200,
+           "diagnostics HTTP responds while OPC UA unavailable");
+    if (diagResp && diagResp->status == 200)
+    {
+      const json body = json::parse(diagResp->body, nullptr, false);
+      expect(!body.is_discarded(), "diagnostics JSON parses");
+      if (!body.is_discarded())
+      {
+        const std::string health =
+            body.value("icp", json::object()).value("overallHealth", "");
+        expect(health == "HEALTHY" || health == "DEGRADED",
+               "ICP health stays up with OPC UA down at startup");
+      }
+    }
+    expect(svc.diagnosticsReport().icp.overallHealth == "HEALTHY"
+               || svc.diagnosticsReport().icp.overallHealth == "DEGRADED",
+           "ICP overallHealth independent of OPC UA availability");
+
+    virtual_factory::IndustrialAdapter *runtime = nullptr;
+    bool sawFaulted = false;
+    for (int i = 0; i < 80 && !sawFaulted; ++i)
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      (void)svc.diagnosticsReport();
+      runtime = svc.manager().adapter("opcua-startup-down");
+      if (runtime == nullptr)
+      {
+        continue;
+      }
+      // Wait for deferred connect to FAULT — proves peer-down is an adapter
+      // condition and seeds durable communication_fault history.
+      if (runtime->connectionState() == virtual_factory::ConnectionState::Faulted)
+      {
+        sawFaulted = true;
+      }
+    }
+    expect(sawFaulted,
+           "OPC UA adapter FAULTED while peer down — ICP remains operational");
+    expect(runtime != nullptr, "enabled OPC UA adapter was materialized at load");
+
+    expect(server.start(), "start open62541 fixture for startup-down recovery");
+
+    bool recovered = false;
+    for (int i = 0; i < 100 && !recovered; ++i)
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      auto *r = svc.manager().adapter("opcua-startup-down");
+      if (r != nullptr
+          && r->connectionState() == virtual_factory::ConnectionState::Connected)
+      {
+        recovered = true;
+      }
+      auto diag = client.Get("/api/v1/diagnostics");
+      expect(diag && diag->status == 200, "diagnostics stays responsive during recovery");
+    }
+    expect(recovered, "startup-down OPC UA auto-recovers to CONNECTED without ICP restart");
+
+    bool faultHistory = false;
+    bool recoveryEvent = false;
+    for (const auto &ev : svc.events(300))
+    {
+      if (ev.adapterId != "opcua-startup-down")
+      {
+        continue;
+      }
+      if (ev.eventType == "communication_fault")
+      {
+        faultHistory = true;
+      }
+      if (ev.eventType == "communication_recovered" || ev.recovery == "successful")
+      {
+        recoveryEvent = true;
+      }
+    }
+    expect(faultHistory, "startup-down retains communication_fault history");
+    expect(recoveryEvent, "startup-down records recovery event");
+
+    // Runtime outage after startup recovery (scenario B direction).
+    server.stop();
+    bool faultedAgain = false;
+    for (int i = 0; i < 50 && !faultedAgain; ++i)
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      (void)svc.diagnosticsReport();
+      auto diag = client.Get("/api/v1/diagnostics");
+      expect(diag && diag->status == 200, "ICP HTTP responsive after peer kill");
+      auto *r = svc.manager().adapter("opcua-startup-down");
+      if (r != nullptr && r->connectionState() == virtual_factory::ConnectionState::Faulted)
+      {
+        faultedAgain = true;
+      }
+    }
+    expect(faultedAgain, "second outage FAULTs adapter while ICP stays up");
+
+    expect(server.start(), "restart fixture for second recovery");
+    bool recoveredAgain = false;
+    for (int i = 0; i < 100 && !recoveredAgain; ++i)
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      auto *r = svc.manager().adapter("opcua-startup-down");
+      if (r != nullptr
+          && r->connectionState() == virtual_factory::ConnectionState::Connected)
+      {
+        recoveredAgain = true;
+      }
+    }
+    expect(recoveredAgain, "second automatic recovery after startup-down cycle");
+
+    std::size_t faults = 0;
+    for (const auto &ev : svc.events(400))
+    {
+      if (ev.adapterId == "opcua-startup-down" && ev.eventType == "communication_fault")
+      {
+        ++faults;
+      }
+    }
+    expect(faults >= 2, "repeated faults remain in event history");
+
+    api.stop();
+    svc.stop();
+    ::unlink(startupPath.c_str());
+  }
+
   if (failures == 0)
   {
     std::cout << "icp_application_api_test: OK" << std::endl;

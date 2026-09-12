@@ -166,6 +166,10 @@ struct AdapterSessionDiagnostics
   std::chrono::milliseconds autoReconnectBackoffMs{1000};
   std::size_t autoReconnectAttempts{0};
   bool autoReconnectInFlight{false};
+  /// When true, ICP background recovery may connect a DISCONNECTED/FAULTED
+  /// adapter. Armed on configuration materialize and explicit Connect; cleared
+  /// on explicit Disconnect so operator disconnect stays sticky for this process.
+  bool autoConnectDesired{false};
 };
 
 struct AdapterDiagnosticsView
@@ -359,6 +363,9 @@ private:
       std::int64_t durationMs) const;
   void onPollCycle();
   void scheduleAutoReconnectLocked(const std::string &adapterId) const;
+  /// Create missing enabled runtime adapters without connecting. Arms ICP-owned
+  /// background connect so peer-down at startup cannot block HTTP/control plane.
+  void materializeEnabledAdaptersForRecovery();
   static void enrichCommunicationErrorFields(ApplicationEvent *event);
 
   mutable std::mutex mutex_;

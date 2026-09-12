@@ -1389,7 +1389,7 @@
       </tr>`
       )
       .join("")}</tbody></table>
-      <p class="muted">Reconnect is explicit disconnect then connect. Background auto-reconnect is not enabled.</p>
+      <p class="muted">Reconnect is explicit disconnect then connect. ICP also runs bounded background recovery for armed adapters (FAULTED or startup-deferred); explicit Disconnect clears that arm for this process.</p>
     </div>`;
   }
 
