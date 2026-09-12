@@ -50,7 +50,10 @@
     fontScale: "1",
   });
 
-  let renderChain = Promise.resolve();
+  /** True while a render() body is executing. Poll ticks skip when set. */
+  let renderInFlight = false;
+  /** Aborts in-flight GUI fetches when a newer render supersedes them. */
+  let activeRenderAbort = null;
 
   function $(sel) {
     return document.querySelector(sel);
@@ -1164,9 +1167,16 @@
   async function renderDashboard() {
     const [st, ad] = await Promise.all([IcpApi.status(), IcpApi.adapters()]);
     if (!st.ok) {
-      return `<div class="empty"><strong>API unavailable</strong>${esc(
-        (st.data && st.data.message) || "Cannot reach /api/v1/status"
-      )}</div>`;
+      return contentFailureHtml(
+        "dashboard",
+        apiResultDetail(st, "Cannot reach /api/v1/status")
+      );
+    }
+    if (!ad.ok) {
+      return contentFailureHtml(
+        "dashboard",
+        apiResultDetail(ad, "Cannot reach /api/v1/adapters")
+      );
     }
     const s = st.data;
     const adapters = (ad.data && ad.data.adapters) || [];
@@ -1242,6 +1252,12 @@
 
   async function renderAdapters() {
     const [ad, proto] = await Promise.all([IcpApi.adapters(), IcpApi.protocols()]);
+    if (!ad.ok) {
+      return contentFailureHtml(
+        "adapters",
+        apiResultDetail(ad, "Cannot reach /api/v1/adapters")
+      );
+    }
     state.protocols = (proto.data && proto.data.protocols) || [];
     const adapters = (ad.data && ad.data.adapters) || [];
     let html = `<div class="toolbar">
@@ -1347,6 +1363,12 @@
     }
 
     const res = await IcpApi.equipment();
+    if (!res.ok) {
+      return contentFailureHtml(
+        "equipment",
+        apiResultDetail(res, "Cannot reach /api/v1/equipment")
+      );
+    }
     const list = (res.data && res.data.equipment) || [];
     if (!list.length) {
       return `<div class="empty"><strong>No equipment</strong>Connect a configured adapter (e.g. Mock) to populate live equipment.</div>`;
@@ -1372,6 +1394,12 @@
 
   async function renderConnections() {
     const res = await IcpApi.adapters();
+    if (!res.ok) {
+      return contentFailureHtml(
+        "connections",
+        apiResultDetail(res, "Cannot reach /api/v1/adapters")
+      );
+    }
     const adapters = (res.data && res.data.adapters) || [];
     if (!adapters.length) {
       return `<div class="empty"><strong>No connections</strong>Configure an adapter first.</div>`;
@@ -2039,6 +2067,12 @@
       IcpApi.adapters(),
       IcpApi.equipment(),
     ]);
+    if (!evRes.ok) {
+      return contentFailureHtml(
+        "events",
+        apiResultDetail(evRes, "Cannot reach /api/v1/events")
+      );
+    }
     const events = ((evRes.data && evRes.data.events) || []).slice().reverse();
     const retention = (evRes.data && evRes.data.retention) || {};
     const adapters = (adRes.data && adRes.data.adapters) || [];
@@ -2174,7 +2208,10 @@
   async function renderDiagnostics() {
     const res = await IcpApi.diagnostics();
     if (!res.ok) {
-      return `<div class="empty"><strong>Diagnostics unavailable</strong></div>`;
+      return contentFailureHtml(
+        "diagnostics",
+        apiResultDetail(res, "Cannot reach /api/v1/diagnostics")
+      );
     }
     const d = res.data;
     const rt = d.runtime || {};
@@ -2592,10 +2629,61 @@
     ${appearanceFormHtml(appearance)}`;
   }
 
+  function contentLoadingHtml(route) {
+    const label = titles[route] || route || "page";
+    return `<div class="empty"><strong>Loading ${esc(label)}…</strong>
+      <p class="muted">Fetching runtime state. Navigation remains available.</p></div>`;
+  }
+
+  function contentFailureHtml(route, detail) {
+    const label = titles[route] || route || "page";
+    const msg =
+      detail ||
+      "The control-plane request failed or timed out. The GUI stays usable; polling will retry.";
+    return `<div class="empty"><strong>Unable to load ${esc(label)}</strong>
+      <p class="muted">${esc(msg)}</p></div>`;
+  }
+
+  /** Protocol-agnostic message for a failed IcpApi result. */
+  function apiResultDetail(res, fallback) {
+    if (!res) return fallback || "Request failed";
+    if (res.timedOut) {
+      return (res.data && res.data.message) || "Request timed out";
+    }
+    if (res.aborted) {
+      return "Request aborted";
+    }
+    return (res.data && res.data.message) || fallback || "Request failed";
+  }
+
+  /**
+   * Render the active route without head-of-line blocking.
+   * options.fromPoll: skip this tick when a render is already running.
+   * options.manualRefresh: update poll indicator after completion.
+   * Navigation always starts a new generation and aborts prior fetches.
+   */
   async function render(options) {
     options = options || {};
-    const run = async () => {
-      const generation = ++state._renderGeneration;
+    if (options.fromPoll && renderInFlight) {
+      return;
+    }
+
+    const generation = ++state._renderGeneration;
+    if (activeRenderAbort) {
+      try {
+        activeRenderAbort.abort();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    activeRenderAbort = new AbortController();
+    const signal = activeRenderAbort.signal;
+    if (IcpApi && typeof IcpApi.setActiveAbortSignal === "function") {
+      IcpApi.setActiveAbortSignal(signal);
+    }
+
+    renderInFlight = true;
+    try {
       if (!options.skipDraftCapture) {
         captureAdapterFormDraft();
         captureConfigurationDraft();
@@ -2609,6 +2697,15 @@
       document.querySelectorAll(".nav a").forEach((a) => {
         a.classList.toggle("active", a.dataset.route === route);
       });
+
+      const contentEl = $("#content");
+      const existing = (contentEl && contentEl.innerHTML) || "";
+      // Paint immediately on navigation / first load so #content is never blank
+      // while awaiting network. Poll refreshes keep prior content to avoid flicker.
+      if (!options.fromPoll || !existing.trim()) {
+        contentEl.innerHTML = contentLoadingHtml(route);
+      }
+
       let html = "";
       try {
         if (route === "dashboard") html = await renderDashboard();
@@ -2622,31 +2719,47 @@
         else if (route === "settings") html = await renderSettings();
         else html = `<div class="empty">Unknown route</div>`;
       } catch (e) {
-        html = `<div class="empty"><strong>Render error</strong>${esc(e.message)}</div>`;
+        if (signal.aborted && generation !== state._renderGeneration) {
+          return;
+        }
+        html = contentFailureHtml(route, e && e.message);
       }
       if (generation !== state._renderGeneration) {
         return;
       }
-      $("#content").innerHTML = html;
+      if (!html) {
+        html = contentFailureHtml(route, "No content returned");
+      }
+      contentEl.innerHTML = html;
       bindPostRenderHandlers();
       state._lastRefreshAt = new Date().toISOString();
       const st = await IcpApi.status();
       if (generation !== state._renderGeneration) {
         return;
       }
-      if (st.ok) {
+      if (st.ok && st.data) {
         $("#runtime-pill").textContent = st.data.schedulerRunning
           ? "ICP RUNNING"
           : "ICP STOPPED";
+      } else if (st.timedOut) {
+        $("#runtime-pill").textContent = "ICP STATUS TIMEOUT";
       }
       const pollEl = $("#poll-indicator");
       if (pollEl && options.manualRefresh) {
         pollEl.textContent = "Live";
         pollEl.classList.remove("paused");
       }
-    };
-    renderChain = renderChain.then(run, run);
-    return renderChain;
+    } finally {
+      if (IcpApi && typeof IcpApi.clearActiveAbortSignal === "function") {
+        IcpApi.clearActiveAbortSignal(signal);
+      }
+      if (generation === state._renderGeneration) {
+        renderInFlight = false;
+        if (activeRenderAbort && activeRenderAbort.signal === signal) {
+          activeRenderAbort = null;
+        }
+      }
+    }
   }
 
   function parseHash() {
@@ -3115,6 +3228,8 @@
     if (state.pollTimer) clearInterval(state.pollTimer);
     state.pollTimer = setInterval(() => {
       if (document.hidden) return;
+      // Bound polling: never queue behind an in-flight render.
+      if (renderInFlight) return;
       // Do not overwrite unsaved adapter editor or configuration editor during poll.
       if (state._editingAdapter && state.route === "adapters") return;
       if (state._cfgEditorDirty && state.route === "configuration") return;
@@ -3125,7 +3240,7 @@
       if (["dashboard", "equipment", "connections", "diagnostics", "events", "adapters"].includes(
         state.route
       )) {
-        render({ skipDraftCapture: false });
+        render({ fromPoll: true, skipDraftCapture: false });
       }
     }, 2000);
   }
