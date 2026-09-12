@@ -1277,7 +1277,7 @@
           <td>${adapterConnectionBadge(a)}</td>
           <td>${a.enabled ? "yes" : "no"}</td>
           <td>${esc(a.equipmentCount)}</td>
-          <td class="mono">${esc(a.lastError || "")}</td>
+          <td>${a.lastError ? lastErrorHtml(a.lastError, inferredErrorHealth(a)) : ""}</td>
           <td class="table-actions">${adapterLifecycleButtonsHtml(a, {
             includeEditorActions: true,
           })}</td>
@@ -1336,7 +1336,7 @@
             }</dd>
             <dt>Stale</dt><dd>${e.stale ? statusBadge("STALE") : "no"}</dd>
             <dt>Observed</dt><dd class="mono">${esc(e.observedAtUtc || "")}</dd>
-            <dt>Last error</dt><dd class="mono">${esc(e.lastError || "")}</dd>
+            <dt>Last error</dt><dd>${e.lastError ? lastErrorHtml(e.lastError, inferredErrorHealth(e)) : ""}</dd>
           </dl>
           <h3>Telemetry</h3>
           <table><thead><tr><th>Name</th><th>Value</th><th>Unit</th></tr></thead><tbody>${tel}</tbody></table>
@@ -1384,7 +1384,7 @@
         <td>${esc(a.adapterId)}</td>
         <td>${esc(a.protocol)}</td>
         <td>${adapterConnectionBadge(a)}</td>
-        <td class="mono">${esc(a.lastError || "")}</td>
+        <td>${a.lastError ? lastErrorHtml(a.lastError, inferredErrorHealth(a)) : ""}</td>
         <td class="table-actions">${adapterLifecycleButtonsHtml(a)}</td>
       </tr>`
       )
@@ -1623,6 +1623,42 @@
     ]);
   }
 
+
+  function errorSeverityClass(healthOrSeverity) {
+    const v = String(healthOrSeverity || "").toUpperCase();
+    if (v === "FAULTED" || v === "FAILED" || v === "ERROR" || v === "CRITICAL") {
+      return "error-text error";
+    }
+    if (v === "DEGRADED" || v === "WARNING" || v === "WARN") {
+      return "error-text warn";
+    }
+    if (v === "HEALTHY" || v === "INFO" || v === "OK") {
+      return "error-text ok";
+    }
+    return "error-text";
+  }
+
+  function inferredErrorHealth(entity) {
+    if (!entity) return "";
+    if (entity.health) return entity.health;
+    if (entity.communicationHealth) return entity.communicationHealth;
+    if (entity.severity) return entity.severity;
+    if (entity.level) return entity.level;
+    if (!entity.lastError) return "";
+    const state = String(
+      entity.connectionState || entity.communicationLifecycleState || ""
+    ).toUpperCase();
+    if (state === "FAULTED") return "FAULTED";
+    if (state === "CONNECTED" || state === "SIMULATED_ACTIVE") return "DEGRADED";
+    return "WARNING";
+  }
+
+  function lastErrorHtml(text, healthOrSeverity) {
+    if (!text) return "";
+    const cls = errorSeverityClass(healthOrSeverity);
+    return `<span class="mono ${cls}">${esc(text)}</span>`;
+  }
+
   function healthBadge(value) {
     const v = String(value || "UNKNOWN").toUpperCase();
     const cls =
@@ -1679,7 +1715,7 @@
         <td>${statusBadge(a.connectionStateDisplay || a.connectionState)}</td>
         <td>${a.runtimePresent ? "yes" : "no"}</td>
         <td>${esc(a.equipmentCount || 0)}</td>
-        <td class="mono">${esc(a.lastError || "")}</td>
+        <td>${a.lastError ? lastErrorHtml(a.lastError, inferredErrorHealth(a)) : ""}</td>
       </tr>`;
       })
       .join("")}</tbody></table>`;
@@ -1714,7 +1750,7 @@
                   ")"
                 : "—"
             }</dd>
-            <dt>Last error</dt><dd class="mono">${esc(na(c.lastError || c.errorMessage, "—"))}</dd>
+            <dt>Last error</dt><dd>${(c.lastError || c.errorMessage) ? lastErrorHtml(c.lastError || c.errorMessage, "ERROR") : "—"}</dd>
             ${
               c.reason
                 ? `<dt>Reason</dt><dd class="muted">${esc(c.reason)}</dd>`
@@ -1774,7 +1810,7 @@
                 ")"
               : "Not available"
           }</dd>
-          <dt>Last error</dt><dd class="mono">${esc(na(eq.lastError, "—"))}</dd>
+          <dt>Last error</dt><dd>${eq.lastError ? lastErrorHtml(eq.lastError, inferredErrorHealth(eq)) : "—"}</dd>
         </dl>
         <h3>Telemetry</h3>
         ${
@@ -1841,7 +1877,7 @@
                   ? relativeTimeLabel(eq.lastSuccessfulTelemetryUtc)
                   : "Not available"
               }</dd>
-              <dt>Last error</dt><dd class="mono">${esc(na(eq.lastError || ref.lastError, "—"))}</dd>
+              <dt>Last error</dt><dd>${(eq.lastError || ref.lastError) ? lastErrorHtml(eq.lastError || ref.lastError, inferredErrorHealth(eq)) : "—"}</dd>
             </dl>
             ${
               tel
@@ -1901,13 +1937,13 @@
                 ")"
               : "Not available"
           }</dd>
-          <dt>Last error</dt><dd class="mono">${esc(na(a.lastError, "—"))}</dd>
+          <dt>Last error</dt><dd>${a.lastError ? lastErrorHtml(a.lastError, inferredErrorHealth(a)) : "—"}</dd>
         </dl>
         <h3>Reliability</h3>
         <dl class="kv">
           <dt>Session faults</dt><dd>${esc(a.faultCount || 0)}</dd>
           <dt>Session warnings</dt><dd>${esc(a.warningCount || 0)}</dd>
-          <dt>Current early warning</dt><dd>${esc(a.earlyWarning || "None")}</dd>
+          <dt>Current early warning</dt><dd>${a.earlyWarning ? lastErrorHtml(a.earlyWarning, "DEGRADED") : "None"}</dd>
           <dt>Session MTBF</dt><dd>${esc(mtbf)}</dd>
         </dl>
         <h3>Equipment</h3>
@@ -2385,7 +2421,7 @@
                       ? relativeTimeLabel(a.lastSuccessfulCommunicationUtc)
                       : "Not available"
                   }</td>
-                  <td class="mono">${esc(na(a.lastError, "—"))}</td>
+                  <td>${a.lastError ? lastErrorHtml(a.lastError, inferredErrorHealth(a)) : "—"}</td>
                 </tr>`;
                 })
                 .join("")}</tbody></table>`
@@ -2436,7 +2472,7 @@
                       ? relativeTimeLabel(e.lastSuccessfulTelemetryUtc)
                       : "Not available"
                   }</td>
-                  <td class="mono">${esc(na(e.lastError, "—"))}</td>
+                  <td>${e.lastError ? lastErrorHtml(e.lastError, inferredErrorHealth(e)) : "—"}</td>
                 </tr>`;
                 })
                 .join("")}</tbody></table>`

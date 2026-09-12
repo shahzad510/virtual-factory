@@ -536,6 +536,7 @@ public:
                                               ? view.connectionState
                                               : view.connectionStateDisplay},
              {"lastError", view.lastError},
+             {"health", view.health},
              {"description", view.description},
              {"equipmentCount", view.equipmentCount},
              {"implementation", view.implementation},
@@ -567,6 +568,7 @@ public:
                view->connectionStateDisplay.empty() ? view->connectionState
                                                       : view->connectionStateDisplay},
               {"lastError", view->lastError},
+              {"health", view->health},
               {"description", view->description},
               {"equipmentCount", view->equipmentCount},
               {"implementation", view->implementation},

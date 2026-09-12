@@ -427,11 +427,13 @@ void OpcUaIndustrialAdapter::releaseClient()
     UA_Client *client = this->client_->client;
     this->client_->client = nullptr;
 
-    // Bound teardown: a dead peer must not block ICP. Shrink the client timeout
-    // and delete. Do NOT call UA_Client_disconnectSecureChannel here — open62541
-    // can wait in an unbounded "while channel not CLOSED" loop on a wedged peer.
-    // UA_Client_delete performs cleanup; with a short timeout, request waits are
-    // bounded by clientConfig->timeout.
+    // Bound teardown: UA_Client_delete → UA_Client_disconnect →
+    // disconnectSecureChannel(sync) waits unbounded for channel CLOSED unless
+    // the EventLoop is already STOPPED/FRESH. Shrinking timeout does NOT bound
+    // that wait — a dead peer can hang the adapter io_mutex and stall ICP HTTP.
+    // Stop (and drain) the EventLoop first so sync disconnect skips the wait.
+    // If the EventLoop cannot reach STOPPED quickly, drop ownership so delete
+    // cannot block forever (rare FD leak preferred over ICP hang).
     UA_ClientConfig *clientConfig = UA_Client_getConfig(client);
     if (clientConfig != nullptr)
     {
@@ -440,6 +442,28 @@ void OpcUaIndustrialAdapter::releaseClient()
           static_cast<UA_UInt32>(this->resolvedTimeoutMs());
       clientConfig->timeout = configured < teardownMs ? configured : teardownMs;
       clientConfig->noReconnect = true;
+
+      UA_EventLoop *el = clientConfig->eventLoop;
+      if (el != nullptr)
+      {
+        if (el->state == UA_EVENTLOOPSTATE_STARTED)
+        {
+          el->stop(el);
+        }
+        for (int i = 0;
+             i < 100 && el->state != UA_EVENTLOOPSTATE_STOPPED
+             && el->state != UA_EVENTLOOPSTATE_FRESH;
+             ++i)
+        {
+          el->run(el, 1);
+        }
+        if (el->state != UA_EVENTLOOPSTATE_STOPPED
+            && el->state != UA_EVENTLOOPSTATE_FRESH)
+        {
+          clientConfig->externalEventLoop = true;
+          clientConfig->eventLoop = nullptr;
+        }
+      }
     }
     UA_Client_delete(client);
   }

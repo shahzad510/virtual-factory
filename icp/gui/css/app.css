@@ -760,6 +760,11 @@ textarea.json-editor:focus,
 .diag-metric-value { text-align: right; color: #d7e0ea; font-variant-numeric: tabular-nums; }
 .status.HEALTHY, .status.OK, .status.INFO { color: #d8ffe9; background: #1d3d2d; border-color: #2f6b4c; }
 .status.DEGRADED, .status.WARNING, .status.WARN { color: #fff1c2; background: #3d3420; border-color: #7a6a2e; }
+/* Last-error text uses the same severity tones as health/severity badges. */
+.error-text.warn { color: #fff1c2; }
+.error-text.error { color: #ffe0de; }
+.error-text.ok { color: #d8ffe9; }
+
 .status.FAILED, .status.FAULTED, .status.CRITICAL, .status.ERROR { color: #ffe0de; background: #4a2422; border-color: #7a3a36; }
 .status.UNKNOWN { color: #d7e0ea; background: #2a323c; border-color: #3c4652; }
 .status.CONNECTED { color: #d8ffe9; background: #1d3d2d; border-color: #2f6b4c; }

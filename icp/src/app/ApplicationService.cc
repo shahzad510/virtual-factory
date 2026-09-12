@@ -331,15 +331,92 @@ std::string ApplicationService::exportConfigurationJson() const
 ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter)
 {
   const std::string id = adapter.adapterId;
-  const ConfigResult result = this->catalog_.upsertAdapter(std::move(adapter));
-  if (result.ok)
+  IndustrialAdapter *existing = this->manager_.adapter(id);
+  const bool had_runtime = existing != nullptr;
+  ConnectionState prior_state = ConnectionState::Disconnected;
+  bool auto_connect_desired = false;
+  if (had_runtime)
   {
-    this->recordEvent("info", "configuration", "Adapter upserted", id);
+    prior_state = existing->connectionState();
+  }
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    if (this->adapter_diagnostics_.count(id) != 0)
+    {
+      auto_connect_desired = this->adapter_diagnostics_.at(id).autoConnectDesired;
+    }
+  }
+
+  const ConfigResult result = this->catalog_.upsertAdapter(std::move(adapter));
+  if (!result.ok)
+  {
+    this->recordEvent("error", "configuration", result.message, id);
+    return result;
+  }
+  this->recordEvent("info", "configuration", "Adapter upserted", id);
+
+  // Catalog-only updates leave live protocol bindings (NodeIds, endpoints, etc.)
+  // at construction-time values. Soft-failure alarms never clear after a GUI
+  // NodeId correction unless the runtime is rematerialized. Rematerialize only
+  // when a runtime object already exists - first-time create still waits for
+  // Connect / background recovery (ICP must not block on peer availability).
+  if (!had_runtime)
+  {
+    return result;
+  }
+
+  const AdapterConfigRecord *record = this->catalog_.adapter(id);
+  if (record == nullptr)
+  {
+    return result;
+  }
+
+  if (!record->enabled)
+  {
+    this->manager_.removeAdapter(id);
+    this->cache_.removeAdapterEquipment(id);
+    return result;
+  }
+
+  const bool was_live = prior_state == ConnectionState::Connected
+      || prior_state == ConnectionState::Faulted;
+  const bool should_connect = was_live || auto_connect_desired;
+
+  AdapterManagerResult ensured = this->ensureRuntimeAdapter(*record);
+  if (!ensured.ok)
+  {
+    this->recordEvent("error", "configuration", ensured.message, id);
+    return result;
+  }
+
+  if (should_connect)
+  {
+    AdapterManagerResult connected = this->manager_.connectAdapter(id);
+    IndustrialAdapter *runtime = this->manager_.adapter(id);
+    if (runtime != nullptr)
+    {
+      this->cache_.updateFromAdapter(*runtime);
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      AdapterSessionDiagnostics &diag = this->diagnosticsFor(id);
+      diag.autoConnectDesired = true;
+      if (connected.ok)
+      {
+        this->observeAdapterStateLocked(id, "CONNECTED");
+      }
+      else
+      {
+        this->observeAdapterStateLocked(
+            id, connectionStateName(runtime->connectionState()));
+        this->scheduleAutoReconnectLocked(id);
+      }
+    }
   }
   else
   {
-    this->recordEvent("error", "configuration", result.message, id);
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    this->observeAdapterStateLocked(id, "DISCONNECTED");
   }
+
   return result;
 }
 
@@ -381,6 +458,13 @@ std::vector<RuntimeAdapterView> ApplicationService::adapters() const
     else
     {
       view.connectionState = "DISCONNECTED";
+    }
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      if (this->adapter_diagnostics_.count(record.adapterId) != 0)
+      {
+        view.health = this->adapter_diagnostics_.at(record.adapterId).health;
+      }
     }
     view.connectionStateDisplay = connectionStateDisplay(view.protocol, view.connectionState);
     view.implementation = adapterImplementation(record);
@@ -804,6 +888,9 @@ std::vector<CommandDiagnostic> ApplicationService::commandDiagnosticsForEquipmen
   std::string lifecycle = "DISCONNECTED";
   bool runtimePresent = false;
   bool connected = false;
+  // Prefer configured command names over live equipmentById(). Looking up live
+  // equipment takes the adapter io_mutex; if protocol teardown is slow that
+  // stalls diagnostics/HTTP while holding ApplicationService::mutex_.
   std::vector<std::string> liveCommands;
   if (const IndustrialAdapter *runtime = this->manager_.adapter(adapterId))
   {
@@ -815,10 +902,10 @@ std::vector<CommandDiagnostic> ApplicationService::commandDiagnosticsForEquipmen
   {
     lifecycle = this->adapter_diagnostics_.at(adapterId).lastObservedState;
   }
-  if (Equipment *equipment =
-          const_cast<ApplicationService *>(this)->manager_.equipmentById(equipmentId))
+  liveCommands.reserve(eqRecord->commands.size());
+  for (const CommandMappingRecord &cmd : eqRecord->commands)
   {
-    liveCommands = equipment->commands();
+    liveCommands.push_back(cmd.command);
   }
 
   for (const CommandMappingRecord &cmd : eqRecord->commands)
