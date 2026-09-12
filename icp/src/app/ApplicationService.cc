@@ -184,24 +184,30 @@ ApplicationStatus ApplicationService::status() const
   out.configurationLoaded = this->configuration_loaded_;
   out.configurationLoadState = this->configuration_load_state_;
 
-  for (const std::string &adapterId : this->manager_.adapterIds())
+  // Count from poll-maintained diagnostics only. Never call live
+  // IndustrialAdapter::connectionState()/lastError() on the HTTP path — those
+  // fields are mutated under the per-adapter I/O mutex during connect/poll/
+  // teardown (especially OPC UA EventLoop restart on reconnect) and racing
+  // them from HTTP workers can stall the GUI control-plane requests.
+  for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
   {
-    const IndustrialAdapter *adapter = this->manager_.adapter(adapterId);
-    if (adapter == nullptr)
+    const std::string &state =
+        this->diagnosticsFor(record.adapterId).lastObservedState;
+    if (state == "CONNECTED")
     {
-      continue;
+      ++out.connectedAdapters;
     }
-    switch (adapter->connectionState())
+    else if (state == "FAULTED")
     {
-      case ConnectionState::Connected:
-        ++out.connectedAdapters;
-        break;
-      case ConnectionState::Faulted:
-        ++out.faultedAdapters;
-        break;
-      case ConnectionState::Disconnected:
-        ++out.disconnectedAdapters;
-        break;
+      ++out.faultedAdapters;
+    }
+    else if (state == "DISCONNECTED" || state == "NOT_CONFIGURED" || state.empty())
+    {
+      ++out.disconnectedAdapters;
+    }
+    else
+    {
+      ++out.disconnectedAdapters;
     }
   }
 
@@ -447,24 +453,35 @@ std::vector<RuntimeAdapterView> ApplicationService::adapters() const
     view.enabled = record.enabled;
     view.description = record.description;
     view.equipmentCount = record.equipment.size();
-    view.connectionState = "NOT_CONFIGURED";
-    if (const IndustrialAdapter *runtime = this->manager_.adapter(record.adapterId))
-    {
-      view.runtimePresent = true;
-      view.connectionState = connectionStateName(runtime->connectionState());
-      view.lastError = runtime->lastError();
-      // IndustrialAdapter::equipment() is non-const; catalog size is authoritative for GUI lists.
-    }
-    else
-    {
-      view.connectionState = "DISCONNECTED";
-    }
+    // Pointer presence is protected by the manager map mutex and does not
+    // touch protocol I/O objects. Connection/error text must come from the
+    // poll-owned diagnostics snapshot — not live adapter fields — so GUI
+    // list/status fetches cannot race reconnect teardown/connect.
+    view.runtimePresent = this->manager_.adapter(record.adapterId) != nullptr;
+    view.connectionState =
+        view.runtimePresent ? "DISCONNECTED" : "NOT_CONFIGURED";
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
-      if (this->adapter_diagnostics_.count(record.adapterId) != 0)
+      const AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
+      if (!diag.lastObservedState.empty())
       {
-        view.health = this->adapter_diagnostics_.at(record.adapterId).health;
+        view.connectionState = diag.lastObservedState;
       }
+      else if (!view.runtimePresent)
+      {
+        view.connectionState = "DISCONNECTED";
+      }
+      // Current operator-facing error only — do not leak historical lastFaultError
+      // into CONNECTED/HEALTHY rows after reconnect recovery.
+      if (view.connectionState == "FAULTED")
+      {
+        view.lastError = diag.lastFaultError;
+      }
+      else if (!diag.earlyWarning.empty())
+      {
+        view.lastError = diag.earlyWarning;
+      }
+      view.health = diag.health;
     }
     view.connectionStateDisplay = connectionStateDisplay(view.protocol, view.connectionState);
     view.implementation = adapterImplementation(record);
@@ -886,21 +903,18 @@ std::vector<CommandDiagnostic> ApplicationService::commandDiagnosticsForEquipmen
   }
 
   std::string lifecycle = "DISCONNECTED";
-  bool runtimePresent = false;
+  bool runtimePresent = this->manager_.adapter(adapterId) != nullptr;
   bool connected = false;
   // Prefer configured command names over live equipmentById(). Looking up live
   // equipment takes the adapter io_mutex; if protocol teardown is slow that
   // stalls diagnostics/HTTP while holding ApplicationService::mutex_.
+  // Connection lifecycle must also come from diagnostics — never live
+  // connectionState() on this HTTP path (reconnect I/O races).
   std::vector<std::string> liveCommands;
-  if (const IndustrialAdapter *runtime = this->manager_.adapter(adapterId))
-  {
-    runtimePresent = true;
-    lifecycle = connectionStateName(runtime->connectionState());
-    connected = runtime->connectionState() == ConnectionState::Connected;
-  }
-  else if (this->adapter_diagnostics_.count(adapterId) != 0)
+  if (this->adapter_diagnostics_.count(adapterId) != 0)
   {
     lifecycle = this->adapter_diagnostics_.at(adapterId).lastObservedState;
+    connected = lifecycle == "CONNECTED";
   }
   liveCommands.reserve(eqRecord->commands.size());
   for (const CommandMappingRecord &cmd : eqRecord->commands)
@@ -1759,7 +1773,10 @@ void ApplicationService::refreshAllAdapterObservationsLocked() const
 DiagnosticsReport ApplicationService::diagnosticsReport() const
 {
   std::lock_guard<std::mutex> lock(this->mutex_);
-  this->refreshAllAdapterObservationsLocked();
+  // Do not refresh from live adapter fields here. Poll owns
+  // refreshAllAdapterObservationsLocked() after releasing io_mutex. HTTP
+  // diagnostics must stay on the cached snapshot so reconnect EventLoop/
+  // UA_Client work cannot block or race GUI control-plane reads.
 
   DiagnosticsReport report;
   report.generatedAtUtc = std::chrono::system_clock::now();
@@ -1792,17 +1809,25 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
       view.adapter.transport = transport == "rtu" ? "rtu" : "tcp";
     }
 
-    if (const IndustrialAdapter *runtime = this->manager_.adapter(record.adapterId))
+    view.adapter.runtimePresent =
+        this->manager_.adapter(record.adapterId) != nullptr;
+    const AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
+    if (!diag.lastObservedState.empty())
     {
-      view.adapter.runtimePresent = true;
-      view.adapter.connectionState = connectionStateName(runtime->connectionState());
-      view.adapter.lastError = runtime->lastError();
+      view.adapter.connectionState = diag.lastObservedState;
+    }
+    if (view.adapter.connectionState == "FAULTED")
+    {
+      view.adapter.lastError = diag.lastFaultError;
+    }
+    else if (!diag.earlyWarning.empty())
+    {
+      view.adapter.lastError = diag.earlyWarning;
     }
     view.adapter.connectionStateDisplay =
         connectionStateDisplay(view.adapter.protocol, view.adapter.connectionState);
 
-    this->observeAdapterStateLocked(record.adapterId, view.adapter.connectionState);
-    view.session = this->diagnosticsFor(record.adapterId);
+    view.session = diag;
 
     const auto now = report.generatedAtUtc;
     if (view.session.lastStateChangeAt.time_since_epoch().count() != 0)
