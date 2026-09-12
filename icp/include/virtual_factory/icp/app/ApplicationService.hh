@@ -113,6 +113,8 @@ struct RuntimeAdapterView
   /// GUI-friendly label; mock Connected → SIMULATED_ACTIVE (canonical state unchanged).
   std::string connectionStateDisplay;
   std::string lastError;
+  /// Operator health from session diagnostics (HEALTHY|DEGRADED|FAULTED|UNKNOWN).
+  std::string health{"UNKNOWN"};
   std::string description;
   std::size_t equipmentCount{0};
   /// Active stack for this adapter: gateway | hilscher_native | softing_native | simulated

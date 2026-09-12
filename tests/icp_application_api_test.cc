@@ -1878,18 +1878,19 @@ int main()
                "invalid NodeId must not FAULT the OPC UA session");
       }
 
-      expect(svc.disconnectAdapter("opcua-soft-node").ok, "disconnect before NodeId fix");
+      // Upsert while still CONNECTED — GUI NodeId correction must rematerialize
+      // runtime bindings and clear DEGRADED without an explicit disconnect.
       tel.address = std::string("ns=1;s=")
           + virtual_factory::test::OpcUaTestServer::kMixerSpeedActual;
       eq.telemetry.clear();
       eq.telemetry.push_back(tel);
       opcua.equipment.clear();
       opcua.equipment.push_back(eq);
-      expect(svc.upsertAdapterConfig(opcua).ok, "upsert fixed NodeId");
-      expect(svc.connectAdapter("opcua-soft-node").ok, "reconnect with valid NodeId");
+      expect(svc.upsertAdapterConfig(opcua).ok, "upsert fixed NodeId while connected");
 
       bool healthyAgain = false;
-      for (int i = 0; i < 50 && !healthyAgain; ++i)
+      bool alarmCleared = false;
+      for (int i = 0; i < 50 && !(healthyAgain && alarmCleared); ++i)
       {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         const auto report = svc.diagnosticsReport();
@@ -1897,13 +1898,28 @@ int main()
         {
           if (view.adapter.adapterId == "opcua-soft-node"
               && view.adapter.connectionState == "CONNECTED"
-              && view.session.health == "HEALTHY")
+              && view.session.health == "HEALTHY"
+              && view.adapter.lastError.empty())
           {
             healthyAgain = true;
           }
         }
+        bool softAlarmRemains = false;
+        for (const auto &alarm : report.activeAlarms)
+        {
+          if ((alarm.sourceId == "opcua-soft-node"
+               || alarm.sourceId == virtual_factory::test::OpcUaTestServer::kMixerId)
+              && alarm.category == "COMMUNICATION")
+          {
+            softAlarmRemains = true;
+          }
+        }
+        alarmCleared = !softAlarmRemains;
       }
-      expect(healthyAgain, "valid NodeId restores CONNECTED + HEALTHY");
+      expect(healthyAgain,
+             "upsert-while-connected rematerializes NodeId → CONNECTED + HEALTHY");
+      expect(alarmCleared,
+             "upsert-while-connected clears COMMUNICATION soft-failure alarms");
 
       svc.stop();
       ::unlink(opcuaPath.c_str());
