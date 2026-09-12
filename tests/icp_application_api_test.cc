@@ -1615,6 +1615,301 @@ int main()
     ::unlink(startupPath.c_str());
   }
 
+  {
+    // Soft application-level read failure: CONNECTED must not imply HEALTHY.
+    const std::string softPath = tempConfigPath() + "-soft-read.json";
+    ::unlink(softPath.c_str());
+    ApplicationService svc(softPath);
+    svc.start();
+
+    virtual_factory::icp::AdapterConfigRecord mock;
+    mock.adapterId = "mock-soft-read";
+    mock.protocol = "mock";
+    mock.enabled = true;
+    mock.description = "soft read failure health";
+    virtual_factory::icp::EquipmentMappingRecord eq;
+    eq.equipmentId = "EQ-SOFT";
+    eq.type = "motor";
+    eq.capabilities = {"start", "stop"};
+    mock.equipment.push_back(eq);
+    expect(svc.upsertAdapterConfig(mock).ok, "upsert mock-soft-read");
+    expect(svc.connectAdapter("mock-soft-read").ok, "connect mock-soft-read");
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    auto *runtime = dynamic_cast<virtual_factory::MockIndustrialAdapter *>(
+        svc.manager().adapter("mock-soft-read"));
+    expect(runtime != nullptr, "mock-soft-read runtime present");
+    if (runtime != nullptr)
+    {
+      // TEST 1: valid telemetry path → CONNECTED + HEALTHY
+      {
+        const auto report = svc.diagnosticsReport();
+        bool found = false;
+        for (const auto &view : report.adapters)
+        {
+          if (view.adapter.adapterId != "mock-soft-read")
+          {
+            continue;
+          }
+          found = true;
+          expect(view.adapter.connectionState == "CONNECTED",
+                 "TEST1 communication CONNECTED");
+          expect(view.session.health == "HEALTHY",
+                 "TEST1 health HEALTHY with successful telemetry");
+          expect(view.session.earlyWarning.empty(),
+                 "TEST1 no early warning while healthy");
+        }
+        expect(found, "TEST1 mock-soft-read in diagnostics");
+      }
+
+      const std::string softError =
+          "OPC UA read failed for ns=2;s=MotorSpeed: BadNodeIdUnknown";
+      runtime->simulateApplicationReadFailure(softError);
+
+      bool degraded = false;
+      for (int i = 0; i < 40 && !degraded; ++i)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const auto report = svc.diagnosticsReport();
+        for (const auto &view : report.adapters)
+        {
+          if (view.adapter.adapterId == "mock-soft-read"
+              && view.session.health == "DEGRADED")
+          {
+            degraded = true;
+          }
+        }
+      }
+      expect(degraded, "TEST2 soft read failure reaches DEGRADED");
+
+      {
+        const auto report = svc.diagnosticsReport();
+        bool foundAdapter = false;
+        for (const auto &view : report.adapters)
+        {
+          if (view.adapter.adapterId != "mock-soft-read")
+          {
+            continue;
+          }
+          foundAdapter = true;
+          expect(view.adapter.connectionState == "CONNECTED",
+                 "TEST2 session stays CONNECTED on soft read failure");
+          expect(view.session.health == "DEGRADED",
+                 "TEST2 health DEGRADED (not HEALTHY, not FAULTED)");
+          expect(view.adapter.lastError.find("BadNodeIdUnknown") != std::string::npos,
+                 "TEST2 lastError retains BadNodeIdUnknown");
+          expect(!view.session.earlyWarning.empty(),
+                 "TEST2 earlyWarning set for operator attention");
+          expect(view.session.healthReason.find("application-level") != std::string::npos
+                     || view.session.healthReason.find("BadNodeIdUnknown")
+                            != std::string::npos,
+                 "TEST2 healthReason explains soft failure");
+        }
+        expect(foundAdapter, "TEST2 adapter present while degraded");
+
+        bool foundEq = false;
+        for (const auto &snap : report.equipment)
+        {
+          if (snap.equipmentId != "EQ-SOFT")
+          {
+            continue;
+          }
+          foundEq = true;
+          expect(snap.communicationState == virtual_factory::ConnectionState::Connected,
+                 "TEST2 equipment communication stays Connected");
+          expect(snap.lastError.find("BadNodeIdUnknown") != std::string::npos,
+                 "TEST2 equipment lastError reflects soft failure");
+        }
+        expect(foundEq, "TEST2 equipment snapshot present");
+        expect(report.system.degradedAdapters >= 1
+                   || report.system.degradedEquipment >= 1,
+               "TEST2 diagnostics counts reflect degradation");
+        expect(report.system.overallHealth == "DEGRADED"
+                   || !report.activeAlarms.empty(),
+               "TEST2 overall attention/degraded consistent");
+
+        bool sawCommAlarm = false;
+        for (const auto &alarm : report.activeAlarms)
+        {
+          if (alarm.category == "COMMUNICATION"
+              && (alarm.sourceId == "mock-soft-read" || alarm.sourceId == "EQ-SOFT"))
+          {
+            sawCommAlarm = true;
+            expect(alarm.severity == "WARNING" || alarm.severity == "ERROR",
+                   "TEST2 soft-failure alarm severity is set");
+          }
+        }
+        expect(sawCommAlarm, "TEST2 active COMMUNICATION alarm for soft failure");
+      }
+
+      // TEST 7: persistent soft failure must not flood health events.
+      std::size_t healthEventsBefore = 0;
+      for (const auto &ev : svc.events(200))
+      {
+        if (ev.adapterId == "mock-soft-read" && ev.eventType == "health_changed"
+            && ev.newHealth == "DEGRADED")
+        {
+          ++healthEventsBefore;
+        }
+      }
+      expect(healthEventsBefore >= 1, "TEST7 at least one DEGRADED health_changed");
+      std::this_thread::sleep_for(std::chrono::milliseconds(900));
+      std::size_t healthEventsAfter = 0;
+      for (const auto &ev : svc.events(200))
+      {
+        if (ev.adapterId == "mock-soft-read" && ev.eventType == "health_changed"
+            && ev.newHealth == "DEGRADED")
+        {
+          ++healthEventsAfter;
+        }
+      }
+      expect(healthEventsAfter == healthEventsBefore,
+             "TEST7 no health_changed flood on persistent soft failure");
+
+      // TEST 3: clear soft failure while session remains connected → HEALTHY.
+      runtime->clearApplicationReadFailure();
+      bool recovered = false;
+      for (int i = 0; i < 40 && !recovered; ++i)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const auto report = svc.diagnosticsReport();
+        for (const auto &view : report.adapters)
+        {
+          if (view.adapter.adapterId == "mock-soft-read"
+              && view.session.health == "HEALTHY"
+              && view.adapter.connectionState == "CONNECTED")
+          {
+            recovered = true;
+          }
+        }
+      }
+      expect(recovered, "TEST3 health returns HEALTHY after soft failure clears");
+      {
+        const auto report = svc.diagnosticsReport();
+        for (const auto &view : report.adapters)
+        {
+          if (view.adapter.adapterId != "mock-soft-read")
+          {
+            continue;
+          }
+          expect(view.session.earlyWarning.empty(),
+                 "TEST3 earlyWarning cleared after recovery");
+          expect(view.adapter.lastError.empty(),
+                 "TEST3 lastError cleared after recovery");
+        }
+        bool softAlarmRemains = false;
+        for (const auto &alarm : report.activeAlarms)
+        {
+          if ((alarm.sourceId == "mock-soft-read" || alarm.sourceId == "EQ-SOFT")
+              && alarm.category == "COMMUNICATION")
+          {
+            softAlarmRemains = true;
+          }
+        }
+        expect(!softAlarmRemains, "TEST3 soft-failure COMMUNICATION alarm cleared");
+      }
+
+      expect(runtime->connectionState() == virtual_factory::ConnectionState::Connected,
+             "soft-failure path never leaves Connected for reconnect");
+    }
+
+    svc.stop();
+    ::unlink(softPath.c_str());
+  }
+
+  {
+    // OPC UA BadNodeIdUnknown: CONNECTED + DEGRADED (not transport FAULTED).
+    virtual_factory::test::OpcUaTestServer server;
+    expect(server.start(), "soft-fail OPC UA fixture starts");
+    if (server.port() != 0)
+    {
+      const std::string opcuaPath = tempConfigPath() + "-opcua-soft.json";
+      ::unlink(opcuaPath.c_str());
+      ApplicationService svc(opcuaPath);
+      svc.start();
+
+      virtual_factory::icp::AdapterConfigRecord opcua;
+      opcua.adapterId = "opcua-soft-node";
+      opcua.protocol = "opcua";
+      opcua.enabled = true;
+      opcua.connection.endpointUrl = server.endpointUrl();
+      opcua.connection.timeoutMs = 1000;
+      virtual_factory::icp::EquipmentMappingRecord eq;
+      eq.equipmentId = virtual_factory::test::OpcUaTestServer::kMixerId;
+      eq.type = "mixer";
+      eq.capabilities = {"start", "stop"};
+      virtual_factory::icp::TelemetryMappingRecord tel;
+      tel.name = "speed";
+      tel.unit = "rpm";
+      tel.namespaceIndex = 1;
+      tel.address = "ns=1;s=Does.Not.Exist.MotorSpeed";
+      eq.telemetry.push_back(tel);
+      opcua.equipment.push_back(eq);
+      expect(svc.upsertAdapterConfig(opcua).ok, "upsert opcua-soft-node");
+      expect(svc.connectAdapter("opcua-soft-node").ok, "connect opcua-soft-node");
+
+      bool sawDegraded = false;
+      for (int i = 0; i < 50 && !sawDegraded; ++i)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const auto report = svc.diagnosticsReport();
+        for (const auto &view : report.adapters)
+        {
+          if (view.adapter.adapterId != "opcua-soft-node")
+          {
+            continue;
+          }
+          if (view.adapter.connectionState == "CONNECTED"
+              && view.session.health == "DEGRADED"
+              && view.adapter.lastError.find("BadNodeIdUnknown") != std::string::npos)
+          {
+            sawDegraded = true;
+          }
+        }
+      }
+      expect(sawDegraded,
+             "OPC UA invalid NodeId → CONNECTED + DEGRADED + BadNodeIdUnknown");
+
+      auto *rt = svc.manager().adapter("opcua-soft-node");
+      expect(rt != nullptr, "opcua-soft-node runtime present");
+      if (rt != nullptr)
+      {
+        expect(rt->connectionState() == virtual_factory::ConnectionState::Connected,
+               "invalid NodeId must not FAULT the OPC UA session");
+      }
+
+      expect(svc.disconnectAdapter("opcua-soft-node").ok, "disconnect before NodeId fix");
+      tel.address = std::string("ns=1;s=")
+          + virtual_factory::test::OpcUaTestServer::kMixerSpeedActual;
+      eq.telemetry.clear();
+      eq.telemetry.push_back(tel);
+      opcua.equipment.clear();
+      opcua.equipment.push_back(eq);
+      expect(svc.upsertAdapterConfig(opcua).ok, "upsert fixed NodeId");
+      expect(svc.connectAdapter("opcua-soft-node").ok, "reconnect with valid NodeId");
+
+      bool healthyAgain = false;
+      for (int i = 0; i < 50 && !healthyAgain; ++i)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const auto report = svc.diagnosticsReport();
+        for (const auto &view : report.adapters)
+        {
+          if (view.adapter.adapterId == "opcua-soft-node"
+              && view.adapter.connectionState == "CONNECTED"
+              && view.session.health == "HEALTHY")
+          {
+            healthyAgain = true;
+          }
+        }
+      }
+      expect(healthyAgain, "valid NodeId restores CONNECTED + HEALTHY");
+
+      svc.stop();
+      ::unlink(opcuaPath.c_str());
+    }
+  }
+
   if (failures == 0)
   {
     std::cout << "icp_application_api_test: OK" << std::endl;

@@ -1514,8 +1514,16 @@ void ApplicationService::observeAdapterStateLocked(
   // Active early warning / DEGRADED must reflect CURRENT conditions so recovery
   // clears stale alarms. Session reconnect/fault counters remain in reliability
   // stats and event history; they alone must not permanently force DEGRADED.
+  // Soft application-level failures (e.g. BadNodeIdUnknown) keep CONNECTED and
+  // set lastError — that is DEGRADED health, not transport FAULTED.
   diag.earlyWarning.clear();
   diag.healthReason.clear();
+  std::string runtimeLastError;
+  if (IndustrialAdapter *runtime =
+          const_cast<ApplicationService *>(this)->manager_.adapter(adapterId))
+  {
+    runtimeLastError = runtime->lastError();
+  }
   if (state == "FAULTED")
   {
     diag.health = "FAULTED";
@@ -1523,7 +1531,15 @@ void ApplicationService::observeAdapterStateLocked(
   }
   else if (state == "CONNECTED")
   {
-    if (!diag.hasLastSuccessfulCommunication)
+    if (!runtimeLastError.empty())
+    {
+      diag.health = "DEGRADED";
+      diag.earlyWarning = runtimeLastError;
+      diag.healthReason =
+          "Connected, but application-level communication failed: "
+          + runtimeLastError;
+    }
+    else if (!diag.hasLastSuccessfulCommunication)
     {
       diag.health = "UNKNOWN";
       diag.healthReason =
@@ -1587,13 +1603,38 @@ void ApplicationService::observeAdapterStateLocked(
 
 void ApplicationService::refreshAllAdapterObservationsLocked() const
 {
-  const auto snapshots = this->cache_.equipment();
   for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
   {
     std::string state = "DISCONNECTED";
-    if (const IndustrialAdapter *runtime = this->manager_.adapter(record.adapterId))
+    IndustrialAdapter *runtime =
+        const_cast<ApplicationService *>(this)->manager_.adapter(record.adapterId);
+    if (runtime != nullptr)
     {
       state = connectionStateName(runtime->connectionState());
+      // Soft application-level failures set lastError while remaining CONNECTED.
+      // Sync equipment cache lastError immediately so diagnostics/equipment health
+      // do not wait for the next poll refresh (and clear equally promptly).
+      if (state == "CONNECTED")
+      {
+        bool needsSync = false;
+        for (const EquipmentSnapshot &snap : this->cache_.equipment())
+        {
+          if (snap.adapterId == record.adapterId
+              && snap.lastError != runtime->lastError())
+          {
+            needsSync = true;
+            break;
+          }
+        }
+        if (needsSync)
+        {
+          const_cast<LiveStateCache &>(this->cache_)
+              .markAdapterCommunication(
+                  record.adapterId,
+                  ConnectionState::Connected,
+                  runtime->lastError());
+        }
+      }
     }
     this->observeAdapterStateLocked(record.adapterId, state);
 
@@ -1602,7 +1643,7 @@ void ApplicationService::refreshAllAdapterObservationsLocked() const
       AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
       bool sawGood = false;
       auto latestGood = diag.lastSuccessfulCommunicationAt;
-      for (const EquipmentSnapshot &snap : snapshots)
+      for (const EquipmentSnapshot &snap : this->cache_.equipment())
       {
         if (snap.adapterId != record.adapterId)
         {
@@ -1729,7 +1770,9 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
       {
         ++view.faultedEquipmentCount;
       }
-      else if (snap.stale || snap.communicationState != ConnectionState::Connected)
+      else if (
+          snap.stale || snap.communicationState != ConnectionState::Connected
+          || !snap.lastError.empty())
       {
         ++view.degradedEquipmentCount;
       }
@@ -1842,6 +1885,21 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
       alarm.category = "COMMUNICATION";
       alarm.message = snap.lastError.empty() ? "Equipment communication faulted"
                                              : snap.lastError;
+      alarm.sinceUtc = snap.observedAtUtc;
+      report.activeAlarms.push_back(std::move(alarm));
+    }
+    else if (
+        snap.communicationState == ConnectionState::Connected
+        && !snap.lastError.empty())
+    {
+      ++report.system.degradedEquipment;
+      ActiveAlarmView alarm;
+      alarm.severity = "WARNING";
+      alarm.sourceType = "equipment";
+      alarm.sourceId = snap.equipmentId;
+      alarm.protocol = snap.protocol;
+      alarm.category = "COMMUNICATION";
+      alarm.message = snap.lastError;
       alarm.sinceUtc = snap.observedAtUtc;
       report.activeAlarms.push_back(std::move(alarm));
     }

@@ -853,7 +853,13 @@ public:
         }
         else if (snap.communicationState == ConnectionState::Connected)
         {
-          if (snap.hasSuccessfulCommunication)
+          if (!snap.lastError.empty())
+          {
+            health = "DEGRADED";
+            healthReason =
+                "Connected, but telemetry/read failed: " + snap.lastError;
+          }
+          else if (snap.hasSuccessfulCommunication)
           {
             health = "HEALTHY";
             healthReason = "Equipment communication is connected with observed telemetry.";

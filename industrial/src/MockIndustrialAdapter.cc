@@ -194,6 +194,27 @@ void MockIndustrialAdapter::clearForcedOutage()
   this->forced_failure_reason_.clear();
 }
 
+void MockIndustrialAdapter::simulateApplicationReadFailure(std::string reason)
+{
+  if (this->connection_state_ != ConnectionState::Connected)
+  {
+    return;
+  }
+  this->application_read_failure_ = true;
+  this->application_read_failure_reason_ = std::move(reason);
+  this->last_error_ = this->application_read_failure_reason_;
+}
+
+void MockIndustrialAdapter::clearApplicationReadFailure()
+{
+  this->application_read_failure_ = false;
+  this->application_read_failure_reason_.clear();
+  if (this->connection_state_ == ConnectionState::Connected)
+  {
+    this->last_error_.clear();
+  }
+}
+
 std::string MockIndustrialAdapter::id() const
 {
   return this->id_;
@@ -242,6 +263,8 @@ bool MockIndustrialAdapter::connect()
   this->bindDevices();
   this->connection_state_ = ConnectionState::Connected;
   this->last_error_.clear();
+  this->application_read_failure_ = false;
+  this->application_read_failure_reason_.clear();
   return true;
 }
 
@@ -250,6 +273,8 @@ void MockIndustrialAdapter::disconnect()
   this->bound_.clear();
   this->connection_state_ = ConnectionState::Disconnected;
   this->last_error_.clear();
+  this->application_read_failure_ = false;
+  this->application_read_failure_reason_.clear();
 }
 
 std::vector<Equipment *> MockIndustrialAdapter::equipment()
@@ -297,6 +322,15 @@ void MockIndustrialAdapter::poll()
     return;
   }
 
+  if (this->application_read_failure_)
+  {
+    this->last_error_ = this->application_read_failure_reason_.empty()
+                            ? "application read failed"
+                            : this->application_read_failure_reason_;
+    return;
+  }
+
+  this->last_error_.clear();
   for (auto &item : this->bound_)
   {
     item->copySourceTelemetry();

@@ -35,7 +35,10 @@ EquipmentSnapshot makeSnapshot(
   snap.lastError = adapter.lastError();
   snap.stale = stale;
   snap.observedAtUtc = std::chrono::system_clock::now();
-  if (!stale && adapter.connectionState() == ConnectionState::Connected)
+  // Session CONNECTED is not application-level success. Soft telemetry/read
+  // failures leave the session up but set lastError — do not stamp success.
+  if (!stale && adapter.connectionState() == ConnectionState::Connected
+      && adapter.lastError().empty())
   {
     snap.lastSuccessfulCommunicationUtc = snap.observedAtUtc;
     snap.hasSuccessfulCommunication = true;
