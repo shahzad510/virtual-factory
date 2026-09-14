@@ -1,7 +1,9 @@
 #ifndef VIRTUAL_FACTORY_ICP_APPLICATION_SERVICE_HH_
 #define VIRTUAL_FACTORY_ICP_APPLICATION_SERVICE_HH_
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -382,6 +384,11 @@ private:
   /// Create missing enabled runtime adapters without connecting. Arms ICP-owned
   /// background connect so peer-down at startup cannot block HTTP/control plane.
   void materializeEnabledAdaptersForRecovery();
+  /// Run one deferred/recovery connect off the poll thread so a slow peer
+  /// (e.g. unreachable OPC UA) cannot block sibling adapters or the poll loop.
+  void startBackgroundConnect(const std::string &adapterId);
+  void runBackgroundConnect(const std::string &adapterId);
+  void waitForBackgroundConnects() const;
   static void enrichCommunicationErrorFields(ApplicationEvent *event);
 
   void ensureHistoryWriter();
@@ -432,6 +439,10 @@ private:
   mutable std::unordered_map<std::string, std::string> equipment_history_state_;
   mutable std::int64_t next_alarm_occurrence_id_{0};
   std::chrono::system_clock::time_point service_started_at_{};
+  /// In-flight poll-owned background connects (not explicit GUI Connect).
+  mutable std::mutex recovery_join_mutex_;
+  mutable std::condition_variable recovery_cv_;
+  mutable std::size_t recovery_inflight_{0};
 };
 
 }  // namespace icp

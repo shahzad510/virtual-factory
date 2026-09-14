@@ -7,6 +7,7 @@
 #include <virtual_factory/industrial/OpcUaIndustrialAdapter.hh>
 
 #include <chrono>
+#include <atomic>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -1613,6 +1614,168 @@ int main()
     api.stop();
     svc.stop();
     ::unlink(startupPath.c_str());
+  }
+
+  {
+    // Peer-down must not block sibling adapters or HTTP: mock + blackhole OPC UA.
+    // Recovery connect runs asynchronously; mock must become CONNECTED while OPC UA
+    // is still attempting / FAULTED, and control-plane GETs stay under the GUI budget.
+    const std::string isoPath = tempConfigPath() + "-opcua-iso.json";
+    ::unlink(isoPath.c_str());
+    {
+      ApplicationService writer(isoPath);
+      virtual_factory::icp::AdapterConfigRecord opcua;
+      opcua.adapterId = "opcua-blackhole";
+      opcua.protocol = "opcua";
+      opcua.enabled = true;
+      // Non-routable: connect blocks for timeoutMs (not immediate refuse).
+      opcua.connection.endpointUrl = "opc.tcp://172.31.255.1:4840";
+      opcua.connection.timeoutMs = 5000;
+      virtual_factory::icp::EquipmentMappingRecord oeq;
+      oeq.equipmentId = "EQ-BH";
+      oeq.type = "plc";
+      virtual_factory::icp::TelemetryMappingRecord otel;
+      otel.name = "speed";
+      otel.address = "ns=1;s=Speed";
+      otel.namespaceIndex = 1;
+      oeq.telemetry.push_back(otel);
+      opcua.equipment.push_back(oeq);
+      expect(writer.upsertAdapterConfig(opcua).ok, "persist opcua-blackhole");
+
+      virtual_factory::icp::AdapterConfigRecord mock;
+      mock.adapterId = "mock-iso";
+      mock.protocol = "mock";
+      mock.enabled = true;
+      virtual_factory::icp::EquipmentMappingRecord meq;
+      meq.equipmentId = "Motor-ISO";
+      meq.type = "motor";
+      meq.capabilities = {"start", "stop"};
+      mock.equipment.push_back(meq);
+      expect(writer.upsertAdapterConfig(mock).ok, "persist mock-iso");
+      expect(writer.saveConfiguration().ok, "save iso config");
+    }
+
+    const auto t0 = std::chrono::steady_clock::now();
+    ApplicationService svc(isoPath);
+    svc.start();
+    expect(svc.loadConfiguration().ok, "load iso config with OPC UA unreachable");
+    const int httpPort = freePort() + 23;
+    HttpApiServer api(svc, "icp/gui", "127.0.0.1", httpPort);
+    expect(api.start(), "HTTP starts with blackhole OPC UA configured");
+    expect(std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - t0)
+                   .count()
+               < 3000,
+           "ICP+HTTP startup bounded with blackhole OPC UA");
+
+    httplib::Client client("127.0.0.1", httpPort);
+    client.set_connection_timeout(1, 0);
+    client.set_read_timeout(2, 0);
+
+    bool mockConnected = false;
+    bool opcuaStillNotConnected = true;
+    double maxAdaptersMs = 0.0;
+    for (int i = 0; i < 40 && !mockConnected; ++i)
+    {
+      const auto reqStart = std::chrono::steady_clock::now();
+      auto ad = client.Get("/api/v1/adapters");
+      const double ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - reqStart)
+                            .count();
+      if (ms > maxAdaptersMs)
+      {
+        maxAdaptersMs = ms;
+      }
+      expect(ad && ad->status == 200, "adapters HTTP responsive during OPC UA connect");
+      expect(ms < 2000.0, "adapters HTTP stays under GUI timeout during OPC UA connect");
+
+      auto st = client.Get("/api/v1/status");
+      expect(st && st->status == 200, "status HTTP responsive during OPC UA connect");
+
+      for (const auto &view : svc.adapters())
+      {
+        if (view.adapterId == "mock-iso" && view.connectionState == "CONNECTED")
+        {
+          mockConnected = true;
+        }
+        if (view.adapterId == "opcua-blackhole"
+            && view.connectionState == "CONNECTED")
+        {
+          opcuaStillNotConnected = false;
+        }
+      }
+      if (!mockConnected)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+    }
+    expect(mockConnected,
+           "mock connects independently while OPC UA peer is unreachable");
+    expect(opcuaStillNotConnected,
+           "OPC UA not CONNECTED when mock already recovered (isolation)");
+    expect(maxAdaptersMs < 2000.0, "adapters latency never approaches GUI 6s budget");
+
+    // GUI dashboard uses Promise.all([status, adapters]). Concurrent workers must
+    // not AB-BA deadlock ApplicationService::mutex_ ↔ AdapterManager::mutex_.
+    {
+      std::atomic<int> fails{0};
+      std::atomic<int> done{0};
+      auto hammer = [&]() {
+        httplib::Client c("127.0.0.1", httpPort);
+        c.set_connection_timeout(1, 0);
+        c.set_read_timeout(3, 0);
+        for (int i = 0; i < 40; ++i)
+        {
+          auto st = c.Get("/api/v1/status");
+          auto ad = c.Get("/api/v1/adapters");
+          if (!st || st->status != 200 || !ad || ad->status != 200)
+          {
+            ++fails;
+          }
+        }
+        ++done;
+      };
+      std::thread t1(hammer);
+      std::thread t2(hammer);
+      std::thread t3(hammer);
+      std::thread t4(hammer);
+      t1.join();
+      t2.join();
+      t3.join();
+      t4.join();
+      expect(done.load() == 4, "concurrent status+adapters workers finished");
+      expect(fails.load() == 0,
+             "concurrent status+adapters never deadlock/timeout under OPC UA down");
+    }
+
+    // Explicit Disconnect must clear recovery arm for OPC UA.
+    expect(svc.disconnectAdapter("opcua-blackhole").ok, "disconnect blackhole");
+    {
+      auto view = svc.adapter("opcua-blackhole");
+      expect(view.has_value() && view->connectionState == "DISCONNECTED",
+             "explicit disconnect yields DISCONNECTED");
+    }
+    // Mock must remain usable after OPC UA disconnect.
+    {
+      auto view = svc.adapter("mock-iso");
+      expect(view.has_value() && view->connectionState == "CONNECTED",
+             "mock stays CONNECTED after OPC UA disconnect");
+    }
+    for (int i = 0; i < 15; ++i)
+    {
+      auto ad = client.Get("/api/v1/adapters");
+      expect(ad && ad->status == 200, "HTTP stays up after OPC UA disconnect");
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    {
+      auto view = svc.adapter("opcua-blackhole");
+      expect(view.has_value() && view->connectionState == "DISCONNECTED",
+             "disconnected OPC UA does not auto-recover after explicit Disconnect");
+    }
+
+    api.stop();
+    svc.stop();
+    ::unlink(isoPath.c_str());
   }
 
   {

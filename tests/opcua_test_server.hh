@@ -91,6 +91,8 @@ public:
   void setTemperature(double value);
 
 private:
+  /// Single start attempt. On failure leaves server_/thread_ cleared.
+  bool tryStartOnce();
   bool addBooleanNode(const char *identifier, bool initial);
   bool addDoubleNode(const char *identifier, double initial);
   bool readBoolean(const char *identifier) const;
