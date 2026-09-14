@@ -18,7 +18,7 @@ namespace icp
 class SqliteHistoryRepository final : public HistoryRepository
 {
 public:
-  static constexpr int kSchemaVersion = 1;
+  static constexpr int kSchemaVersion = 2;
 
   /// Opens (or creates) the database. On failure, status().available == false;
   /// callers should fall back to NullHistoryRepository.
@@ -33,6 +33,15 @@ public:
   bool appendEvent(const HistoryEventRecord &record) override;
   bool appendHealthTransition(const HealthTransitionRecord &record) override;
   bool appendAlarmEvent(const AlarmEventRecord &record) override;
+  bool raiseAlarmOccurrence(const AlarmOccurrenceRecord &occurrence) override;
+  bool acknowledgeAlarmOccurrence(
+      std::int64_t occurrenceId,
+      std::int64_t tsUtcMs,
+      const std::string &actorId) override;
+  bool clearAlarmOccurrence(
+      std::int64_t occurrenceId,
+      std::int64_t tsUtcMs,
+      const std::string &message) override;
   bool appendCommandAudit(const CommandAuditRecord &record) override;
   bool appendConfigRevision(const ConfigRevisionRecord &record) override;
   bool transitionCommunicationInterval(
@@ -58,6 +67,7 @@ private:
   bool execLocked(const char *sql);
   void markWriteFailureLocked(const std::string &message);
   HistoryStatus statusLocked() const;
+  bool appendAlarmEventLocked(const AlarmEventRecord &record);
 
   mutable std::mutex mutex_;
   std::string path_;

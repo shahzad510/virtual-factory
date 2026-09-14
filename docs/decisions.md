@@ -1034,3 +1034,19 @@ See `docs/connectivity-integration-contract.md`. **PLANNED. NOT IMPLEMENTED.**
 **Consequences:** `icp-history.sqlite` beside config; `GET /api/v1/history`; adapters remain persistence-unaware. RBAC (`history.view`) and MES connectors are later milestones.
 
 **Alternatives:** Persist into JSON config (rejected: wrong lifetime/shape); require PostgreSQL at startup (rejected: startup independence); restore CONNECTED from history (rejected: violates runtime independence).
+
+
+
+
+## ADR-049 — Alarm occurrence lifecycle in ICP historian (M1.1)
+
+- **Status:** Accepted
+- **Date:** 2026-09-14
+
+**Context:** M1 `alarm_event` rows mixed identity with changing messages and did not model occurrence duration/ack/clear for later MTTR/MTBF/OEE analysis. GUI needed Active vs History separation without deleting SQLite rows.
+
+**Decision:** Schema v2 introduces `alarm_occurrence` (incident) plus append-only lifecycle actions on `alarm_event`. Stable `alarm_key` = `sourceType:sourceId:category` (no message). Poll cycles do not duplicate open identities; recovery records `cleared` against the open occurrence; new incidents get new occurrence ids. Acknowledge is historical. CSV export is read-only.
+
+**Consequences:** `GET ... kind=alarm_occurrences`, acknowledge POST, GUI Active/Alarm/Event History. Protocol adapters unchanged. RBAC still Milestone 2.
+
+**Alternatives:** Collapse all raises into one permanent row (rejected); delete on clear/ack (rejected); CSV as source of truth (rejected).

@@ -3,6 +3,7 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <sstream>
 
@@ -263,6 +264,41 @@ bool SqliteHistoryRepository::migrateLocked()
     version = 1;
   }
 
+  if (version < 2)
+  {
+    const char *ddl =
+        "BEGIN IMMEDIATE;"
+        "CREATE TABLE IF NOT EXISTS alarm_occurrence ("
+        "  id INTEGER PRIMARY KEY NOT NULL,"
+        "  alarm_key TEXT NOT NULL,"
+        "  severity TEXT, source_type TEXT, source_id TEXT,"
+        "  equipment_id TEXT, adapter_id TEXT, protocol TEXT, category TEXT,"
+        "  message TEXT,"
+        "  raised_at_utc_ms INTEGER NOT NULL,"
+        "  acknowledged_at_utc_ms INTEGER,"
+        "  cleared_at_utc_ms INTEGER,"
+        "  status TEXT NOT NULL,"
+        "  correlation_id TEXT, actor_id TEXT"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_alarm_occ_key_raised "
+        "  ON alarm_occurrence(alarm_key, raised_at_utc_ms);"
+        "CREATE INDEX IF NOT EXISTS idx_alarm_occ_status "
+        "  ON alarm_occurrence(status);"
+        "CREATE INDEX IF NOT EXISTS idx_alarm_occ_raised "
+        "  ON alarm_occurrence(raised_at_utc_ms);"
+        "ALTER TABLE alarm_event ADD COLUMN occurrence_id INTEGER;"
+        "CREATE INDEX IF NOT EXISTS idx_alarm_occurrence_id "
+        "  ON alarm_event(occurrence_id, ts_utc_ms);"
+        "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('version', '2');"
+        "COMMIT;";
+    if (!this->execLocked(ddl))
+    {
+      (void)this->execLocked("ROLLBACK;");
+      return false;
+    }
+    version = 2;
+  }
+
   this->schema_version_ = version;
   return version >= 1;
 }
@@ -353,20 +389,14 @@ bool SqliteHistoryRepository::appendHealthTransition(const HealthTransitionRecor
   return true;
 }
 
-bool SqliteHistoryRepository::appendAlarmEvent(const AlarmEventRecord &record)
+bool SqliteHistoryRepository::appendAlarmEventLocked(const AlarmEventRecord &record)
 {
-  std::lock_guard<std::mutex> lock(this->mutex_);
-  if (!this->available_ || this->db_ == nullptr)
-  {
-    ++this->dropped_writes_;
-    return false;
-  }
   sqlite3_stmt *stmt = nullptr;
   const char *sql =
       "INSERT INTO alarm_event("
       "alarm_key, action, severity, source_type, source_id, equipment_id, "
-      "adapter_id, protocol, category, message, ts_utc_ms, correlation_id, actor_id) "
-      "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?);";
+      "adapter_id, protocol, category, message, ts_utc_ms, correlation_id, actor_id, "
+      "occurrence_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
   if (sqlite3_prepare_v2(this->db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
   {
     this->markWriteFailureLocked(sqliteErr(this->db_));
@@ -386,11 +416,300 @@ bool SqliteHistoryRepository::appendAlarmEvent(const AlarmEventRecord &record)
   sqlite3_bind_int64(stmt, i++, record.tsUtcMs);
   sqlite3_bind_text(stmt, i++, record.correlationId.c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt, i++, record.actorId.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt, i++, record.occurrenceId);
   const int step = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
   if (step != SQLITE_DONE)
   {
     this->markWriteFailureLocked(sqliteErr(this->db_));
+    return false;
+  }
+  return true;
+}
+
+bool SqliteHistoryRepository::appendAlarmEvent(const AlarmEventRecord &record)
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  if (!this->available_ || this->db_ == nullptr)
+  {
+    ++this->dropped_writes_;
+    return false;
+  }
+  return this->appendAlarmEventLocked(record);
+}
+
+bool SqliteHistoryRepository::raiseAlarmOccurrence(const AlarmOccurrenceRecord &occurrence)
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  if (!this->available_ || this->db_ == nullptr)
+  {
+    ++this->dropped_writes_;
+    return false;
+  }
+  if (occurrence.id <= 0 || occurrence.alarmKey.empty())
+  {
+    this->markWriteFailureLocked("raiseAlarmOccurrence requires id and alarmKey");
+    return false;
+  }
+  if (!this->execLocked("BEGIN IMMEDIATE;"))
+  {
+    this->markWriteFailureLocked(this->message_);
+    return false;
+  }
+  {
+    sqlite3_stmt *stmt = nullptr;
+    const char *sql =
+        "INSERT INTO alarm_occurrence("
+        "id, alarm_key, severity, source_type, source_id, equipment_id, adapter_id, "
+        "protocol, category, message, raised_at_utc_ms, acknowledged_at_utc_ms, "
+        "cleared_at_utc_ms, status, correlation_id, actor_id) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,?,?,?);";
+    if (sqlite3_prepare_v2(this->db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+      (void)this->execLocked("ROLLBACK;");
+      this->markWriteFailureLocked(sqliteErr(this->db_));
+      return false;
+    }
+    int i = 1;
+    sqlite3_bind_int64(stmt, i++, occurrence.id);
+    sqlite3_bind_text(stmt, i++, occurrence.alarmKey.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, i++, occurrence.severity.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, i++, occurrence.sourceType.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, i++, occurrence.sourceId.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, i++, occurrence.equipmentId.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, i++, occurrence.adapterId.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, i++, occurrence.protocol.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, i++, occurrence.category.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, i++, occurrence.message.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, i++, occurrence.raisedAtUtcMs);
+    const std::string status =
+        occurrence.status.empty() ? std::string("active") : occurrence.status;
+    sqlite3_bind_text(stmt, i++, status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, i++, occurrence.correlationId.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, i++, occurrence.actorId.c_str(), -1, SQLITE_TRANSIENT);
+    const int step = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (step != SQLITE_DONE)
+    {
+      (void)this->execLocked("ROLLBACK;");
+      this->markWriteFailureLocked(sqliteErr(this->db_));
+      return false;
+    }
+  }
+  AlarmEventRecord raised;
+  raised.occurrenceId = occurrence.id;
+  raised.alarmKey = occurrence.alarmKey;
+  raised.action = "raised";
+  raised.severity = occurrence.severity;
+  raised.sourceType = occurrence.sourceType;
+  raised.sourceId = occurrence.sourceId;
+  raised.equipmentId = occurrence.equipmentId;
+  raised.adapterId = occurrence.adapterId;
+  raised.protocol = occurrence.protocol;
+  raised.category = occurrence.category;
+  raised.message = occurrence.message;
+  raised.tsUtcMs = occurrence.raisedAtUtcMs;
+  raised.correlationId = occurrence.correlationId;
+  raised.actorId = occurrence.actorId;
+  if (!this->appendAlarmEventLocked(raised))
+  {
+    (void)this->execLocked("ROLLBACK;");
+    return false;
+  }
+  if (!this->execLocked("COMMIT;"))
+  {
+    (void)this->execLocked("ROLLBACK;");
+    this->markWriteFailureLocked(this->message_);
+    return false;
+  }
+  return true;
+}
+
+bool SqliteHistoryRepository::acknowledgeAlarmOccurrence(
+    std::int64_t occurrenceId, std::int64_t tsUtcMs, const std::string &actorId)
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  if (!this->available_ || this->db_ == nullptr)
+  {
+    ++this->dropped_writes_;
+    return false;
+  }
+  if (!this->execLocked("BEGIN IMMEDIATE;"))
+  {
+    this->markWriteFailureLocked(this->message_);
+    return false;
+  }
+
+  AlarmEventRecord meta;
+  {
+    sqlite3_stmt *stmt = nullptr;
+    const char *sql =
+        "SELECT alarm_key, severity, source_type, source_id, equipment_id, adapter_id, "
+        "protocol, category, message, status, acknowledged_at_utc_ms "
+        "FROM alarm_occurrence WHERE id=?;";
+    if (sqlite3_prepare_v2(this->db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+      (void)this->execLocked("ROLLBACK;");
+      this->markWriteFailureLocked(sqliteErr(this->db_));
+      return false;
+    }
+    sqlite3_bind_int64(stmt, 1, occurrenceId);
+    if (sqlite3_step(stmt) != SQLITE_ROW)
+    {
+      sqlite3_finalize(stmt);
+      (void)this->execLocked("ROLLBACK;");
+      this->markWriteFailureLocked("alarm occurrence not found");
+      return false;
+    }
+    meta.occurrenceId = occurrenceId;
+    meta.alarmKey = columnText(stmt, 0);
+    meta.severity = columnText(stmt, 1);
+    meta.sourceType = columnText(stmt, 2);
+    meta.sourceId = columnText(stmt, 3);
+    meta.equipmentId = columnText(stmt, 4);
+    meta.adapterId = columnText(stmt, 5);
+    meta.protocol = columnText(stmt, 6);
+    meta.category = columnText(stmt, 7);
+    meta.message = columnText(stmt, 8);
+    const std::string status = columnText(stmt, 9);
+    const bool alreadyAcked = sqlite3_column_type(stmt, 10) != SQLITE_NULL;
+    sqlite3_finalize(stmt);
+    if (status == "cleared")
+    {
+      // Still allow recording an acknowledge action if never set; otherwise no-op OK.
+    }
+    if (!alreadyAcked)
+    {
+      sqlite3_stmt *upd = nullptr;
+      const char *updSql =
+          "UPDATE alarm_occurrence SET acknowledged_at_utc_ms=?,"
+          " status=CASE WHEN status='cleared' THEN status ELSE 'acknowledged' END,"
+          " actor_id=CASE WHEN ?!='' THEN ? ELSE actor_id END "
+          "WHERE id=?;";
+      if (sqlite3_prepare_v2(this->db_, updSql, -1, &upd, nullptr) != SQLITE_OK)
+      {
+        (void)this->execLocked("ROLLBACK;");
+        this->markWriteFailureLocked(sqliteErr(this->db_));
+        return false;
+      }
+      sqlite3_bind_int64(upd, 1, tsUtcMs);
+      sqlite3_bind_text(upd, 2, actorId.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(upd, 3, actorId.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(upd, 4, occurrenceId);
+      const int step = sqlite3_step(upd);
+      sqlite3_finalize(upd);
+      if (step != SQLITE_DONE)
+      {
+        (void)this->execLocked("ROLLBACK;");
+        this->markWriteFailureLocked(sqliteErr(this->db_));
+        return false;
+      }
+    }
+  }
+
+  meta.action = "acknowledged";
+  meta.tsUtcMs = tsUtcMs;
+  meta.actorId = actorId;
+  if (!this->appendAlarmEventLocked(meta))
+  {
+    (void)this->execLocked("ROLLBACK;");
+    return false;
+  }
+  if (!this->execLocked("COMMIT;"))
+  {
+    (void)this->execLocked("ROLLBACK;");
+    this->markWriteFailureLocked(this->message_);
+    return false;
+  }
+  return true;
+}
+
+bool SqliteHistoryRepository::clearAlarmOccurrence(
+    std::int64_t occurrenceId, std::int64_t tsUtcMs, const std::string &message)
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  if (!this->available_ || this->db_ == nullptr)
+  {
+    ++this->dropped_writes_;
+    return false;
+  }
+  if (!this->execLocked("BEGIN IMMEDIATE;"))
+  {
+    this->markWriteFailureLocked(this->message_);
+    return false;
+  }
+
+  AlarmEventRecord meta;
+  {
+    sqlite3_stmt *stmt = nullptr;
+    const char *sql =
+        "SELECT alarm_key, severity, source_type, source_id, equipment_id, adapter_id, "
+        "protocol, category, message, cleared_at_utc_ms "
+        "FROM alarm_occurrence WHERE id=?;";
+    if (sqlite3_prepare_v2(this->db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+      (void)this->execLocked("ROLLBACK;");
+      this->markWriteFailureLocked(sqliteErr(this->db_));
+      return false;
+    }
+    sqlite3_bind_int64(stmt, 1, occurrenceId);
+    if (sqlite3_step(stmt) != SQLITE_ROW)
+    {
+      sqlite3_finalize(stmt);
+      (void)this->execLocked("ROLLBACK;");
+      this->markWriteFailureLocked("alarm occurrence not found");
+      return false;
+    }
+    meta.occurrenceId = occurrenceId;
+    meta.alarmKey = columnText(stmt, 0);
+    meta.severity = columnText(stmt, 1);
+    meta.sourceType = columnText(stmt, 2);
+    meta.sourceId = columnText(stmt, 3);
+    meta.equipmentId = columnText(stmt, 4);
+    meta.adapterId = columnText(stmt, 5);
+    meta.protocol = columnText(stmt, 6);
+    meta.category = columnText(stmt, 7);
+    meta.message = message.empty() ? columnText(stmt, 8) : message;
+    const bool alreadyCleared = sqlite3_column_type(stmt, 9) != SQLITE_NULL;
+    sqlite3_finalize(stmt);
+    if (!alreadyCleared)
+    {
+      sqlite3_stmt *upd = nullptr;
+      const char *updSql =
+          "UPDATE alarm_occurrence SET cleared_at_utc_ms=?, status='cleared',"
+          " message=CASE WHEN ?!='' THEN ? ELSE message END WHERE id=?;";
+      if (sqlite3_prepare_v2(this->db_, updSql, -1, &upd, nullptr) != SQLITE_OK)
+      {
+        (void)this->execLocked("ROLLBACK;");
+        this->markWriteFailureLocked(sqliteErr(this->db_));
+        return false;
+      }
+      sqlite3_bind_int64(upd, 1, tsUtcMs);
+      sqlite3_bind_text(upd, 2, message.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(upd, 3, message.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(upd, 4, occurrenceId);
+      const int step = sqlite3_step(upd);
+      sqlite3_finalize(upd);
+      if (step != SQLITE_DONE)
+      {
+        (void)this->execLocked("ROLLBACK;");
+        this->markWriteFailureLocked(sqliteErr(this->db_));
+        return false;
+      }
+    }
+  }
+
+  meta.action = "cleared";
+  meta.tsUtcMs = tsUtcMs;
+  if (!this->appendAlarmEventLocked(meta))
+  {
+    (void)this->execLocked("ROLLBACK;");
+    return false;
+  }
+  if (!this->execLocked("COMMIT;"))
+  {
+    (void)this->execLocked("ROLLBACK;");
+    this->markWriteFailureLocked(this->message_);
     return false;
   }
   return true;
@@ -633,6 +952,9 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
 
   const std::size_t limit =
       query.limit == 0 ? 100 : std::min(query.limit, static_cast<std::size_t>(1000));
+  const std::size_t offset = query.offset;
+  out.limit = limit;
+  out.offset = offset;
 
   auto appendTimeAdapterFilters = [&](std::ostringstream &sql,
                                       const char *tsCol,
@@ -689,6 +1011,19 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
     }
   };
 
+  auto limitOffsetSql = [&](std::ostringstream &sql) {
+    sql << " LIMIT " << (limit + 1) << " OFFSET " << offset;
+  };
+
+  auto trimTruncation = [&](auto &vec) {
+    if (vec.size() > limit)
+    {
+      out.truncated = true;
+      vec.resize(limit);
+    }
+    out.returned = vec.size();
+  };
+
   if (out.kind == "events")
   {
     std::ostringstream sql;
@@ -705,7 +1040,8 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
     {
       sql << " AND event_type = ?";
     }
-    sql << " ORDER BY ts_utc_ms ASC, id ASC LIMIT " << limit;
+    sql << " ORDER BY ts_utc_ms ASC, id ASC";
+    limitOffsetSql(sql);
     sqlite3_stmt *stmt = nullptr;
     if (sqlite3_prepare_v2(this->db_, sql.str().c_str(), -1, &stmt, nullptr) != SQLITE_OK)
     {
@@ -751,6 +1087,7 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
       out.events.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
+    trimTruncation(out.events);
   }
   else if (out.kind == "communication_intervals")
   {
@@ -758,7 +1095,8 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
     sql << "SELECT id, adapter_id, protocol, state, started_at_utc_ms, ended_at_utc_ms, "
            "reason, error_code FROM communication_interval";
     appendTimeAdapterFilters(sql, "started_at_utc_ms", true, false, true);
-    sql << " ORDER BY started_at_utc_ms ASC, id ASC LIMIT " << limit;
+    sql << " ORDER BY started_at_utc_ms ASC, id ASC";
+    limitOffsetSql(sql);
     sqlite3_stmt *stmt = nullptr;
     if (sqlite3_prepare_v2(this->db_, sql.str().c_str(), -1, &stmt, nullptr) != SQLITE_OK)
     {
@@ -785,6 +1123,7 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
       out.communicationIntervals.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
+    trimTruncation(out.communicationIntervals);
   }
   else if (out.kind == "health_transitions")
   {
@@ -792,7 +1131,8 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
     sql << "SELECT id, adapter_id, protocol, previous_health, new_health, ts_utc_ms, reason "
            "FROM health_transition";
     appendTimeAdapterFilters(sql, "ts_utc_ms", true, false, true);
-    sql << " ORDER BY ts_utc_ms ASC, id ASC LIMIT " << limit;
+    sql << " ORDER BY ts_utc_ms ASC, id ASC";
+    limitOffsetSql(sql);
     sqlite3_stmt *stmt = nullptr;
     if (sqlite3_prepare_v2(this->db_, sql.str().c_str(), -1, &stmt, nullptr) != SQLITE_OK)
     {
@@ -815,13 +1155,14 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
       out.healthTransitions.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
+    trimTruncation(out.healthTransitions);
   }
   else if (out.kind == "alarm_events")
   {
     std::ostringstream sql;
     sql << "SELECT id, alarm_key, action, severity, source_type, source_id, equipment_id, "
-           "adapter_id, protocol, category, message, ts_utc_ms, correlation_id, actor_id "
-           "FROM alarm_event";
+           "adapter_id, protocol, category, message, ts_utc_ms, correlation_id, actor_id, "
+           "occurrence_id FROM alarm_event";
     appendTimeAdapterFilters(sql, "ts_utc_ms", true, true, true);
     if (!query.severity.empty())
     {
@@ -831,7 +1172,16 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
     {
       sql << " AND category = ?";
     }
-    sql << " ORDER BY ts_utc_ms ASC, id ASC LIMIT " << limit;
+    if (!query.eventType.empty())
+    {
+      sql << " AND action = ?";
+    }
+    if (!query.alarmKey.empty())
+    {
+      sql << " AND alarm_key = ?";
+    }
+    sql << " ORDER BY ts_utc_ms ASC, id ASC";
+    limitOffsetSql(sql);
     sqlite3_stmt *stmt = nullptr;
     if (sqlite3_prepare_v2(this->db_, sql.str().c_str(), -1, &stmt, nullptr) != SQLITE_OK)
     {
@@ -848,6 +1198,14 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
     if (!query.category.empty())
     {
       sqlite3_bind_text(stmt, idx++, query.category.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    if (!query.eventType.empty())
+    {
+      sqlite3_bind_text(stmt, idx++, query.eventType.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    if (!query.alarmKey.empty())
+    {
+      sqlite3_bind_text(stmt, idx++, query.alarmKey.c_str(), -1, SQLITE_TRANSIENT);
     }
     while (sqlite3_step(stmt) == SQLITE_ROW)
     {
@@ -866,9 +1224,106 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
       row.tsUtcMs = sqlite3_column_int64(stmt, 11);
       row.correlationId = columnText(stmt, 12);
       row.actorId = columnText(stmt, 13);
+      row.occurrenceId = sqlite3_column_int64(stmt, 14);
       out.alarmEvents.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
+    trimTruncation(out.alarmEvents);
+  }
+  else if (out.kind == "alarm_occurrences")
+  {
+    std::ostringstream sql;
+    sql << "SELECT id, alarm_key, severity, source_type, source_id, equipment_id, "
+           "adapter_id, protocol, category, message, raised_at_utc_ms, "
+           "acknowledged_at_utc_ms, cleared_at_utc_ms, status, correlation_id, actor_id "
+           "FROM alarm_occurrence";
+    appendTimeAdapterFilters(sql, "raised_at_utc_ms", true, true, true);
+    if (!query.severity.empty())
+    {
+      sql << " AND severity = ?";
+    }
+    if (!query.category.empty())
+    {
+      sql << " AND category = ?";
+    }
+    if (!query.status.empty())
+    {
+      if (query.status == "active")
+      {
+        sql << " AND cleared_at_utc_ms IS NULL";
+      }
+      else
+      {
+        sql << " AND status = ?";
+      }
+    }
+    if (!query.alarmKey.empty())
+    {
+      sql << " AND alarm_key = ?";
+    }
+    sql << " ORDER BY raised_at_utc_ms DESC, id DESC";
+    limitOffsetSql(sql);
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(this->db_, sql.str().c_str(), -1, &stmt, nullptr) != SQLITE_OK)
+    {
+      out.status.degraded = true;
+      out.status.message = sqliteErr(this->db_);
+      return out;
+    }
+    int idx = 1;
+    bindTimeAdapterFilters(stmt, idx, true, true, true);
+    if (!query.severity.empty())
+    {
+      sqlite3_bind_text(stmt, idx++, query.severity.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    if (!query.category.empty())
+    {
+      sqlite3_bind_text(stmt, idx++, query.category.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    if (!query.status.empty() && query.status != "active")
+    {
+      sqlite3_bind_text(stmt, idx++, query.status.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    if (!query.alarmKey.empty())
+    {
+      sqlite3_bind_text(stmt, idx++, query.alarmKey.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    const std::int64_t nowMs = static_cast<std::int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+      AlarmOccurrenceRecord row;
+      row.id = sqlite3_column_int64(stmt, 0);
+      row.alarmKey = columnText(stmt, 1);
+      row.severity = columnText(stmt, 2);
+      row.sourceType = columnText(stmt, 3);
+      row.sourceId = columnText(stmt, 4);
+      row.equipmentId = columnText(stmt, 5);
+      row.adapterId = columnText(stmt, 6);
+      row.protocol = columnText(stmt, 7);
+      row.category = columnText(stmt, 8);
+      row.message = columnText(stmt, 9);
+      row.raisedAtUtcMs = sqlite3_column_int64(stmt, 10);
+      if (sqlite3_column_type(stmt, 11) != SQLITE_NULL)
+      {
+        row.acknowledgedAtUtcMs = sqlite3_column_int64(stmt, 11);
+      }
+      if (sqlite3_column_type(stmt, 12) != SQLITE_NULL)
+      {
+        row.clearedAtUtcMs = sqlite3_column_int64(stmt, 12);
+      }
+      row.status = columnText(stmt, 13);
+      row.correlationId = columnText(stmt, 14);
+      row.actorId = columnText(stmt, 15);
+      const std::int64_t endMs =
+          row.clearedAtUtcMs.has_value() ? *row.clearedAtUtcMs : nowMs;
+      row.durationMs = endMs >= row.raisedAtUtcMs ? (endMs - row.raisedAtUtcMs) : -1;
+      out.alarmOccurrences.push_back(std::move(row));
+    }
+    sqlite3_finalize(stmt);
+    trimTruncation(out.alarmOccurrences);
   }
   else if (out.kind == "equipment_state_intervals")
   {
@@ -876,7 +1331,8 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
     sql << "SELECT id, equipment_id, adapter_id, state, started_at_utc_ms, ended_at_utc_ms, "
            "reason FROM equipment_state_interval";
     appendTimeAdapterFilters(sql, "started_at_utc_ms", true, true, false);
-    sql << " ORDER BY started_at_utc_ms ASC, id ASC LIMIT " << limit;
+    sql << " ORDER BY started_at_utc_ms ASC, id ASC";
+    limitOffsetSql(sql);
     sqlite3_stmt *stmt = nullptr;
     if (sqlite3_prepare_v2(this->db_, sql.str().c_str(), -1, &stmt, nullptr) != SQLITE_OK)
     {
@@ -902,6 +1358,7 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
       out.equipmentStateIntervals.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
+    trimTruncation(out.equipmentStateIntervals);
   }
   else if (out.kind == "command_audit")
   {
@@ -909,7 +1366,8 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
     sql << "SELECT id, ts_utc_ms, equipment_id, adapter_id, command, result, error_code, "
            "duration_ms, correlation_id, actor_id FROM command_audit";
     appendTimeAdapterFilters(sql, "ts_utc_ms", true, true, false);
-    sql << " ORDER BY ts_utc_ms ASC, id ASC LIMIT " << limit;
+    sql << " ORDER BY ts_utc_ms ASC, id ASC";
+    limitOffsetSql(sql);
     sqlite3_stmt *stmt = nullptr;
     if (sqlite3_prepare_v2(this->db_, sql.str().c_str(), -1, &stmt, nullptr) != SQLITE_OK)
     {
@@ -935,6 +1393,7 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
       out.commandAudits.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
+    trimTruncation(out.commandAudits);
   }
   else if (out.kind == "config_revisions")
   {
@@ -949,7 +1408,8 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
     {
       sql << " AND ts_utc_ms <= ?";
     }
-    sql << " ORDER BY ts_utc_ms ASC, id ASC LIMIT " << limit;
+    sql << " ORDER BY ts_utc_ms ASC, id ASC";
+    limitOffsetSql(sql);
     sqlite3_stmt *stmt = nullptr;
     if (sqlite3_prepare_v2(this->db_, sql.str().c_str(), -1, &stmt, nullptr) != SQLITE_OK)
     {
@@ -979,6 +1439,7 @@ HistoryQueryResult SqliteHistoryRepository::query(const HistoryQuery &query)
       out.configRevisions.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
+    trimTruncation(out.configRevisions);
   }
   else
   {

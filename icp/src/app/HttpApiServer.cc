@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <ctime>
 #include <iostream>
 #include <map>
@@ -372,6 +373,58 @@ json historyStatusToJson(const HistoryStatus &st)
   };
 }
 
+std::string formatIso8601UtcMs(std::int64_t tsUtcMs)
+{
+  if (tsUtcMs < 0)
+  {
+    return {};
+  }
+  const std::time_t seconds = static_cast<std::time_t>(tsUtcMs / 1000);
+  const int millis = static_cast<int>(tsUtcMs % 1000);
+  std::tm tm {};
+#if defined(_WIN32)
+  gmtime_s(&tm, &seconds);
+#else
+  gmtime_r(&seconds, &tm);
+#endif
+  char buf[40];
+  std::snprintf(
+      buf,
+      sizeof(buf),
+      "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+      tm.tm_year + 1900,
+      tm.tm_mon + 1,
+      tm.tm_mday,
+      tm.tm_hour,
+      tm.tm_min,
+      tm.tm_sec,
+      millis);
+  return std::string(buf);
+}
+
+void putTsFields(json &obj, const char *msKey, const char *isoKey, std::int64_t tsUtcMs)
+{
+  obj[msKey] = tsUtcMs;
+  obj[isoKey] = formatIso8601UtcMs(tsUtcMs);
+}
+
+void putOptionalTsFields(
+    json &obj,
+    const char *msKey,
+    const char *isoKey,
+    const std::optional<std::int64_t> &tsUtcMs)
+{
+  if (tsUtcMs.has_value())
+  {
+    putTsFields(obj, msKey, isoKey, *tsUtcMs);
+  }
+  else
+  {
+    obj[msKey] = nullptr;
+    obj[isoKey] = nullptr;
+  }
+}
+
 std::optional<std::int64_t> parseOptionalInt64Param(
     const httplib::Request &req, const char *key)
 {
@@ -442,11 +495,29 @@ HistoryQuery historyQueryFromRequest(const httplib::Request &req)
   {
     q.severity = req.get_param_value("severity");
   }
+  if (req.has_param("status"))
+  {
+    q.status = req.get_param_value("status");
+  }
+  if (req.has_param("alarmKey"))
+  {
+    q.alarmKey = req.get_param_value("alarmKey");
+  }
   if (req.has_param("limit"))
   {
     try
     {
       q.limit = static_cast<std::size_t>(std::stoul(req.get_param_value("limit")));
+    }
+    catch (...)
+    {
+    }
+  }
+  if (req.has_param("offset"))
+  {
+    try
+    {
+      q.offset = static_cast<std::size_t>(std::stoul(req.get_param_value("offset")));
     }
     catch (...)
     {
@@ -460,6 +531,10 @@ json historyQueryResultToJson(const HistoryQueryResult &result)
   json body = {
       {"historian", historyStatusToJson(result.status)},
       {"kind", result.kind},
+      {"limit", result.limit},
+      {"offset", result.offset},
+      {"returned", result.returned},
+      {"truncated", result.truncated},
       {"authorizationNote",
        "Milestone 2 will protect this endpoint with history.view"},
   };
@@ -468,9 +543,8 @@ json historyQueryResultToJson(const HistoryQueryResult &result)
   {
     for (const auto &row : result.events)
     {
-      items.push_back({
+      json item = {
           {"id", row.id},
-          {"tsUtcMs", row.tsUtcMs},
           {"level", row.level},
           {"category", row.category},
           {"eventType", row.eventType},
@@ -491,47 +565,51 @@ json historyQueryResultToJson(const HistoryQueryResult &result)
           {"correlationId", row.correlationId},
           {"durationMs", row.durationMs},
           {"actorId", row.actorId},
-      });
+      };
+      putTsFields(item, "tsUtcMs", "tsUtc", row.tsUtcMs);
+      items.push_back(std::move(item));
     }
   }
   else if (result.kind == "communication_intervals")
   {
     for (const auto &row : result.communicationIntervals)
     {
-      items.push_back({
+      json item = {
           {"id", row.id},
           {"adapterId", row.adapterId},
           {"protocol", row.protocol},
           {"state", row.state},
-          {"startedAtUtcMs", row.startedAtUtcMs},
-          {"endedAtUtcMs",
-           row.endedAtUtcMs.has_value() ? json(*row.endedAtUtcMs) : json(nullptr)},
           {"reason", row.reason},
           {"errorCode", row.errorCode},
-      });
+      };
+      putTsFields(item, "startedAtUtcMs", "startedAtUtc", row.startedAtUtcMs);
+      putOptionalTsFields(item, "endedAtUtcMs", "endedAtUtc", row.endedAtUtcMs);
+      items.push_back(std::move(item));
     }
   }
   else if (result.kind == "health_transitions")
   {
     for (const auto &row : result.healthTransitions)
     {
-      items.push_back({
+      json item = {
           {"id", row.id},
           {"adapterId", row.adapterId},
           {"protocol", row.protocol},
           {"previousHealth", row.previousHealth},
           {"newHealth", row.newHealth},
-          {"tsUtcMs", row.tsUtcMs},
           {"reason", row.reason},
-      });
+      };
+      putTsFields(item, "tsUtcMs", "tsUtc", row.tsUtcMs);
+      items.push_back(std::move(item));
     }
   }
   else if (result.kind == "alarm_events")
   {
     for (const auto &row : result.alarmEvents)
     {
-      items.push_back({
+      json item = {
           {"id", row.id},
+          {"occurrenceId", row.occurrenceId},
           {"alarmKey", row.alarmKey},
           {"action", row.action},
           {"severity", row.severity},
@@ -542,35 +620,63 @@ json historyQueryResultToJson(const HistoryQueryResult &result)
           {"protocol", row.protocol},
           {"category", row.category},
           {"message", row.message},
-          {"tsUtcMs", row.tsUtcMs},
           {"correlationId", row.correlationId},
           {"actorId", row.actorId},
-      });
+      };
+      putTsFields(item, "tsUtcMs", "tsUtc", row.tsUtcMs);
+      items.push_back(std::move(item));
+    }
+  }
+  else if (result.kind == "alarm_occurrences")
+  {
+    for (const auto &row : result.alarmOccurrences)
+    {
+      json item = {
+          {"id", row.id},
+          {"occurrenceId", row.id},
+          {"alarmKey", row.alarmKey},
+          {"severity", row.severity},
+          {"sourceType", row.sourceType},
+          {"sourceId", row.sourceId},
+          {"equipmentId", row.equipmentId},
+          {"adapterId", row.adapterId},
+          {"protocol", row.protocol},
+          {"category", row.category},
+          {"message", row.message},
+          {"status", row.status},
+          {"durationMs", row.durationMs},
+          {"correlationId", row.correlationId},
+          {"actorId", row.actorId},
+      };
+      putTsFields(item, "raisedAtUtcMs", "raisedAtUtc", row.raisedAtUtcMs);
+      putOptionalTsFields(
+          item, "acknowledgedAtUtcMs", "acknowledgedAtUtc", row.acknowledgedAtUtcMs);
+      putOptionalTsFields(item, "clearedAtUtcMs", "clearedAtUtc", row.clearedAtUtcMs);
+      items.push_back(std::move(item));
     }
   }
   else if (result.kind == "equipment_state_intervals")
   {
     for (const auto &row : result.equipmentStateIntervals)
     {
-      items.push_back({
+      json item = {
           {"id", row.id},
           {"equipmentId", row.equipmentId},
           {"adapterId", row.adapterId},
           {"state", row.state},
-          {"startedAtUtcMs", row.startedAtUtcMs},
-          {"endedAtUtcMs",
-           row.endedAtUtcMs.has_value() ? json(*row.endedAtUtcMs) : json(nullptr)},
           {"reason", row.reason},
-      });
+      };
+      putTsFields(item, "startedAtUtcMs", "startedAtUtc", row.startedAtUtcMs);
+      putOptionalTsFields(item, "endedAtUtcMs", "endedAtUtc", row.endedAtUtcMs);
+      items.push_back(std::move(item));
     }
   }
   else if (result.kind == "command_audit")
   {
     for (const auto &row : result.commandAudits)
     {
-      items.push_back({
+      json item = {
           {"id", row.id},
-          {"tsUtcMs", row.tsUtcMs},
           {"equipmentId", row.equipmentId},
           {"adapterId", row.adapterId},
           {"command", row.command},
@@ -579,26 +685,96 @@ json historyQueryResultToJson(const HistoryQueryResult &result)
           {"durationMs", row.durationMs},
           {"correlationId", row.correlationId},
           {"actorId", row.actorId},
-      });
+      };
+      putTsFields(item, "tsUtcMs", "tsUtc", row.tsUtcMs);
+      items.push_back(std::move(item));
     }
   }
   else if (result.kind == "config_revisions")
   {
     for (const auto &row : result.configRevisions)
     {
-      items.push_back({
+      json item = {
           {"id", row.id},
-          {"tsUtcMs", row.tsUtcMs},
           {"action", row.action},
           {"configurationName", row.configurationName},
           {"contentHash", row.contentHash},
           {"summary", row.summary},
           {"actorId", row.actorId},
-      });
+      };
+      putTsFields(item, "tsUtcMs", "tsUtc", row.tsUtcMs);
+      items.push_back(std::move(item));
     }
   }
   body["items"] = std::move(items);
   return body;
+}
+
+std::string csvEscape(const std::string &value)
+{
+  bool needQuotes = value.find_first_of(",\"\r\n") != std::string::npos;
+  if (!needQuotes)
+  {
+    return value;
+  }
+  std::string out = "\"";
+  for (char c : value)
+  {
+    if (c == '"')
+    {
+      out += "\"\"";
+    }
+    else
+    {
+      out += c;
+    }
+  }
+  out += '"';
+  return out;
+}
+
+std::string historyQueryResultToCsv(const HistoryQueryResult &result)
+{
+  std::ostringstream out;
+  if (result.kind == "alarm_occurrences")
+  {
+    out << "occurrenceId,alarmKey,status,severity,sourceType,sourceId,equipmentId,"
+           "adapterId,protocol,category,message,raisedAtUtc,acknowledgedAtUtc,"
+           "clearedAtUtc,durationMs\n";
+    for (const auto &row : result.alarmOccurrences)
+    {
+      out << row.id << ',' << csvEscape(row.alarmKey) << ',' << csvEscape(row.status)
+          << ',' << csvEscape(row.severity) << ',' << csvEscape(row.sourceType) << ','
+          << csvEscape(row.sourceId) << ',' << csvEscape(row.equipmentId) << ','
+          << csvEscape(row.adapterId) << ',' << csvEscape(row.protocol) << ','
+          << csvEscape(row.category) << ',' << csvEscape(row.message) << ','
+          << csvEscape(formatIso8601UtcMs(row.raisedAtUtcMs)) << ','
+          << csvEscape(
+                 row.acknowledgedAtUtcMs.has_value()
+                     ? formatIso8601UtcMs(*row.acknowledgedAtUtcMs)
+                     : std::string{})
+          << ','
+          << csvEscape(
+                 row.clearedAtUtcMs.has_value() ? formatIso8601UtcMs(*row.clearedAtUtcMs)
+                                                : std::string{})
+          << ',' << row.durationMs << '\n';
+    }
+  }
+  else
+  {
+    // Default / events export
+    out << "id,tsUtc,level,category,eventType,message,adapterId,equipmentId,protocol,"
+           "severity\n";
+    for (const auto &row : result.events)
+    {
+      out << row.id << ',' << csvEscape(formatIso8601UtcMs(row.tsUtcMs)) << ','
+          << csvEscape(row.level) << ',' << csvEscape(row.category) << ','
+          << csvEscape(row.eventType) << ',' << csvEscape(row.message) << ','
+          << csvEscape(row.adapterId) << ',' << csvEscape(row.equipmentId) << ','
+          << csvEscape(row.protocol) << ',' << csvEscape(row.level) << '\n';
+    }
+  }
+  return out.str();
 }
 
 
@@ -1362,6 +1538,64 @@ public:
       const HistoryQueryResult result = service.queryHistory(query);
       setJson(res, 200, historyQueryResultToJson(result));
     });
+
+    server.Get(
+        "/api/v1/history/export",
+        [this](const httplib::Request &req, httplib::Response &res) {
+          // CSV export only — never mutates SQLite records.
+          HistoryQuery query = historyQueryFromRequest(req);
+          if (query.kind.empty() || query.kind == "events")
+          {
+            if (!req.has_param("kind"))
+            {
+              query.kind = "events";
+            }
+          }
+          if (query.limit == 0 || query.limit > 5000)
+          {
+            query.limit = 5000;
+          }
+          const HistoryQueryResult result = service.queryHistory(query);
+          res.status = 200;
+          res.set_header("Content-Type", "text/csv; charset=utf-8");
+          res.set_header(
+              "Content-Disposition",
+              "attachment; filename=\"icp-history-" + result.kind + ".csv\"");
+          res.body = historyQueryResultToCsv(result);
+        });
+
+    server.Post(
+        R"(/api/v1/alarms/occurrences/([^/]+)/acknowledge)",
+        [this](const httplib::Request &req, httplib::Response &res) {
+          std::int64_t occurrenceId = 0;
+          try
+          {
+            occurrenceId = static_cast<std::int64_t>(std::stoll(req.matches[1].str()));
+          }
+          catch (...)
+          {
+            setJson(res, 400, {{"ok", false}, {"message", "invalid occurrence id"}});
+            return;
+          }
+          std::string actorId;
+          if (!req.body.empty())
+          {
+            auto body = json::parse(req.body, nullptr, false);
+            if (!body.is_discarded() && body.contains("actorId")
+                && body["actorId"].is_string())
+            {
+              actorId = body["actorId"].get<std::string>();
+            }
+          }
+          const ConfigResult result =
+              service.acknowledgeAlarmOccurrence(occurrenceId, actorId);
+          setJson(
+              res,
+              result.ok ? 200 : 400,
+              {{"ok", result.ok},
+               {"message", result.message},
+               {"occurrenceId", occurrenceId}});
+        });
 
     server.Get("/api/v1/events", [this](const httplib::Request &req, httplib::Response &res) {
       std::size_t limit = 100;

@@ -71,11 +71,14 @@ struct HealthTransitionRecord
   std::string reason;
 };
 
+/// One lifecycle action against an alarm occurrence (raised|acknowledged|cleared).
+/// Never deletes historical rows; GUI must not delete these either.
 struct AlarmEventRecord
 {
   std::int64_t id{0};
-  std::string alarmKey;
-  std::string action;  // raised | cleared | acknowledged
+  std::int64_t occurrenceId{0};
+  std::string alarmKey;  // stable identity: sourceType:sourceId:category
+  std::string action;    // raised | cleared | acknowledged
   std::string severity;
   std::string sourceType;
   std::string sourceId;
@@ -87,6 +90,30 @@ struct AlarmEventRecord
   std::int64_t tsUtcMs{0};
   std::string correlationId;
   std::string actorId;  // nullable until Milestone 2
+};
+
+/// One historical alarm incident/occurrence. Separate incidents stay separate rows.
+/// status: active | acknowledged | cleared
+struct AlarmOccurrenceRecord
+{
+  std::int64_t id{0};
+  std::string alarmKey;
+  std::string severity;
+  std::string sourceType;
+  std::string sourceId;
+  std::string equipmentId;
+  std::string adapterId;
+  std::string protocol;
+  std::string category;
+  std::string message;
+  std::int64_t raisedAtUtcMs{0};
+  std::optional<std::int64_t> acknowledgedAtUtcMs;
+  std::optional<std::int64_t> clearedAtUtcMs;
+  std::string status{"active"};
+  std::string correlationId;
+  std::string actorId;
+  /// Derived at query time: (cleared|now) - raised. -1 if unknown.
+  std::int64_t durationMs{-1};
 };
 
 struct EquipmentStateIntervalRecord
@@ -128,8 +155,8 @@ struct ConfigRevisionRecord
 struct HistoryQuery
 {
   std::string kind{"events"};  // events|communication_intervals|health_transitions|
-                               // alarm_events|equipment_state_intervals|command_audit|
-                               // config_revisions
+                               // alarm_events|alarm_occurrences|equipment_state_intervals|
+                               // command_audit|config_revisions
   std::optional<std::int64_t> startUtcMs;
   std::optional<std::int64_t> endUtcMs;
   std::string adapterId;
@@ -138,17 +165,25 @@ struct HistoryQuery
   std::string category;
   std::string eventType;
   std::string severity;
+  std::string status;  // alarm_occurrences: active|acknowledged|cleared
+  std::string alarmKey;
   std::size_t limit{100};
+  std::size_t offset{0};
 };
 
 struct HistoryQueryResult
 {
   HistoryStatus status;
   std::string kind;
+  std::size_t limit{0};
+  std::size_t offset{0};
+  std::size_t returned{0};
+  bool truncated{false};
   std::vector<HistoryEventRecord> events;
   std::vector<CommunicationIntervalRecord> communicationIntervals;
   std::vector<HealthTransitionRecord> healthTransitions;
   std::vector<AlarmEventRecord> alarmEvents;
+  std::vector<AlarmOccurrenceRecord> alarmOccurrences;
   std::vector<EquipmentStateIntervalRecord> equipmentStateIntervals;
   std::vector<CommandAuditRecord> commandAudits;
   std::vector<ConfigRevisionRecord> configRevisions;

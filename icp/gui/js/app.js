@@ -8,6 +8,9 @@
     configuration: "Configuration",
     mappings: "Mappings",
     diagnostics: "Diagnostics",
+    "active-alarms": "Active Alarms",
+    "alarm-history": "Alarm History",
+    "event-history": "Event History",
     events: "Logs / Events",
     settings: "Settings",
   };
@@ -33,6 +36,18 @@
     _eventsAdapterFilter: "all",
     _eventsEquipmentFilter: "all",
     _eventsSelectedKey: null,
+    _histFrom: "",
+    _histTo: "",
+    _histAdapter: "all",
+    _histEquipment: "all",
+    _histProtocol: "all",
+    _histSeverity: "all",
+    _histCategory: "all",
+    _histStatus: "all",
+    _histOffset: 0,
+    _histLimit: 100,
+    _alarmHistOffset: 0,
+    _alarmHistLimit: 100,
   };
 
   const APPEARANCE_STORAGE_KEY = "icp.gui.appearance";
@@ -1149,6 +1164,34 @@
     bindEventsFilter("events-adapter-filter", "_eventsAdapterFilter");
     bindEventsFilter("events-equipment-filter", "_eventsEquipmentFilter");
 
+    const histIds = [
+      "hist-from",
+      "hist-to",
+      "hist-adapter",
+      "hist-equipment",
+      "hist-protocol",
+      "hist-severity",
+      "hist-category",
+      "hist-status",
+    ];
+    histIds.forEach((hid) => {
+      const el = document.getElementById(hid);
+      if (el && !el.dataset.bound) {
+        el.dataset.bound = "1";
+        el.addEventListener("change", () => {
+          if (hid === "hist-from") state._histFrom = el.value || "";
+          else if (hid === "hist-to") state._histTo = el.value || "";
+          else if (hid === "hist-adapter") state._histAdapter = el.value || "all";
+          else if (hid === "hist-equipment") state._histEquipment = el.value || "all";
+          else if (hid === "hist-protocol") state._histProtocol = el.value || "all";
+          else if (hid === "hist-severity") state._histSeverity = el.value || "all";
+          else if (hid === "hist-category") {
+            state._histCategory = (el.value || "").trim() || "all";
+          } else if (hid === "hist-status") state._histStatus = el.value || "all";
+        });
+      }
+    });
+
     // Highlight validation issues after render.
     if (state._editingAdapter && state._editingAdapter._validationIssues) {
       const box = $("#editor-result");
@@ -1713,6 +1756,378 @@
     return `<span class="status ${cls}">${esc(v)}</span>`;
   }
 
+  const LOCAL_MONTHS = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+
+  function formatLocalTsFromMs(ms, withZone) {
+    if (ms == null || ms === "" || !Number.isFinite(Number(ms))) return "—";
+    const d = new Date(Number(ms));
+    if (Number.isNaN(d.getTime())) return "—";
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mon = LOCAL_MONTHS[d.getMonth()];
+    const yyyy = d.getFullYear();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    let out = dd + " " + mon + " " + yyyy + " " + hh + ":" + mm + ":" + ss;
+    if (withZone) {
+      const offsetMin = -d.getTimezoneOffset();
+      const sign = offsetMin >= 0 ? "+" : "-";
+      const abs = Math.abs(offsetMin);
+      const oh = String(Math.floor(abs / 60)).padStart(2, "0");
+      const om = String(abs % 60).padStart(2, "0");
+      out += " (UTC" + sign + oh + ":" + om + ")";
+    }
+    return out;
+  }
+
+  function formatLocalTs(isoOrMs, withZone) {
+    if (isoOrMs == null || isoOrMs === "") return "—";
+    if (typeof isoOrMs === "number") return formatLocalTsFromMs(isoOrMs, withZone);
+    const n = Number(isoOrMs);
+    if (Number.isFinite(n) && String(isoOrMs).match(/^\d+$/)) {
+      return formatLocalTsFromMs(n, withZone);
+    }
+    const t = Date.parse(String(isoOrMs));
+    return formatLocalTsFromMs(t, withZone);
+  }
+
+  function localDateTimeInputValue(ms) {
+    if (!Number.isFinite(ms)) return "";
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, "0");
+    return (
+      d.getFullYear() +
+      "-" +
+      pad(d.getMonth() + 1) +
+      "-" +
+      pad(d.getDate()) +
+      "T" +
+      pad(d.getHours()) +
+      ":" +
+      pad(d.getMinutes())
+    );
+  }
+
+  function parseLocalDateTimeInput(value) {
+    if (!value) return null;
+    const t = Date.parse(value);
+    return Number.isFinite(t) ? t : null;
+  }
+
+  function historyFilterParams(extra) {
+    const params = Object.assign({}, extra || {});
+    const fromMs = parseLocalDateTimeInput(state._histFrom);
+    const toMs = parseLocalDateTimeInput(state._histTo);
+    if (fromMs != null) params.startUtcMs = fromMs;
+    if (toMs != null) params.endUtcMs = toMs;
+    if (state._histAdapter && state._histAdapter !== "all") {
+      params.adapterId = state._histAdapter;
+    }
+    if (state._histEquipment && state._histEquipment !== "all") {
+      params.equipmentId = state._histEquipment;
+    }
+    if (state._histProtocol && state._histProtocol !== "all") {
+      params.protocol = state._histProtocol;
+    }
+    if (state._histSeverity && state._histSeverity !== "all") {
+      params.severity = state._histSeverity;
+    }
+    if (state._histCategory && state._histCategory !== "all") {
+      params.category = state._histCategory;
+    }
+    if (state._histStatus && state._histStatus !== "all") {
+      params.status = state._histStatus;
+    }
+    return params;
+  }
+
+  function historyFilterBarHtml(opts) {
+    const o = opts || {};
+    const showStatus = !!o.showStatus;
+    return `<div class="toolbar hist-filters">
+      <label>From <input type="datetime-local" id="hist-from" value="${esc(
+        state._histFrom || ""
+      )}" /></label>
+      <label>To <input type="datetime-local" id="hist-to" value="${esc(
+        state._histTo || ""
+      )}" /></label>
+      <label>Adapter
+        <select id="hist-adapter">
+          <option value="all">All</option>
+          ${(o.adapters || [])
+            .map(
+              (a) =>
+                `<option value="${esc(a.adapterId)}"${
+                  state._histAdapter === a.adapterId ? " selected" : ""
+                }>${esc(a.adapterId)}</option>`
+            )
+            .join("")}
+        </select>
+      </label>
+      <label>Equipment
+        <select id="hist-equipment">
+          <option value="all">All</option>
+          ${(o.equipment || [])
+            .map(
+              (e) =>
+                `<option value="${esc(e.equipmentId)}"${
+                  state._histEquipment === e.equipmentId ? " selected" : ""
+                }>${esc(e.equipmentId)}</option>`
+            )
+            .join("")}
+        </select>
+      </label>
+      <label>Protocol
+        <select id="hist-protocol">
+          <option value="all">All</option>
+          ${["opcua", "modbus", "mqtt", "rest", "ethernetip", "mock"]
+            .map(
+              (p) =>
+                `<option value="${p}"${
+                  state._histProtocol === p ? " selected" : ""
+                }>${p}</option>`
+            )
+            .join("")}
+        </select>
+      </label>
+      <label>Severity
+        <select id="hist-severity">
+          <option value="all">All</option>
+          ${["INFO", "WARNING", "ERROR", "CRITICAL"]
+            .map(
+              (s) =>
+                `<option value="${s}"${
+                  state._histSeverity === s ? " selected" : ""
+                }>${s}</option>`
+            )
+            .join("")}
+        </select>
+      </label>
+      <label>Category
+        <input id="hist-category" type="text" placeholder="e.g. CONNECTION" value="${esc(
+          state._histCategory === "all" ? "" : state._histCategory || ""
+        )}" />
+      </label>
+      ${
+        showStatus
+          ? `<label>Status
+        <select id="hist-status">
+          <option value="all"${state._histStatus === "all" ? " selected" : ""}>All</option>
+          <option value="active"${
+            state._histStatus === "active" ? " selected" : ""
+          }>Active</option>
+          <option value="acknowledged"${
+            state._histStatus === "acknowledged" ? " selected" : ""
+          }>Acknowledged</option>
+          <option value="cleared"${
+            state._histStatus === "cleared" ? " selected" : ""
+          }>Cleared</option>
+        </select>
+      </label>`
+          : ""
+      }
+      <button type="button" data-action="hist-apply">Apply</button>
+      <button type="button" data-action="hist-export" data-kind="${esc(
+        o.exportKind || "events"
+      )}">Export CSV</button>
+    </div>`;
+  }
+
+  function pagerHtml(offset, limit, truncated, actionPrefix) {
+    const page = Math.floor(offset / limit) + 1;
+    return `<div class="toolbar hist-pager">
+      <button type="button" data-action="${actionPrefix}-prev" ${
+        offset <= 0 ? "disabled" : ""
+      }>Previous</button>
+      <span class="muted">Page ${page} · limit ${limit}${
+        truncated ? " · more available" : ""
+      }</span>
+      <button type="button" data-action="${actionPrefix}-next" ${
+        truncated ? "" : "disabled"
+      }>Next</button>
+    </div>`;
+  }
+
+  async function renderActiveAlarms() {
+    const res = await IcpApi.diagnostics();
+    if (!res.ok) {
+      return contentFailureHtml(
+        "active-alarms",
+        apiResultDetail(res, "Cannot reach /api/v1/diagnostics")
+      );
+    }
+    const d = res.data || {};
+    const activeAlarms = d.activeAlarms || [];
+    return `<div class="panel">
+      <h2>Active Alarms</h2>
+      <p class="muted">Currently active conditions only. Acknowledge records a historical action; it does not delete history.</p>
+      ${
+        !activeAlarms.length
+          ? `<p class="muted">No active alarms.</p>`
+          : `<table class="diag-table"><thead><tr><th>Severity</th><th>Source</th><th>Category</th><th>Protocol</th><th>Message</th><th>Since</th></tr></thead><tbody>${activeAlarms
+              .map(
+                (a) => `<tr>
+            <td>${severityBadge(a.severity)}</td>
+            <td>${esc(a.sourceType)}:${esc(a.sourceId)}</td>
+            <td>${esc(a.category || "")}</td>
+            <td>${esc(a.protocol || "")}</td>
+            <td>${esc(a.message || "")}</td>
+            <td title="${esc(a.sinceUtc || "")}">${formatLocalTs(a.sinceUtc, true)}</td>
+          </tr>`
+              )
+              .join("")}</tbody></table>`
+      }
+    </div>`;
+  }
+
+  async function renderAlarmHistory() {
+    const [adRes, eqRes] = await Promise.all([IcpApi.adapters(), IcpApi.equipment()]);
+    const adapters = (adRes.data && adRes.data.adapters) || [];
+    const equipment = (eqRes.data && eqRes.data.equipment) || [];
+    const limit = state._alarmHistLimit || 100;
+    const offset = state._alarmHistOffset || 0;
+    const params = historyFilterParams({
+      kind: "alarm_occurrences",
+      limit,
+      offset,
+    });
+    const res = await IcpApi.history(params);
+    if (!res.ok) {
+      return contentFailureHtml(
+        "alarm-history",
+        apiResultDetail(res, "Cannot reach /api/v1/history")
+      );
+    }
+    const items = (res.data && res.data.items) || [];
+    const truncated = !!(res.data && res.data.truncated);
+    const historian = (res.data && res.data.historian) || {};
+    return `<div class="panel">
+      <h2>Alarm History</h2>
+      <p class="muted">Previous and current alarm occurrences from SQLite. Raised / acknowledged / cleared are historical actions — never deleted by the GUI.</p>
+      <p class="muted">Historian: ${
+        historian.available ? (historian.degraded ? "degraded" : "available") : "unavailable"
+      }</p>
+      ${historyFilterBarHtml({
+        adapters,
+        equipment,
+        showStatus: true,
+        exportKind: "alarm_occurrences",
+      })}
+      ${pagerHtml(offset, limit, truncated, "alarm-hist")}
+      ${
+        !items.length
+          ? `<p class="muted">No alarm occurrences for the current filters.</p>`
+          : `<table class="diag-table"><thead><tr>
+            <th>Status</th><th>Severity</th><th>Source</th><th>Equipment</th><th>Category</th>
+            <th>Message</th><th>Raised</th><th>Acknowledged</th><th>Cleared</th><th>Duration</th><th></th>
+          </tr></thead><tbody>${items
+            .map((row) => {
+              const id = row.occurrenceId || row.id;
+              const canAck = row.status === "active" || row.status === "acknowledged";
+              return `<tr>
+              <td>${esc(row.status || "")}</td>
+              <td>${severityBadge(row.severity)}</td>
+              <td>${esc(row.sourceType || "")}:${esc(row.sourceId || "")}</td>
+              <td>${esc(row.equipmentId || "—")}</td>
+              <td>${esc(row.category || "")}</td>
+              <td>${esc(row.message || "")}</td>
+              <td title="${esc(row.raisedAtUtc || "")}">${formatLocalTs(
+                row.raisedAtUtcMs,
+                true
+              )}</td>
+              <td title="${esc(row.acknowledgedAtUtc || "")}">${
+                row.acknowledgedAtUtcMs != null
+                  ? formatLocalTs(row.acknowledgedAtUtcMs, true)
+                  : "—"
+              }</td>
+              <td title="${esc(row.clearedAtUtc || "")}">${
+                row.clearedAtUtcMs != null ? formatLocalTs(row.clearedAtUtcMs, true) : "—"
+              }</td>
+              <td>${
+                row.durationMs != null && row.durationMs >= 0
+                  ? formatDurationMs(row.durationMs)
+                  : "—"
+              }</td>
+              <td>${
+                canAck && row.status !== "cleared"
+                  ? `<button type="button" data-action="alarm-ack" data-id="${esc(
+                      String(id)
+                    )}">Acknowledge</button>`
+                  : ""
+              }</td>
+            </tr>`;
+            })
+            .join("")}</tbody></table>`
+      }
+    </div>`;
+  }
+
+  async function renderEventHistory() {
+    const [adRes, eqRes] = await Promise.all([IcpApi.adapters(), IcpApi.equipment()]);
+    const adapters = (adRes.data && adRes.data.adapters) || [];
+    const equipment = (eqRes.data && eqRes.data.equipment) || [];
+    const limit = state._histLimit || 100;
+    const offset = state._histOffset || 0;
+    const params = historyFilterParams({
+      kind: "events",
+      limit,
+      offset,
+    });
+    const res = await IcpApi.history(params);
+    if (!res.ok) {
+      return contentFailureHtml(
+        "event-history",
+        apiResultDetail(res, "Cannot reach /api/v1/history")
+      );
+    }
+    const items = (res.data && res.data.items) || [];
+    const truncated = !!(res.data && res.data.truncated);
+    const historian = (res.data && res.data.historian) || {};
+    return `<div class="panel">
+      <h2>Event History</h2>
+      <p class="muted">Persistent history from SQLite — survives GUI refresh and ICP restart. Bounded/paginated; not the live session buffer.</p>
+      <p class="muted">Historian: ${
+        historian.available ? (historian.degraded ? "degraded" : "available") : "unavailable"
+      }</p>
+      ${historyFilterBarHtml({ adapters, equipment, exportKind: "events" })}
+      ${pagerHtml(offset, limit, truncated, "event-hist")}
+      ${
+        !items.length
+          ? `<p class="muted">No persisted events for the current filters.</p>`
+          : `<table class="diag-table"><thead><tr>
+            <th>Time</th><th>Severity</th><th>Category</th><th>Type</th><th>Adapter</th>
+            <th>Equipment</th><th>Protocol</th><th>Message</th>
+          </tr></thead><tbody>${items
+            .map(
+              (e) => `<tr>
+            <td title="${esc(e.tsUtc || "")}">${formatLocalTs(e.tsUtcMs, true)}</td>
+            <td>${severityBadge(e.level)}</td>
+            <td>${esc(e.category || "")}</td>
+            <td>${esc(e.eventType || "")}</td>
+            <td>${esc(e.adapterId || "—")}</td>
+            <td>${esc(e.equipmentId || "—")}</td>
+            <td>${esc(e.protocol || "—")}</td>
+            <td>${esc(e.message || "")}</td>
+          </tr>`
+            )
+            .join("")}</tbody></table>`
+      }
+    </div>`;
+  }
+
   function relativeTimeLabel(iso) {
     if (!iso) return "Not available";
     const t = Date.parse(iso);
@@ -1987,7 +2402,15 @@
   }
 
   function diagnosticsControlsBusy() {
-    if (state.route !== "diagnostics" && state.route !== "events") return false;
+    if (
+      state.route !== "diagnostics" &&
+      state.route !== "events" &&
+      state.route !== "alarm-history" &&
+      state.route !== "event-history" &&
+      state.route !== "active-alarms"
+    ) {
+      return false;
+    }
     const ae = document.activeElement;
     if (!ae) return false;
     if (
@@ -1996,7 +2419,15 @@
       ae.id === "events-severity-filter" ||
       ae.id === "events-category-filter" ||
       ae.id === "events-adapter-filter" ||
-      ae.id === "events-equipment-filter"
+      ae.id === "events-equipment-filter" ||
+      ae.id === "hist-from" ||
+      ae.id === "hist-to" ||
+      ae.id === "hist-adapter" ||
+      ae.id === "hist-equipment" ||
+      ae.id === "hist-protocol" ||
+      ae.id === "hist-severity" ||
+      ae.id === "hist-category" ||
+      ae.id === "hist-status"
     ) {
       return true;
     }
@@ -2715,6 +3146,9 @@
         else if (route === "configuration") html = await renderConfiguration();
         else if (route === "mappings") html = await renderMappings();
         else if (route === "diagnostics") html = await renderDiagnostics();
+        else if (route === "active-alarms") html = await renderActiveAlarms();
+        else if (route === "alarm-history") html = await renderAlarmHistory();
+        else if (route === "event-history") html = await renderEventHistory();
         else if (route === "events") html = await renderEvents();
         else if (route === "settings") html = await renderSettings();
         else html = `<div class="empty">Unknown route</div>`;
@@ -2816,6 +3250,70 @@
       }
       if (action === "events-clear-detail") {
         state._eventsSelectedKey = null;
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "hist-apply") {
+        const from = document.getElementById("hist-from");
+        const to = document.getElementById("hist-to");
+        const cat = document.getElementById("hist-category");
+        if (from) state._histFrom = from.value || "";
+        if (to) state._histTo = to.value || "";
+        if (cat) state._histCategory = (cat.value || "").trim() || "all";
+        state._histOffset = 0;
+        state._alarmHistOffset = 0;
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "hist-export") {
+        const kind = (el && el.dataset && el.dataset.kind) || "events";
+        const params = historyFilterParams({
+          kind: kind,
+          limit: 5000,
+          offset: 0,
+        });
+        const url = IcpApi.historyExportUrl(params);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "icp-history-" + kind + ".csv";
+        a.click();
+        flash("CSV export started (read-only; SQLite unchanged)", "ok");
+        return;
+      }
+      if (action === "alarm-hist-prev") {
+        state._alarmHistOffset = Math.max(
+          0,
+          (state._alarmHistOffset || 0) - (state._alarmHistLimit || 100)
+        );
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "alarm-hist-next") {
+        state._alarmHistOffset =
+          (state._alarmHistOffset || 0) + (state._alarmHistLimit || 100);
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "event-hist-prev") {
+        state._histOffset = Math.max(
+          0,
+          (state._histOffset || 0) - (state._histLimit || 100)
+        );
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "event-hist-next") {
+        state._histOffset = (state._histOffset || 0) + (state._histLimit || 100);
+        await render({ skipDraftCapture: true });
+        return;
+      }
+      if (action === "alarm-ack") {
+        const res = await IcpApi.acknowledgeAlarmOccurrence(id, "gui");
+        if (!res.ok) {
+          flash(apiResultDetail(res, "Acknowledge failed"), "error");
+          return;
+        }
+        flash("Alarm acknowledged (history retained)", "ok");
         await render({ skipDraftCapture: true });
         return;
       }
@@ -3237,7 +3735,7 @@
       if (diagnosticsControlsBusy()) return;
       // Keep selected event detail stable; resume live refresh after Close details.
       if (state.route === "events" && state._eventsSelectedKey) return;
-      if (["dashboard", "equipment", "connections", "diagnostics", "events", "adapters"].includes(
+      if (["dashboard", "equipment", "connections", "diagnostics", "events", "adapters", "active-alarms", "alarm-history", "event-history"].includes(
         state.route
       )) {
         render({ fromPoll: true, skipDraftCapture: false });

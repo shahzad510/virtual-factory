@@ -291,6 +291,10 @@ public:
   HistoryQueryResult queryHistory(const HistoryQuery &query) const;
   const std::string &historyDatabasePath() const;
 
+  /// Acknowledge an alarm occurrence (historical action; never deletes rows).
+  ConfigResult acknowledgeAlarmOccurrence(
+      std::int64_t occurrenceId, const std::string &actorId = {});
+
   ApplicationStatus status() const;
   std::vector<ProtocolCapability> protocols() const;
 
@@ -393,8 +397,16 @@ private:
       const std::string &correlationId) const;
   void syncAlarmAndEquipmentHistoryLocked() const;
   static std::int64_t toEpochMs(std::chrono::system_clock::time_point tp);
+  /// Stable alarm identity: sourceType:sourceId:category (message excluded).
   static std::string alarmKeyFor(const ActiveAlarmView &alarm);
   static std::string equipmentHistoryState(const EquipmentSnapshot &snap);
+  std::int64_t nextAlarmOccurrenceIdLocked() const;
+
+  struct OpenAlarmTracking
+  {
+    ActiveAlarmView view;
+    std::int64_t occurrenceId{0};
+  };
 
   mutable std::mutex mutex_;
   std::string configuration_path_;
@@ -414,10 +426,11 @@ private:
   mutable std::unordered_map<std::string, CommandDiagnostic> command_runtime_;
   /// Adapters currently inside reconnectAdapter() (for recovery event category).
   mutable std::unordered_map<std::string, bool> reconnect_in_progress_;
-  /// Open alarm keys for raise/clear history (process-lifetime tracking only).
-  mutable std::unordered_map<std::string, ActiveAlarmView> open_alarms_;
+  /// Open alarm identities → current occurrence (process-lifetime; no poll dupes).
+  mutable std::unordered_map<std::string, OpenAlarmTracking> open_alarms_;
   /// Last persisted equipment operational history state per equipment id.
   mutable std::unordered_map<std::string, std::string> equipment_history_state_;
+  mutable std::int64_t next_alarm_occurrence_id_{0};
   std::chrono::system_clock::time_point service_started_at_{};
 };
 
