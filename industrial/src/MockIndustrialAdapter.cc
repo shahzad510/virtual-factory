@@ -170,16 +170,47 @@ void MockIndustrialAdapter::setSourceTelemetry(
 
 void MockIndustrialAdapter::simulateCommunicationFailure(std::string reason)
 {
+  this->force_communication_failure_ = true;
+  this->forced_failure_reason_ = reason;
   this->connection_state_ = ConnectionState::Faulted;
   this->last_error_ = std::move(reason);
 }
 
 void MockIndustrialAdapter::clearCommunicationFailure()
 {
+  this->force_communication_failure_ = false;
+  this->forced_failure_reason_.clear();
   if (this->connection_state_ == ConnectionState::Faulted)
   {
     this->connection_state_ = ConnectionState::Disconnected;
     this->bound_.clear();
+    this->last_error_.clear();
+  }
+}
+
+void MockIndustrialAdapter::clearForcedOutage()
+{
+  this->force_communication_failure_ = false;
+  this->forced_failure_reason_.clear();
+}
+
+void MockIndustrialAdapter::simulateApplicationReadFailure(std::string reason)
+{
+  if (this->connection_state_ != ConnectionState::Connected)
+  {
+    return;
+  }
+  this->application_read_failure_ = true;
+  this->application_read_failure_reason_ = std::move(reason);
+  this->last_error_ = this->application_read_failure_reason_;
+}
+
+void MockIndustrialAdapter::clearApplicationReadFailure()
+{
+  this->application_read_failure_ = false;
+  this->application_read_failure_reason_.clear();
+  if (this->connection_state_ == ConnectionState::Connected)
+  {
     this->last_error_.clear();
   }
 }
@@ -211,15 +242,29 @@ bool MockIndustrialAdapter::connect()
     return true;
   }
 
+  // Allow connect() from Faulted — ICP owns reconnect (same as OPC UA/Modbus).
+  // If the simulated outage is still active, fail with a bounded error.
+  if (this->force_communication_failure_)
+  {
+    this->connection_state_ = ConnectionState::Faulted;
+    this->last_error_ = this->forced_failure_reason_.empty()
+                            ? "simulated link still unavailable"
+                            : this->forced_failure_reason_;
+    return false;
+  }
+
   if (this->connection_state_ == ConnectionState::Faulted)
   {
-    this->last_error_ = "cannot connect while faulted";
-    return false;
+    this->bound_.clear();
+    this->last_error_.clear();
+    this->connection_state_ = ConnectionState::Disconnected;
   }
 
   this->bindDevices();
   this->connection_state_ = ConnectionState::Connected;
   this->last_error_.clear();
+  this->application_read_failure_ = false;
+  this->application_read_failure_reason_.clear();
   return true;
 }
 
@@ -228,6 +273,8 @@ void MockIndustrialAdapter::disconnect()
   this->bound_.clear();
   this->connection_state_ = ConnectionState::Disconnected;
   this->last_error_.clear();
+  this->application_read_failure_ = false;
+  this->application_read_failure_reason_.clear();
 }
 
 std::vector<Equipment *> MockIndustrialAdapter::equipment()
@@ -275,6 +322,15 @@ void MockIndustrialAdapter::poll()
     return;
   }
 
+  if (this->application_read_failure_)
+  {
+    this->last_error_ = this->application_read_failure_reason_.empty()
+                            ? "application read failed"
+                            : this->application_read_failure_reason_;
+    return;
+  }
+
+  this->last_error_.clear();
   for (auto &item : this->bound_)
   {
     item->copySourceTelemetry();

@@ -18,6 +18,101 @@ UA_NodeId makeNodeId(const OpcUaNodeRef &node)
   return UA_NODEID_STRING_ALLOC(node.namespaceIndex, node.identifier.c_str());
 }
 
+std::string formatNodeId(const OpcUaNodeRef &node)
+{
+  return "ns=" + std::to_string(static_cast<unsigned>(node.namespaceIndex))
+      + ";s=" + node.identifier;
+}
+
+}  // namespace
+
+OpcUaNodeRef opcUaNodeRefFromConfig(
+    std::uint16_t namespaceIndex, const std::string &address)
+{
+  // Expanded string NodeId: ns=<digits>;s=<identifier>
+  // Example: "ns=2;s=MotorSpeed" → {2, "MotorSpeed"}
+  if (address.size() >= 6 && address.compare(0, 3, "ns=") == 0)
+  {
+    const std::size_t semi = address.find(";s=");
+    if (semi != std::string::npos && semi > 3)
+    {
+      unsigned long parsedNs = 0;
+      bool numeric = true;
+      for (std::size_t i = 3; i < semi; ++i)
+      {
+        const char ch = address[i];
+        if (ch < '0' || ch > '9')
+        {
+          numeric = false;
+          break;
+        }
+        parsedNs = parsedNs * 10UL + static_cast<unsigned long>(ch - '0');
+        if (parsedNs > 65535UL)
+        {
+          numeric = false;
+          break;
+        }
+      }
+      const std::string ident = address.substr(semi + 3);
+      if (numeric && !ident.empty())
+      {
+        OpcUaNodeRef node;
+        node.namespaceIndex = static_cast<std::uint16_t>(parsedNs);
+        node.identifier = ident;
+        return node;
+      }
+    }
+  }
+
+  OpcUaNodeRef node;
+  node.namespaceIndex = namespaceIndex;
+  node.identifier = address;
+  return node;
+}
+
+namespace
+{
+
+std::string statusCodeName(UA_StatusCode status)
+{
+  const char *name = UA_StatusCode_name(status);
+  if (name == nullptr || name[0] == '\0')
+  {
+    return "StatusCode=0x" + std::to_string(static_cast<unsigned long>(status));
+  }
+  return std::string(name);
+}
+
+/// True when the StatusCode indicates session/secure-channel/transport loss.
+/// Application-level failures (BadNodeIdUnknown, type mismatch, etc.) are soft.
+bool isConnectivityStatus(UA_StatusCode status)
+{
+  switch (status)
+  {
+    case UA_STATUSCODE_BADCONNECTIONCLOSED:
+    case UA_STATUSCODE_BADDISCONNECT:
+    case UA_STATUSCODE_BADCONNECTIONREJECTED:
+    case UA_STATUSCODE_BADSERVERNOTCONNECTED:
+    case UA_STATUSCODE_BADSHUTDOWN:
+    case UA_STATUSCODE_BADSESSIONCLOSED:
+    case UA_STATUSCODE_BADSESSIONIDINVALID:
+    case UA_STATUSCODE_BADSESSIONNOTACTIVATED:
+    case UA_STATUSCODE_BADSECURECHANNELCLOSED:
+    case UA_STATUSCODE_BADSECURECHANNELIDINVALID:
+    case UA_STATUSCODE_BADSECURECHANNELTOKENUNKNOWN:
+    // Dead/unreachable peer during sync I/O (blackhole, stalled TCP, etc.).
+    case UA_STATUSCODE_BADTIMEOUT:
+    case UA_STATUSCODE_BADNOTCONNECTED:
+    case UA_STATUSCODE_BADCOMMUNICATIONERROR:
+    case UA_STATUSCODE_BADTCPINTERNALERROR:
+    case UA_STATUSCODE_BADTCPSERVERTOOBUSY:
+    case UA_STATUSCODE_BADTCPNOTENOUGHRESOURCES:
+      return true;
+    default:
+      return false;
+  }
+}
+
 bool variantAsBool(const UA_Variant &value, bool *out)
 {
   if (out == nullptr || value.data == nullptr || UA_Variant_isEmpty(&value))
@@ -285,12 +380,7 @@ bool OpcUaIndustrialAdapter::connect()
     return false;
   }
 
-  if (this->client_->client != nullptr)
-  {
-    UA_Client_disconnect(this->client_->client);
-    UA_Client_delete(this->client_->client);
-    this->client_->client = nullptr;
-  }
+  this->releaseClient();
 
   this->client_->client = UA_Client_new();
   if (this->client_->client == nullptr)
@@ -300,7 +390,9 @@ bool OpcUaIndustrialAdapter::connect()
   }
 
   UA_ClientConfig *clientConfig = UA_Client_getConfig(this->client_->client);
-  clientConfig->timeout = 2000;
+  clientConfig->timeout = static_cast<UA_UInt32>(this->resolvedTimeoutMs());
+  // Explicit ICP lifecycle owns reconnect. open62541 must not silently rebuild
+  // a SecureChannel underneath connection_state_ (would desynchronize ICP).
   clientConfig->noReconnect = true;
   clientConfig->securityMode = UA_MESSAGESECURITYMODE_NONE;
 
@@ -308,8 +400,7 @@ bool OpcUaIndustrialAdapter::connect()
       UA_Client_connect(this->client_->client, this->config_.endpointUrl.c_str());
   if (status != UA_STATUSCODE_GOOD)
   {
-    UA_Client_delete(this->client_->client);
-    this->client_->client = nullptr;
+    this->releaseClient();
     this->enterFault(
         std::string("OPC UA connect failed: ") + UA_StatusCode_name(status));
     return false;
@@ -318,22 +409,74 @@ bool OpcUaIndustrialAdapter::connect()
   this->bindEquipment();
   this->connection_state_ = ConnectionState::Connected;
   this->last_error_.clear();
+  this->last_service_status_ = UA_STATUSCODE_GOOD;
+  this->last_failure_was_connectivity_ = false;
   return true;
+}
+
+int OpcUaIndustrialAdapter::resolvedTimeoutMs() const
+{
+  return this->config_.timeoutMs > 0 ? this->config_.timeoutMs : 2000;
+}
+
+
+void OpcUaIndustrialAdapter::releaseClient()
+{
+  if (this->client_ && this->client_->client != nullptr)
+  {
+    UA_Client *client = this->client_->client;
+    this->client_->client = nullptr;
+
+    // Bound teardown: UA_Client_delete → UA_Client_disconnect →
+    // disconnectSecureChannel(sync) waits unbounded for channel CLOSED unless
+    // the EventLoop is already STOPPED/FRESH. Shrinking timeout does NOT bound
+    // that wait — a dead peer can hang the adapter io_mutex and stall ICP HTTP.
+    // Stop (and drain) the EventLoop first so sync disconnect skips the wait.
+    // If the EventLoop cannot reach STOPPED quickly, drop ownership so delete
+    // cannot block forever (rare FD leak preferred over ICP hang).
+    UA_ClientConfig *clientConfig = UA_Client_getConfig(client);
+    if (clientConfig != nullptr)
+    {
+      const UA_UInt32 teardownMs = 250;
+      const UA_UInt32 configured =
+          static_cast<UA_UInt32>(this->resolvedTimeoutMs());
+      clientConfig->timeout = configured < teardownMs ? configured : teardownMs;
+      clientConfig->noReconnect = true;
+
+      UA_EventLoop *el = clientConfig->eventLoop;
+      if (el != nullptr)
+      {
+        if (el->state == UA_EVENTLOOPSTATE_STARTED)
+        {
+          el->stop(el);
+        }
+        for (int i = 0;
+             i < 100 && el->state != UA_EVENTLOOPSTATE_STOPPED
+             && el->state != UA_EVENTLOOPSTATE_FRESH;
+             ++i)
+        {
+          el->run(el, 1);
+        }
+        if (el->state != UA_EVENTLOOPSTATE_STOPPED
+            && el->state != UA_EVENTLOOPSTATE_FRESH)
+        {
+          clientConfig->externalEventLoop = true;
+          clientConfig->eventLoop = nullptr;
+        }
+      }
+    }
+    UA_Client_delete(client);
+  }
 }
 
 void OpcUaIndustrialAdapter::disconnect()
 {
   this->bound_.clear();
-
-  if (this->client_ && this->client_->client != nullptr)
-  {
-    UA_Client_disconnect(this->client_->client);
-    UA_Client_delete(this->client_->client);
-    this->client_->client = nullptr;
-  }
-
+  this->releaseClient();
   this->connection_state_ = ConnectionState::Disconnected;
   this->last_error_.clear();
+  this->last_service_status_ = UA_STATUSCODE_GOOD;
+  this->last_failure_was_connectivity_ = false;
 }
 
 std::vector<Equipment *> OpcUaIndustrialAdapter::equipment()
@@ -385,10 +528,23 @@ void OpcUaIndustrialAdapter::poll()
   {
     if (!item->refreshFromServer())
     {
-      this->enterFault("OPC UA read failed during poll");
+      const std::string detail =
+          this->last_error_.empty() ? "OPC UA read failed during poll"
+                                    : this->last_error_;
+      // Soft failures (BadNodeId, type mismatch, etc.) must NOT tear down the
+      // connection lifecycle. Only genuine session/channel loss → FAULTED.
+      if (this->last_failure_was_connectivity_)
+      {
+        this->enterFault(detail);
+        return;
+      }
+      // Keep CONNECTED; expose the read problem via lastError for operators.
+      this->last_error_ = detail;
       return;
     }
   }
+  this->last_error_.clear();
+  this->last_failure_was_connectivity_ = false;
 }
 
 void OpcUaIndustrialAdapter::bindEquipment()
@@ -404,59 +560,120 @@ void OpcUaIndustrialAdapter::enterFault(const std::string &reason)
 {
   this->connection_state_ = ConnectionState::Faulted;
   this->last_error_ = reason;
+  // With noReconnect, a dead SecureChannel/session is unusable. Drop the client
+  // so connection_state_ matches reality and connect()/reconnect() must create
+  // a fresh UA_Client. Keep bound_ equipment for last-known Faulted reads.
+  this->releaseClient();
 }
 
 bool OpcUaIndustrialAdapter::readBoolean(const OpcUaNodeRef &node, bool *value)
 {
   if (this->client_->client == nullptr || node.identifier.empty())
   {
+    this->last_service_status_ = UA_STATUSCODE_BADINVALIDARGUMENT;
+    // Null client while Connected means the session object is gone — connectivity.
+    this->last_failure_was_connectivity_ = (this->client_->client == nullptr);
+    this->last_error_ =
+        "OPC UA read failed for " + formatNodeId(node)
+        + ": invalid client or empty NodeId";
     return false;
   }
 
   UA_Variant variant;
   UA_Variant_init(&variant);
   UA_NodeId nodeId = makeNodeId(node);
+
   const UA_StatusCode status =
       UA_Client_readValueAttribute(this->client_->client, nodeId, &variant);
+  this->last_service_status_ = status;
+
+  if (status != UA_STATUSCODE_GOOD)
+  {
+    this->last_failure_was_connectivity_ = isConnectivityStatus(status);
+    this->last_error_ =
+        "OPC UA read failed for " + formatNodeId(node) + ": "
+        + statusCodeName(status);
+    UA_NodeId_clear(&nodeId);
+    UA_Variant_clear(&variant);
+    return false;
+  }
+
+  bool converted = variantAsBool(variant, value);
   UA_NodeId_clear(&nodeId);
 
-  bool ok = false;
-  if (status == UA_STATUSCODE_GOOD)
+  if (!converted)
   {
-    ok = variantAsBool(variant, value);
+    this->last_failure_was_connectivity_ = false;
+    this->last_error_ =
+        "OPC UA value type unsupported for " + formatNodeId(node);
+    UA_Variant_clear(&variant);
+    return false;
   }
+
   UA_Variant_clear(&variant);
-  return ok;
+  this->last_failure_was_connectivity_ = false;
+  return true;
 }
 
 bool OpcUaIndustrialAdapter::readDouble(const OpcUaNodeRef &node, double *value)
 {
   if (this->client_->client == nullptr || node.identifier.empty())
   {
+    this->last_service_status_ = UA_STATUSCODE_BADINVALIDARGUMENT;
+    this->last_failure_was_connectivity_ = (this->client_->client == nullptr);
+    this->last_error_ =
+        "OPC UA read failed for " + formatNodeId(node)
+        + ": invalid client or empty NodeId";
     return false;
   }
 
   UA_Variant variant;
   UA_Variant_init(&variant);
   UA_NodeId nodeId = makeNodeId(node);
+
   const UA_StatusCode status =
       UA_Client_readValueAttribute(this->client_->client, nodeId, &variant);
+  this->last_service_status_ = status;
+
+  if (status != UA_STATUSCODE_GOOD)
+  {
+    this->last_failure_was_connectivity_ = isConnectivityStatus(status);
+    this->last_error_ =
+        "OPC UA read failed for " + formatNodeId(node) + ": "
+        + statusCodeName(status);
+    UA_NodeId_clear(&nodeId);
+    UA_Variant_clear(&variant);
+    return false;
+  }
+
+  bool converted = variantAsDouble(variant, value);
   UA_NodeId_clear(&nodeId);
 
-  bool ok = false;
-  if (status == UA_STATUSCODE_GOOD)
+  if (!converted)
   {
-    ok = variantAsDouble(variant, value);
+    this->last_failure_was_connectivity_ = false;
+    this->last_error_ =
+        "OPC UA value type unsupported for " + formatNodeId(node);
+    UA_Variant_clear(&variant);
+    return false;
   }
+
   UA_Variant_clear(&variant);
-  return ok;
+  this->last_failure_was_connectivity_ = false;
+  return true;
 }
 
 bool OpcUaIndustrialAdapter::writeBoolean(const OpcUaNodeRef &node, bool value)
 {
-  if (this->client_->client == nullptr || node.identifier.empty())
+  if (node.identifier.empty())
   {
-    this->enterFault("OPC UA write failed: invalid node or client");
+    this->last_failure_was_connectivity_ = false;
+    this->last_error_ = "OPC UA write failed: empty NodeId";
+    return false;
+  }
+  if (this->client_->client == nullptr)
+  {
+    this->enterFault("OPC UA write failed: invalid client");
     return false;
   }
 
@@ -469,11 +686,21 @@ bool OpcUaIndustrialAdapter::writeBoolean(const OpcUaNodeRef &node, bool value)
   const UA_StatusCode status =
       UA_Client_writeValueAttribute(this->client_->client, nodeId, &variant);
   UA_NodeId_clear(&nodeId);
+  this->last_service_status_ = status;
 
   if (status != UA_STATUSCODE_GOOD)
   {
-    this->enterFault(
-        std::string("OPC UA write failed: ") + UA_StatusCode_name(status));
+    const std::string detail =
+        std::string("OPC UA write failed: ") + UA_StatusCode_name(status);
+    if (isConnectivityStatus(status))
+    {
+      this->enterFault(detail);
+    }
+    else
+    {
+      this->last_error_ = detail;
+      this->last_failure_was_connectivity_ = false;
+    }
     return false;
   }
   return true;
@@ -481,9 +708,15 @@ bool OpcUaIndustrialAdapter::writeBoolean(const OpcUaNodeRef &node, bool value)
 
 bool OpcUaIndustrialAdapter::writeDouble(const OpcUaNodeRef &node, double value)
 {
-  if (this->client_->client == nullptr || node.identifier.empty())
+  if (node.identifier.empty())
   {
-    this->enterFault("OPC UA write failed: invalid node or client");
+    this->last_failure_was_connectivity_ = false;
+    this->last_error_ = "OPC UA write failed: empty NodeId";
+    return false;
+  }
+  if (this->client_->client == nullptr)
+  {
+    this->enterFault("OPC UA write failed: invalid client");
     return false;
   }
 
@@ -496,11 +729,21 @@ bool OpcUaIndustrialAdapter::writeDouble(const OpcUaNodeRef &node, double value)
   const UA_StatusCode status =
       UA_Client_writeValueAttribute(this->client_->client, nodeId, &variant);
   UA_NodeId_clear(&nodeId);
+  this->last_service_status_ = status;
 
   if (status != UA_STATUSCODE_GOOD)
   {
-    this->enterFault(
-        std::string("OPC UA write failed: ") + UA_StatusCode_name(status));
+    const std::string detail =
+        std::string("OPC UA write failed: ") + UA_StatusCode_name(status);
+    if (isConnectivityStatus(status))
+    {
+      this->enterFault(detail);
+    }
+    else
+    {
+      this->last_error_ = detail;
+      this->last_failure_was_connectivity_ = false;
+    }
     return false;
   }
   return true;

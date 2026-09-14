@@ -1,0 +1,54 @@
+{
+  "schema": "virtual-factory.icp.config",
+  "version": 1,
+  "name": "hilscher-profibus-multi-slave-example",
+  "adapters": [
+    {
+      "adapterId": "pb-master-1",
+      "protocol": "profibus",
+      "enabled": true,
+      "description": "Example: one PROFIBUS DP Master + multiple slaves",
+      "connection": {
+        "boardId": "cifx1",
+        "channel": 0,
+        "masterAddress": 1,
+        "baudRateKbps": 1500,
+        "configArtifactPath": "/opt/cifx/config/profibus/config.nxd",
+        "expectedFirmwareName": "PROFIBUS",
+        "pollTimeoutMs": 1000
+      },
+      "credentials": {},
+      "equipment": [
+        {
+          "equipmentId": "PB-SLV-001",
+          "type": "remote_io",
+          "stationAddress": 3,
+          "modules": [
+            {"slot": 0, "ident": "DI16", "inputLength": 2, "outputLength": 0}
+          ],
+          "telemetry": [
+            {"name": "status", "inputByteOffset": 0, "valueType": "Uint8"}
+          ],
+          "state": {"mapped": true, "inputByteOffset": 1, "bitOffset": 0, "valueType": "Bool"},
+          "fault": {"mapped": true, "inputByteOffset": 1, "bitOffset": 1, "valueType": "Bool"}
+        },
+        {
+          "equipmentId": "PB-SLV-002",
+          "type": "drive",
+          "stationAddress": 5,
+          "modules": [
+            {"slot": 0, "ident": "DRIVE", "inputLength": 4, "outputLength": 4}
+          ],
+          "telemetry": [
+            {"name": "speed", "unit": "rpm", "inputByteOffset": 2, "valueType": "Int16"}
+          ],
+          "commands": [
+            {"command": "set_speed", "outputByteOffset": 0, "valueType": "Int16"}
+          ],
+          "state": {"mapped": true, "inputByteOffset": 4, "bitOffset": 0, "valueType": "Bool"},
+          "fault": {"mapped": true, "inputByteOffset": 4, "bitOffset": 1, "valueType": "Bool"}
+        }
+      ]
+    }
+  ]
+}

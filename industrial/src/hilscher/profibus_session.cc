@@ -2,10 +2,33 @@
 
 #include "hilscher_availability.hh"
 
+#include <cctype>
+#include <fstream>
+
 namespace virtual_factory
 {
 namespace internal
 {
+
+namespace
+{
+
+std::string toUpper(std::string value)
+{
+  for (char &ch : value)
+  {
+    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  }
+  return value;
+}
+
+bool configFileReadable(const std::string &path)
+{
+  std::ifstream file(path, std::ios::binary);
+  return static_cast<bool>(file);
+}
+
+}  // namespace
 
 ProfibusSession::~ProfibusSession()
 {
@@ -15,6 +38,19 @@ ProfibusSession::~ProfibusSession()
 bool ProfibusSession::sdkAvailable() const
 {
   return hilscherCifxSdkAvailable();
+}
+
+bool ProfibusSession::matchesFirmware(const std::string &name) const
+{
+  const std::string upper = toUpper(name);
+  if (!this->config_.expectedFirmwareName.empty())
+  {
+    return upper.find(toUpper(this->config_.expectedFirmwareName))
+           != std::string::npos;
+  }
+  return upper.find("PROFIBUS") != std::string::npos
+         || upper.find("DPM") != std::string::npos
+         || upper.find("CIFXDPM") != std::string::npos;
 }
 
 bool ProfibusSession::open(const ProfibusSessionConfig &config)
@@ -28,19 +64,102 @@ bool ProfibusSession::open(const ProfibusSessionConfig &config)
     return false;
   }
 
-#if defined(VF_HILSCHER_CIFX_AVAILABLE) && VF_HILSCHER_CIFX_AVAILABLE
-  this->last_error_ =
-      "Hilscher cifX PROFIBUS backend not yet integrated (SDK present)";
-  return false;
-#else
-  this->last_error_ = hilscherCifxUnavailableReason();
-  return false;
-#endif
+  if (!configFileReadable(config.configArtifactPath))
+  {
+    this->last_error_ =
+        "cannot read PROFIBUS configuration artifact: " + config.configArtifactPath;
+    return false;
+  }
+
+  if (!this->sdkAvailable())
+  {
+    this->last_error_ = hilscherCifxUnavailableReason();
+    return false;
+  }
+
+  std::string error;
+  CifxInventory inventory;
+  if (!CifxDriver::enumerate(&inventory, &error))
+  {
+    this->last_error_ = error;
+    return false;
+  }
+  if (inventory.boards.empty())
+  {
+    this->last_error_ =
+        "no cifX boards enumerated (xDriverEnumBoards). "
+        "HARDWARE VALIDATION PENDING — CIFX 50E-DP + CIFXDPM/NXLFW-DPM + NXLIC-MASTER.";
+    return false;
+  }
+
+  if (!this->channel_.open(config.boardId, config.channel, &error))
+  {
+    this->last_error_ = error;
+    return false;
+  }
+
+  CifxChannelInfo info;
+  if (this->channel_.queryInfo(&info, &error))
+  {
+    this->firmware_name_ = info.firmwareName;
+    this->input_area_bytes_ = info.inputAreaBytes;
+    this->output_area_bytes_ = info.outputAreaBytes;
+    if (!info.firmwareName.empty() && !this->matchesFirmware(info.firmwareName))
+    {
+      this->channel_.close();
+      this->last_error_ =
+          "cifX firmware is not a PROFIBUS DP Master (got '"
+          + info.firmwareName
+          + "'). Load CIFXDPM/NXLFW-DPM. HARDWARE VALIDATION PENDING. "
+            "Requires Hilscher Protocol API / firmware / hardware.";
+      return false;
+    }
+  }
+
+  if (!this->channel_.setHostReady(true, &error))
+  {
+    this->channel_.close();
+    this->last_error_ = error;
+    return false;
+  }
+
+  if (!this->channel_.downloadConfigFile(config.configArtifactPath, &error))
+  {
+    this->channel_.close();
+    this->last_error_ = error;
+    return false;
+  }
+
+  const unsigned timeout =
+      config.ioTimeoutMs > 0 ? config.ioTimeoutMs : 1000U;
+  if (!this->channel_.setBusOn(true, timeout, &error))
+  {
+    this->channel_.close();
+    this->last_error_ = error;
+    return false;
+  }
+
+  (void)this->channel_.startWatchdog(&error);
+
+  this->open_ = true;
+  this->last_error_.clear();
+  return true;
 }
 
 void ProfibusSession::close()
 {
+  if (this->channel_.isOpen())
+  {
+    std::string ignored;
+    this->channel_.stopWatchdog(&ignored);
+    this->channel_.setBusOn(false, 1000, &ignored);
+    this->channel_.setHostReady(false, &ignored);
+  }
+  this->channel_.close();
   this->open_ = false;
+  this->firmware_name_.clear();
+  this->input_area_bytes_ = 0;
+  this->output_area_bytes_ = 0;
 }
 
 bool ProfibusSession::connected() const
@@ -49,20 +168,83 @@ bool ProfibusSession::connected() const
 }
 
 bool ProfibusSession::readInputArea(
-    std::size_t /*byteOffset*/,
-    std::size_t /*length*/,
-    std::vector<std::uint8_t> * /*out*/)
+    std::size_t byteOffset,
+    std::size_t length,
+    std::vector<std::uint8_t> *out)
 {
-  this->last_error_ = "PROFIBUS session not connected";
-  return false;
+  if (!this->open_)
+  {
+    this->last_error_ = "PROFIBUS session not connected";
+    return false;
+  }
+  std::string error;
+  if (!this->channel_.readInput(
+          byteOffset, length, out, this->config_.ioTimeoutMs, &error))
+  {
+    this->last_error_ = error;
+    return false;
+  }
+  return true;
 }
 
 bool ProfibusSession::writeOutputArea(
-    std::size_t /*byteOffset*/,
-    const std::vector<std::uint8_t> & /*data*/)
+    std::size_t byteOffset, const std::vector<std::uint8_t> &data)
 {
-  this->last_error_ = "PROFIBUS session not connected";
-  return false;
+  if (!this->open_)
+  {
+    this->last_error_ = "PROFIBUS session not connected";
+    return false;
+  }
+  std::string error;
+  if (!this->channel_.writeOutput(
+          byteOffset, data, this->config_.ioTimeoutMs, &error))
+  {
+    this->last_error_ = error;
+    return false;
+  }
+  return true;
+}
+
+bool ProfibusSession::triggerWatchdog()
+{
+  if (!this->open_)
+  {
+    return false;
+  }
+  std::string error;
+  return this->channel_.triggerWatchdog(&error);
+}
+
+bool ProfibusSession::readCommonStatus(
+    std::size_t length, std::vector<std::uint8_t> *out)
+{
+  if (!this->open_)
+  {
+    this->last_error_ = "PROFIBUS session not connected";
+    return false;
+  }
+  std::string error;
+  if (!this->channel_.readCommonStatus(length, out, &error))
+  {
+    this->last_error_ = error;
+    return false;
+  }
+  return true;
+}
+
+std::size_t ProfibusSession::inputAreaBytes() const
+{
+  return this->input_area_bytes_;
+}
+
+std::size_t ProfibusSession::outputAreaBytes() const
+{
+  return this->output_area_bytes_;
+}
+
+std::string ProfibusSession::firmwareName() const
+{
+  return this->firmware_name_;
 }
 
 std::string ProfibusSession::lastError() const

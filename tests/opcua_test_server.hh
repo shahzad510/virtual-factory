@@ -66,6 +66,9 @@ public:
   bool start();
   void stop();
 
+  /// Pin the listen port before start() (0 = pick an ephemeral free port).
+  void setPort(std::uint16_t port);
+
   std::uint16_t port() const;
   std::string endpointUrl() const;
 

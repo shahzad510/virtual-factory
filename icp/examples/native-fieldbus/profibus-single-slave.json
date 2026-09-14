@@ -1,0 +1,44 @@
+{
+  "schema": "virtual-factory.icp.config",
+  "version": 1,
+  "name": "hilscher-profibus-single-slave-example",
+  "adapters": [
+    {
+      "adapterId": "pb-master-1",
+      "protocol": "profibus",
+      "enabled": true,
+      "description": "Example: one PROFIBUS DP Master + one slave (placeholders only)",
+      "connection": {
+        "boardId": "cifx1",
+        "channel": 0,
+        "masterAddress": 1,
+        "baudRateKbps": 1500,
+        "configArtifactPath": "/opt/cifx/config/profibus/config.nxd",
+        "expectedFirmwareName": "PROFIBUS",
+        "pollTimeoutMs": 1000
+      },
+      "credentials": {},
+      "equipment": [
+        {
+          "equipmentId": "PB-SLV-001",
+          "type": "remote_io",
+          "stationAddress": 3,
+          "vendorId": 42,
+          "deviceId": 1,
+          "modules": [
+            {"slot": 0, "ident": "DI8", "inputLength": 1, "outputLength": 0},
+            {"slot": 1, "ident": "DO8", "inputLength": 0, "outputLength": 1}
+          ],
+          "telemetry": [
+            {"name": "current", "unit": "A", "inputByteOffset": 0, "valueType": "Int16"}
+          ],
+          "commands": [
+            {"command": "start", "outputByteOffset": 0, "bitOffset": 0, "valueType": "Bool"}
+          ],
+          "state": {"mapped": true, "inputByteOffset": 2, "bitOffset": 0, "valueType": "Bool"},
+          "fault": {"mapped": true, "inputByteOffset": 2, "bitOffset": 1, "valueType": "Bool"}
+        }
+      ]
+    }
+  ]
+}

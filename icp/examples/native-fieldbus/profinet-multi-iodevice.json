@@ -1,0 +1,62 @@
+{
+  "schema": "virtual-factory.icp.config",
+  "version": 1,
+  "name": "hilscher-profinet-multi-iodevice-example",
+  "adapters": [
+    {
+      "adapterId": "pn-controller-1",
+      "protocol": "profinet",
+      "enabled": true,
+      "description": "Example: one PROFINET controller + multiple IO-Devices",
+      "connection": {
+        "boardId": "cifx0",
+        "channel": 0,
+        "stationName": "icp-pn-controller",
+        "configArtifactPath": "/opt/cifx/config/profinet/config.nxd",
+        "expectedFirmwareName": "PROFINET",
+        "pollTimeoutMs": 1000
+      },
+      "credentials": {},
+      "equipment": [
+        {
+          "equipmentId": "PN-IO-001",
+          "type": "remote_io",
+          "stationName": "io-device-1",
+          "ipAddress": "192.168.0.20",
+          "vendorId": 42,
+          "deviceId": 257,
+          "submodules": [
+            {"slot": 1, "subslot": 1, "inputLength": 8, "outputLength": 4}
+          ],
+          "telemetry": [
+            {"name": "speed", "unit": "rpm", "inputByteOffset": 0, "valueType": "Int16"}
+          ],
+          "commands": [
+            {"command": "start", "outputByteOffset": 0, "bitOffset": 0, "valueType": "Bool"}
+          ],
+          "state": {"mapped": true, "inputByteOffset": 2, "bitOffset": 0, "valueType": "Bool"},
+          "fault": {"mapped": true, "inputByteOffset": 2, "bitOffset": 1, "valueType": "Bool"}
+        },
+        {
+          "equipmentId": "PN-IO-002",
+          "type": "remote_io",
+          "stationName": "io-device-2",
+          "ipAddress": "192.168.0.21",
+          "vendorId": 42,
+          "deviceId": 257,
+          "submodules": [
+            {"slot": 1, "subslot": 1, "inputLength": 4, "outputLength": 2}
+          ],
+          "telemetry": [
+            {"name": "pressure", "unit": "bar", "inputByteOffset": 8, "valueType": "Int16"}
+          ],
+          "commands": [
+            {"command": "stop", "outputByteOffset": 4, "bitOffset": 0, "valueType": "Bool"}
+          ],
+          "state": {"mapped": true, "inputByteOffset": 10, "bitOffset": 0, "valueType": "Bool"},
+          "fault": {"mapped": true, "inputByteOffset": 10, "bitOffset": 1, "valueType": "Bool"}
+        }
+      ]
+    }
+  ]
+}

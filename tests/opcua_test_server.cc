@@ -113,6 +113,14 @@ bool OpcUaTestServer::start()
   return true;
 }
 
+void OpcUaTestServer::setPort(std::uint16_t port)
+{
+  if (this->server_ == nullptr)
+  {
+    this->port_ = port;
+  }
+}
+
 void OpcUaTestServer::stop()
 {
   this->iterate_ = false;
