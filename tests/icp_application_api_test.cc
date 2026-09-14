@@ -7,6 +7,7 @@
 #include <virtual_factory/industrial/OpcUaIndustrialAdapter.hh>
 
 #include <chrono>
+#include <atomic>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -1713,6 +1714,39 @@ int main()
     expect(opcuaStillNotConnected,
            "OPC UA not CONNECTED when mock already recovered (isolation)");
     expect(maxAdaptersMs < 2000.0, "adapters latency never approaches GUI 6s budget");
+
+    // GUI dashboard uses Promise.all([status, adapters]). Concurrent workers must
+    // not AB-BA deadlock ApplicationService::mutex_ ↔ AdapterManager::mutex_.
+    {
+      std::atomic<int> fails{0};
+      std::atomic<int> done{0};
+      auto hammer = [&]() {
+        httplib::Client c("127.0.0.1", httpPort);
+        c.set_connection_timeout(1, 0);
+        c.set_read_timeout(3, 0);
+        for (int i = 0; i < 40; ++i)
+        {
+          auto st = c.Get("/api/v1/status");
+          auto ad = c.Get("/api/v1/adapters");
+          if (!st || st->status != 200 || !ad || ad->status != 200)
+          {
+            ++fails;
+          }
+        }
+        ++done;
+      };
+      std::thread t1(hammer);
+      std::thread t2(hammer);
+      std::thread t3(hammer);
+      std::thread t4(hammer);
+      t1.join();
+      t2.join();
+      t3.join();
+      t4.join();
+      expect(done.load() == 4, "concurrent status+adapters workers finished");
+      expect(fails.load() == 0,
+             "concurrent status+adapters never deadlock/timeout under OPC UA down");
+    }
 
     // Explicit Disconnect must clear recovery arm for OPC UA.
     expect(svc.disconnectAdapter("opcua-blackhole").ok, "disconnect blackhole");

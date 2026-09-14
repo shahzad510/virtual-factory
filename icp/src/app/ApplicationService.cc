@@ -649,6 +649,11 @@ ConfigResult ApplicationService::removeAdapterConfig(const std::string &adapterI
 std::vector<RuntimeAdapterView> ApplicationService::adapters() const
 {
   std::vector<RuntimeAdapterView> out;
+  // Lock order must match status()/onPollCycle: ApplicationService::mutex_
+  // then AdapterManager::mutex_. Taking Manager first (even briefly per row)
+  // while another HTTP worker holds App mutex in status()→adapterCount() races
+  // GUI Promise.all([status, adapters]) into AB-BA deadlock under load.
+  std::lock_guard<std::mutex> lock(this->mutex_);
   for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
   {
     RuntimeAdapterView view;
@@ -666,7 +671,6 @@ std::vector<RuntimeAdapterView> ApplicationService::adapters() const
     view.connectionState =
         view.runtimePresent ? "DISCONNECTED" : "NOT_CONFIGURED";
     {
-      std::lock_guard<std::mutex> lock(this->mutex_);
       const AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
       if (!diag.lastObservedState.empty())
       {
