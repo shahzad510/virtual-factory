@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <thread>
 #include <utility>
 
 namespace virtual_factory
@@ -159,8 +160,12 @@ void ApplicationService::ensureHistoryWriter()
 
 HistoryStatus ApplicationService::historyStatus() const
 {
-  std::lock_guard<std::mutex> lock(this->mutex_);
-  const_cast<ApplicationService *>(this)->ensureHistoryWriter();
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    const_cast<ApplicationService *>(this)->ensureHistoryWriter();
+  }
+  // Do not hold ApplicationService::mutex_ across SQLite status — historian I/O
+  // must not stall HTTP status/adapters while a write is in progress.
   return this->history_writer_->status();
 }
 
@@ -343,6 +348,9 @@ void ApplicationService::stop()
   {
     scheduler->stop();
   }
+  // Poll-owned recovery threads must finish before disconnectAll so we do not
+  // race UA_Client teardown. Bounded wait — never hang process stop forever.
+  this->waitForBackgroundConnects();
   if (was_running)
   {
     this->manager_.disconnectAll();
@@ -1869,50 +1877,109 @@ void ApplicationService::onPollCycle()
       }
     }
 
-    AdapterManagerResult connected = this->manager_.connectAdapter(adapterId);
-    IndustrialAdapter *runtime = this->manager_.adapter(adapterId);
-    if (connected.ok && runtime != nullptr)
+    // Off-poll-thread: unreachable OPC UA (or any slow peer) must not delay
+    // mock/other adapters or stall the scheduler loop.
+    this->startBackgroundConnect(adapterId);
+  }
+}
+
+void ApplicationService::waitForBackgroundConnects() const
+{
+  std::unique_lock<std::mutex> lock(this->recovery_join_mutex_);
+  // Bound process stop: recovery should already be finishing after scheduler
+  // stop (no new due items). Cap wait so a wedged protocol cannot freeze exit.
+  this->recovery_cv_.wait_for(
+      lock,
+      std::chrono::seconds(15),
+      [this]() { return this->recovery_inflight_ == 0; });
+}
+
+void ApplicationService::startBackgroundConnect(const std::string &adapterId)
+{
+  {
+    std::lock_guard<std::mutex> lock(this->recovery_join_mutex_);
+    ++this->recovery_inflight_;
+  }
+  std::thread([this, adapterId]() {
+    try
     {
-      this->cache_.updateFromAdapter(*runtime);
+      this->runBackgroundConnect(adapterId);
+    }
+    catch (...)
+    {
       std::lock_guard<std::mutex> lock(this->mutex_);
       AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
-      ++diag.successfulConnections;
       diag.autoReconnectInFlight = false;
-      diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
-      diag.nextAutoReconnectAt = {};
-      this->observeAdapterStateLocked(adapterId, "CONNECTED");
       this->reconnect_in_progress_.erase(adapterId);
+      this->scheduleAutoReconnectLocked(adapterId);
     }
-    else
     {
-      if (runtime != nullptr)
+      std::lock_guard<std::mutex> lock(this->recovery_join_mutex_);
+      if (this->recovery_inflight_ > 0)
       {
-        this->cache_.markAdapterCommunication(
-            adapterId, runtime->connectionState(), runtime->lastError());
+        --this->recovery_inflight_;
       }
-      std::lock_guard<std::mutex> lock(this->mutex_);
+    }
+    this->recovery_cv_.notify_all();
+  }).detach();
+}
+
+void ApplicationService::runBackgroundConnect(const std::string &adapterId)
+{
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    if (!this->running_)
+    {
       AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
       diag.autoReconnectInFlight = false;
-      ++diag.failedConnections;
-      // Stay FAULTED — do not emit another identical fault event.
-      this->observeAdapterStateLocked(
-          adapterId,
-          runtime != nullptr ? connectionStateName(runtime->connectionState())
-                             : std::string("FAULTED"));
-      // Exponential backoff, capped.
-      auto next = diag.autoReconnectBackoffMs * 2;
-      if (next > std::chrono::milliseconds(10000))
-      {
-        next = std::chrono::milliseconds(10000);
-      }
-      if (next < std::chrono::milliseconds(1000))
-      {
-        next = std::chrono::milliseconds(1000);
-      }
-      diag.autoReconnectBackoffMs = next;
-      diag.nextAutoReconnectAt = std::chrono::steady_clock::now() + next;
       this->reconnect_in_progress_.erase(adapterId);
+      return;
     }
+  }
+
+  AdapterManagerResult connected = this->manager_.connectAdapter(adapterId);
+  IndustrialAdapter *runtime = this->manager_.adapter(adapterId);
+  if (connected.ok && runtime != nullptr)
+  {
+    this->cache_.updateFromAdapter(*runtime);
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+    ++diag.successfulConnections;
+    diag.autoReconnectInFlight = false;
+    diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
+    diag.nextAutoReconnectAt = {};
+    this->observeAdapterStateLocked(adapterId, "CONNECTED");
+    this->reconnect_in_progress_.erase(adapterId);
+  }
+  else
+  {
+    if (runtime != nullptr)
+    {
+      this->cache_.markAdapterCommunication(
+          adapterId, runtime->connectionState(), runtime->lastError());
+    }
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+    diag.autoReconnectInFlight = false;
+    ++diag.failedConnections;
+    // Stay FAULTED — do not emit another identical fault event.
+    this->observeAdapterStateLocked(
+        adapterId,
+        runtime != nullptr ? connectionStateName(runtime->connectionState())
+                           : std::string("FAULTED"));
+    // Exponential backoff, capped.
+    auto next = diag.autoReconnectBackoffMs * 2;
+    if (next > std::chrono::milliseconds(10000))
+    {
+      next = std::chrono::milliseconds(10000);
+    }
+    if (next < std::chrono::milliseconds(1000))
+    {
+      next = std::chrono::milliseconds(1000);
+    }
+    diag.autoReconnectBackoffMs = next;
+    diag.nextAutoReconnectAt = std::chrono::steady_clock::now() + next;
+    this->reconnect_in_progress_.erase(adapterId);
   }
 }
 

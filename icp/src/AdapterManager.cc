@@ -1,5 +1,6 @@
 #include <virtual_factory/icp/AdapterManager.hh>
 
+#include <mutex>
 #include <utility>
 
 namespace virtual_factory
@@ -143,7 +144,13 @@ AdapterManagerResult AdapterManager::connectAdapter(const std::string &adapterId
         {
           continue;
         }
-        std::lock_guard<std::mutex> io(*peer.io_mutex);
+        // try_lock: never wait on a peer mid-connect/teardown (unreachable OPC UA
+        // must not stall an unrelated adapter's connect completion).
+        std::unique_lock<std::mutex> io(*peer.io_mutex, std::try_to_lock);
+        if (!io.owns_lock())
+        {
+          continue;
+        }
         if (peer.adapter->equipmentById(eqId) != nullptr)
         {
           collision = {false,
@@ -311,6 +318,8 @@ void AdapterManager::forEachAdapter(
 {
   // Snapshot under manager lock; invoke under per-adapter I/O lock so poll
   // cannot race connect/disconnect on the same UA_Client / protocol session.
+  // try_lock: a slow connect/teardown on one adapter must not stall poll of
+  // unrelated adapters (startup independence / multi-adapter isolation).
   const std::vector<Handle> handles = this->snapshotHandles();
   for (const Handle &handle : handles)
   {
@@ -318,7 +327,11 @@ void AdapterManager::forEachAdapter(
     {
       continue;
     }
-    std::lock_guard<std::mutex> io(*handle.io_mutex);
+    std::unique_lock<std::mutex> io(*handle.io_mutex, std::try_to_lock);
+    if (!io.owns_lock())
+    {
+      continue;
+    }
     fn(*handle.adapter);
   }
 }
