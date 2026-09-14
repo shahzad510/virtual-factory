@@ -1,7 +1,7 @@
 # ICP Persistent Historical Data (Milestone 1)
 
-**Status:** IMPLEMENTED / TESTED (software)  
-**Baseline:** builds additively on `v0.1.0-icp-runtime-stable` (`320d79d`)  
+**Status:** IMPLEMENTED / TESTED (software)
+**Baseline:** builds additively on `v0.1.0-icp-runtime-stable` (`320d79d`)
 **Not:** telemetry sampling historian, OEE engine, RBAC, MES/SCADA connectors
 
 ## Purpose
