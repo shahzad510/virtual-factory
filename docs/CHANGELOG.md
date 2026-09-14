@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — ICP M1.1 historical alarm/event architecture and GUI
+
+- Schema v2 `alarm_occurrence` + lifecycle actions on `alarm_event` (`raised`/`acknowledged`/`cleared`)
+- Stable alarm identity without message text; no poll duplicates for open identities; separate incidents stay separate
+- ISO-8601 UTC fields on history API; pagination (`limit`/`offset`/`truncated`)
+- `POST /api/v1/alarms/occurrences/{id}/acknowledge`; CSV export at `/api/v1/history/export` (read-only)
+- GUI: Active Alarms, Alarm History, Event History (persistent) with filters/pagination/CSV
+- Extended `icp_history_test` for alarm lifecycle A–J
+
 ### Added — ICP Milestone 1 persistent historical data (branch `feature/icp-persistence-rbac-milestones`)
 
 Additive SQLite historian on `v0.1.0-icp-runtime-stable` without rewriting runtime reconnect/health/GUI lifecycle:

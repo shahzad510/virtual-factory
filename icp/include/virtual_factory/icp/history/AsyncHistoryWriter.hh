@@ -41,6 +41,9 @@ public:
   void enqueueEvent(HistoryEventRecord record);
   void enqueueHealthTransition(HealthTransitionRecord record);
   void enqueueAlarmEvent(AlarmEventRecord record);
+  void enqueueAlarmRaise(AlarmOccurrenceRecord occurrence);
+  void enqueueAlarmClear(
+      std::int64_t occurrenceId, std::int64_t tsUtcMs, std::string message);
   void enqueueCommandAudit(CommandAuditRecord record);
   void enqueueConfigRevision(ConfigRevisionRecord record);
   void enqueueCommunicationTransition(
@@ -81,10 +84,19 @@ private:
     std::string reason;
   };
 
+  struct AlarmClearItem
+  {
+    std::int64_t occurrenceId{0};
+    std::int64_t tsUtcMs{0};
+    std::string message;
+  };
+
   using Item = std::variant<
       HistoryEventRecord,
       HealthTransitionRecord,
       AlarmEventRecord,
+      AlarmOccurrenceRecord,
+      AlarmClearItem,
       CommandAuditRecord,
       ConfigRevisionRecord,
       CommunicationTransition,

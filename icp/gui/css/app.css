@@ -775,3 +775,24 @@ textarea.json-editor:focus,
   .diag-table { display: block; overflow-x: auto; }
   .diag-metric-row { grid-template-columns: 1fr; gap: 0.2rem; }
 }
+
+/* History filter / pager toolbars (M1.1) */
+.hist-filters, .hist-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.75rem;
+  align-items: end;
+  margin: 0.75rem 0;
+}
+.hist-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--muted, #aebccd);
+}
+.hist-filters input[type="datetime-local"],
+.hist-filters input[type="text"],
+.hist-filters select {
+  min-width: 9rem;
+}

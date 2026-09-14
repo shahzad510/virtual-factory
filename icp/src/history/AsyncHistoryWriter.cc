@@ -104,6 +104,21 @@ void AsyncHistoryWriter::enqueueAlarmEvent(AlarmEventRecord record)
   this->enqueueItem(std::move(record));
 }
 
+void AsyncHistoryWriter::enqueueAlarmRaise(AlarmOccurrenceRecord occurrence)
+{
+  this->enqueueItem(std::move(occurrence));
+}
+
+void AsyncHistoryWriter::enqueueAlarmClear(
+    std::int64_t occurrenceId, std::int64_t tsUtcMs, std::string message)
+{
+  AlarmClearItem item;
+  item.occurrenceId = occurrenceId;
+  item.tsUtcMs = tsUtcMs;
+  item.message = std::move(message);
+  this->enqueueItem(std::move(item));
+}
+
 void AsyncHistoryWriter::enqueueCommandAudit(CommandAuditRecord record)
 {
   this->enqueueItem(std::move(record));
@@ -198,6 +213,15 @@ void AsyncHistoryWriter::workerLoop()
           else if constexpr (std::is_same_v<T, AlarmEventRecord>)
           {
             (void)this->repository_->appendAlarmEvent(record);
+          }
+          else if constexpr (std::is_same_v<T, AlarmOccurrenceRecord>)
+          {
+            (void)this->repository_->raiseAlarmOccurrence(record);
+          }
+          else if constexpr (std::is_same_v<T, AlarmClearItem>)
+          {
+            (void)this->repository_->clearAlarmOccurrence(
+                record.occurrenceId, record.tsUtcMs, record.message);
           }
           else if constexpr (std::is_same_v<T, CommandAuditRecord>)
           {

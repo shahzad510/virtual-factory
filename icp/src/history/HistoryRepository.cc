@@ -35,6 +35,23 @@ bool NullHistoryRepository::appendAlarmEvent(const AlarmEventRecord &)
   return false;
 }
 
+bool NullHistoryRepository::raiseAlarmOccurrence(const AlarmOccurrenceRecord &)
+{
+  return false;
+}
+
+bool NullHistoryRepository::acknowledgeAlarmOccurrence(
+    std::int64_t, std::int64_t, const std::string &)
+{
+  return false;
+}
+
+bool NullHistoryRepository::clearAlarmOccurrence(
+    std::int64_t, std::int64_t, const std::string &)
+{
+  return false;
+}
+
 bool NullHistoryRepository::appendCommandAudit(const CommandAuditRecord &)
 {
   return false;
@@ -71,6 +88,8 @@ HistoryQueryResult NullHistoryRepository::query(const HistoryQuery &query)
   HistoryQueryResult out;
   out.status = status_;
   out.kind = query.kind.empty() ? "events" : query.kind;
+  out.limit = query.limit;
+  out.offset = query.offset;
   return out;
 }
 

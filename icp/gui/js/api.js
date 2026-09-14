@@ -159,6 +159,31 @@
     mappings: () => request("/mappings"),
     diagnostics: () => request("/diagnostics"),
     events: (limit = 100) => request("/events?limit=" + limit),
+    history: (params = {}) => {
+      const q = new URLSearchParams();
+      Object.keys(params).forEach(function (k) {
+        const v = params[k];
+        if (v === undefined || v === null || v === "") return;
+        q.set(k, String(v));
+      });
+      const qs = q.toString();
+      return request("/history" + (qs ? "?" + qs : ""));
+    },
+    acknowledgeAlarmOccurrence: (occurrenceId, actorId) =>
+      request("/alarms/occurrences/" + encodeURIComponent(occurrenceId) + "/acknowledge", {
+        method: "POST",
+        body: actorId ? { actorId: actorId } : {},
+      }),
+    historyExportUrl: (params = {}) => {
+      const q = new URLSearchParams();
+      Object.keys(params).forEach(function (k) {
+        const v = params[k];
+        if (v === undefined || v === null || v === "") return;
+        q.set(k, String(v));
+      });
+      const qs = q.toString();
+      return API + "/history/export" + (qs ? "?" + qs : "");
+    },
     health: () => request("/health"),
   };
 })(window);

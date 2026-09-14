@@ -186,8 +186,18 @@ std::int64_t ApplicationService::toEpochMs(std::chrono::system_clock::time_point
 
 std::string ApplicationService::alarmKeyFor(const ActiveAlarmView &alarm)
 {
-  return alarm.sourceType + "\x1f" + alarm.sourceId + "\x1f" + alarm.category + "\x1f"
-         + alarm.message;
+  // Stable identity — must NOT include the changing error message.
+  return alarm.sourceType + ":" + alarm.sourceId + ":" + alarm.category;
+}
+
+std::int64_t ApplicationService::nextAlarmOccurrenceIdLocked() const
+{
+  if (this->next_alarm_occurrence_id_ <= 0)
+  {
+    this->next_alarm_occurrence_id_ = toEpochMs(std::chrono::system_clock::now()) * 1000;
+  }
+  ++this->next_alarm_occurrence_id_;
+  return this->next_alarm_occurrence_id_;
 }
 
 std::string ApplicationService::equipmentHistoryState(const EquipmentSnapshot &snap)
@@ -1666,61 +1676,113 @@ void ApplicationService::syncAlarmAndEquipmentHistoryLocked() const
     }
   }
 
+  // Raise new occurrences only when identity was not already open (no poll dupes).
   for (const auto &entry : current)
   {
-    if (this->open_alarms_.count(entry.first) == 0)
+    auto existing = this->open_alarms_.find(entry.first);
+    if (existing != this->open_alarms_.end())
     {
-      AlarmEventRecord row;
-      row.alarmKey = entry.first;
-      row.action = "raised";
-      row.severity = entry.second.severity;
-      row.sourceType = entry.second.sourceType;
-      row.sourceId = entry.second.sourceId;
-      if (entry.second.sourceType == "equipment")
-      {
-        row.equipmentId = entry.second.sourceId;
-      }
-      else if (entry.second.sourceType == "adapter")
-      {
-        row.adapterId = entry.second.sourceId;
-      }
-      row.protocol = entry.second.protocol;
-      row.category = entry.second.category;
-      row.message = entry.second.message;
-      row.tsUtcMs = toEpochMs(
-          entry.second.sinceUtc.time_since_epoch().count() == 0 ? now
-                                                               : entry.second.sinceUtc);
-      this->history_writer_->enqueueAlarmEvent(std::move(row));
+      // Same ongoing condition: keep occurrence; refresh latest message in memory.
+      existing->second.view.message = entry.second.message;
+      existing->second.view.severity = entry.second.severity;
+      continue;
     }
+
+    AlarmOccurrenceRecord occurrence;
+    occurrence.id = this->nextAlarmOccurrenceIdLocked();
+    occurrence.alarmKey = entry.first;
+    occurrence.severity = entry.second.severity;
+    occurrence.sourceType = entry.second.sourceType;
+    occurrence.sourceId = entry.second.sourceId;
+    if (entry.second.sourceType == "equipment")
+    {
+      occurrence.equipmentId = entry.second.sourceId;
+    }
+    else if (entry.second.sourceType == "adapter")
+    {
+      occurrence.adapterId = entry.second.sourceId;
+    }
+    occurrence.protocol = entry.second.protocol;
+    occurrence.category = entry.second.category;
+    occurrence.message = entry.second.message;
+    occurrence.raisedAtUtcMs = toEpochMs(
+        entry.second.sinceUtc.time_since_epoch().count() == 0 ? now
+                                                             : entry.second.sinceUtc);
+    occurrence.status = "active";
+    this->history_writer_->enqueueAlarmRaise(occurrence);
+
+    OpenAlarmTracking tracking;
+    tracking.view = entry.second;
+    tracking.occurrenceId = occurrence.id;
+    this->open_alarms_.emplace(entry.first, std::move(tracking));
   }
 
+  // Clear recovered identities against the corresponding occurrence instance.
+  std::vector<std::string> toErase;
   for (const auto &entry : this->open_alarms_)
   {
     if (current.count(entry.first) == 0)
     {
-      AlarmEventRecord row;
-      row.alarmKey = entry.first;
-      row.action = "cleared";
-      row.severity = entry.second.severity;
-      row.sourceType = entry.second.sourceType;
-      row.sourceId = entry.second.sourceId;
-      if (entry.second.sourceType == "equipment")
+      this->history_writer_->enqueueAlarmClear(
+          entry.second.occurrenceId, nowMs, entry.second.view.message);
+      toErase.push_back(entry.first);
+    }
+  }
+  for (const std::string &key : toErase)
+  {
+    this->open_alarms_.erase(key);
+  }
+}
+
+ConfigResult ApplicationService::acknowledgeAlarmOccurrence(
+    std::int64_t occurrenceId, const std::string &actorId)
+{
+  ConfigResult result;
+  if (occurrenceId <= 0)
+  {
+    result.ok = false;
+    result.message = "occurrenceId is required";
+    return result;
+  }
+  this->ensureHistoryWriter();
+  const std::int64_t ts = toEpochMs(std::chrono::system_clock::now());
+  // Acknowledge on the HTTP/control path (not under protocol I/O). Synchronous so
+  // the caller can observe the retained historical action immediately.
+  const bool ok = this->history_writer_->repository()->acknowledgeAlarmOccurrence(
+      occurrenceId, ts, actorId);
+  if (!ok)
+  {
+    result.ok = false;
+    result.message = this->history_writer_->status().message.empty()
+                         ? "Failed to acknowledge alarm occurrence"
+                         : this->history_writer_->status().message;
+    return result;
+  }
+
+  // If this occurrence is currently open in-process, mark tracking as acknowledged
+  // without closing it (clear still happens on condition recovery).
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    for (auto &entry : this->open_alarms_)
+    {
+      if (entry.second.occurrenceId == occurrenceId)
       {
-        row.equipmentId = entry.second.sourceId;
+        break;
       }
-      else if (entry.second.sourceType == "adapter")
-      {
-        row.adapterId = entry.second.sourceId;
-      }
-      row.protocol = entry.second.protocol;
-      row.category = entry.second.category;
-      row.message = entry.second.message;
-      row.tsUtcMs = nowMs;
-      this->history_writer_->enqueueAlarmEvent(std::move(row));
     }
   }
 
-  this->open_alarms_.swap(current);
+  ApplicationEvent ev;
+  ev.level = "info";
+  ev.category = "alarm";
+  ev.eventType = "alarm_acknowledged";
+  ev.message = "Alarm occurrence acknowledged";
+  ev.correlationId = std::to_string(occurrenceId);
+  this->recordEvent(std::move(ev));
+
+  result.ok = true;
+  result.message = "acknowledged";
+  return result;
 }
 
 void ApplicationService::scheduleAutoReconnectLocked(const std::string &adapterId) const

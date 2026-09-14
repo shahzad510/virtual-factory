@@ -21,6 +21,18 @@ public:
   virtual bool appendEvent(const HistoryEventRecord &record) = 0;
   virtual bool appendHealthTransition(const HealthTransitionRecord &record) = 0;
   virtual bool appendAlarmEvent(const AlarmEventRecord &record) = 0;
+  /// Insert a new alarm occurrence (explicit id) and its raised action atomically.
+  virtual bool raiseAlarmOccurrence(const AlarmOccurrenceRecord &occurrence) = 0;
+  /// Record acknowledgement without deleting the occurrence.
+  virtual bool acknowledgeAlarmOccurrence(
+      std::int64_t occurrenceId,
+      std::int64_t tsUtcMs,
+      const std::string &actorId) = 0;
+  /// Record cleared action and close the occurrence; never deletes history.
+  virtual bool clearAlarmOccurrence(
+      std::int64_t occurrenceId,
+      std::int64_t tsUtcMs,
+      const std::string &message) = 0;
   virtual bool appendCommandAudit(const CommandAuditRecord &record) = 0;
   virtual bool appendConfigRevision(const ConfigRevisionRecord &record) = 0;
 
@@ -54,6 +66,10 @@ public:
   bool appendEvent(const HistoryEventRecord &) override;
   bool appendHealthTransition(const HealthTransitionRecord &) override;
   bool appendAlarmEvent(const AlarmEventRecord &) override;
+  bool raiseAlarmOccurrence(const AlarmOccurrenceRecord &) override;
+  bool acknowledgeAlarmOccurrence(
+      std::int64_t, std::int64_t, const std::string &) override;
+  bool clearAlarmOccurrence(std::int64_t, std::int64_t, const std::string &) override;
   bool appendCommandAudit(const CommandAuditRecord &) override;
   bool appendConfigRevision(const ConfigRevisionRecord &) override;
   bool transitionCommunicationInterval(
