@@ -25,6 +25,9 @@ add_library(virtual_factory_icp STATIC
     src/config/JsonFileConfigurationRepository.cc
     src/config/ConfigurationCatalog.cc
     src/config/NativeFieldbusConfigMapper.cc
+    src/history/HistoryRepository.cc
+    src/history/SqliteHistoryRepository.cc
+    src/history/AsyncHistoryWriter.cc
     src/app/ApplicationService.cc
     src/app/HttpApiServer.cc
 )
@@ -38,9 +41,15 @@ target_include_directories(virtual_factory_icp
         ${CMAKE_SOURCE_DIR}/industrial/src
 )
 
+find_package(SQLite3 REQUIRED)
+find_package(Threads REQUIRED)
+
 target_link_libraries(virtual_factory_icp
     PUBLIC
         virtual_factory_industrial
+    PRIVATE
+        SQLite::SQLite3
+        Threads::Threads
 )
 
 set_target_properties(virtual_factory_icp PROPERTIES
@@ -48,9 +57,6 @@ set_target_properties(virtual_factory_icp PROPERTIES
     CXX_STANDARD_REQUIRED ON
     POSITION_INDEPENDENT_CODE ON
 )
-
-find_package(Threads REQUIRED)
-target_link_libraries(virtual_factory_icp PRIVATE Threads::Threads)
 
 add_executable(icp_server
     src/app/icp_server_main.cc

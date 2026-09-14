@@ -4,6 +4,7 @@
 #include <virtual_factory/icp/config/AdapterImplementation.hh>
 #include <virtual_factory/icp/config/JsonFileConfigurationRepository.hh>
 #include <virtual_factory/icp/config/NativeFieldbusConfigMapper.hh>
+#include <virtual_factory/icp/history/SqliteHistoryRepository.hh>
 #include <virtual_factory/equipment/Equipment.hh>
 #include <virtual_factory/industrial/EtherNetIpIndustrialAdapter.hh>
 #include <virtual_factory/industrial/MockIndustrialAdapter.hh>
@@ -117,8 +118,13 @@ OpcUaNodeRef mapOpcUaAddress(
 
 }  // namespace
 
-ApplicationService::ApplicationService(std::string configurationPath)
+ApplicationService::ApplicationService(
+    std::string configurationPath, std::string historyDatabasePath)
     : configuration_path_(std::move(configurationPath))
+    , history_database_path_(
+          historyDatabasePath.empty()
+              ? defaultHistoryDatabasePath(configuration_path_)
+              : std::move(historyDatabasePath))
     , service_started_at_(std::chrono::system_clock::now())
 {
 }
@@ -128,6 +134,163 @@ ApplicationService::~ApplicationService()
   this->stop();
 }
 
+
+void ApplicationService::ensureHistoryWriter()
+{
+  if (this->history_writer_)
+  {
+    return;
+  }
+  std::shared_ptr<HistoryRepository> repo;
+  auto sqlite = std::make_shared<SqliteHistoryRepository>(this->history_database_path_);
+  if (sqlite->openOk())
+  {
+    repo = std::move(sqlite);
+  }
+  else
+  {
+    const HistoryStatus st = sqlite->status();
+    repo = std::make_shared<NullHistoryRepository>(
+        this->history_database_path_,
+        st.message.empty() ? "History database unavailable" : st.message);
+  }
+  this->history_writer_ = std::make_unique<AsyncHistoryWriter>(std::move(repo));
+}
+
+HistoryStatus ApplicationService::historyStatus() const
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  const_cast<ApplicationService *>(this)->ensureHistoryWriter();
+  return this->history_writer_->status();
+}
+
+HistoryQueryResult ApplicationService::queryHistory(const HistoryQuery &query) const
+{
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    const_cast<ApplicationService *>(this)->ensureHistoryWriter();
+  }
+  // Query without holding ApplicationService mutex (SQLite may take short locks).
+  return this->history_writer_->query(query);
+}
+
+const std::string &ApplicationService::historyDatabasePath() const
+{
+  return this->history_database_path_;
+}
+
+std::int64_t ApplicationService::toEpochMs(std::chrono::system_clock::time_point tp)
+{
+  return std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count();
+}
+
+std::string ApplicationService::alarmKeyFor(const ActiveAlarmView &alarm)
+{
+  return alarm.sourceType + "\x1f" + alarm.sourceId + "\x1f" + alarm.category + "\x1f"
+         + alarm.message;
+}
+
+std::string ApplicationService::equipmentHistoryState(const EquipmentSnapshot &snap)
+{
+  if (snap.machineFault)
+  {
+    return "Faulted";
+  }
+  if (snap.operationalState == OperationalState::Running)
+  {
+    return "Running";
+  }
+  return "Stopped";
+}
+
+void ApplicationService::persistEventToHistory(const ApplicationEvent &event) const
+{
+  if (!this->history_writer_)
+  {
+    return;
+  }
+  HistoryEventRecord row;
+  row.tsUtcMs = toEpochMs(
+      event.atUtc.time_since_epoch().count() == 0 ? std::chrono::system_clock::now()
+                                                  : event.atUtc);
+  row.level = event.level;
+  row.category = event.category;
+  row.eventType = event.eventType;
+  row.message = event.message;
+  row.adapterId = event.adapterId;
+  row.equipmentId = event.equipmentId;
+  row.protocol = event.protocol;
+  row.previousState = event.previousState;
+  row.newState = event.newState;
+  row.previousHealth = event.previousHealth;
+  row.newHealth = event.newHealth;
+  row.command = event.command;
+  row.reason = event.reason;
+  row.errorCode = event.errorCode;
+  row.errorDetails = event.errorDetails;
+  row.nodeId = event.nodeId;
+  row.recovery = event.recovery;
+  row.correlationId = event.correlationId;
+  row.durationMs = event.durationMs;
+  this->history_writer_->enqueueEvent(std::move(row));
+
+  if (event.eventType == "health_changed" && !event.adapterId.empty())
+  {
+    HealthTransitionRecord health;
+    health.adapterId = event.adapterId;
+    health.protocol = event.protocol;
+    health.previousHealth = event.previousHealth;
+    health.newHealth = event.newHealth;
+    health.tsUtcMs = row.tsUtcMs;
+    health.reason = event.reason.empty() ? event.message : event.reason;
+    this->history_writer_->enqueueHealthTransition(std::move(health));
+  }
+}
+
+void ApplicationService::persistConfigRevision(
+    const std::string &action, const std::string &summary) const
+{
+  if (!this->history_writer_)
+  {
+    return;
+  }
+  // exportConfigurationJson stores credential refs only — never plaintext secrets.
+  const std::string exported = this->exportConfigurationJson();
+  ConfigRevisionRecord row;
+  row.tsUtcMs = toEpochMs(std::chrono::system_clock::now());
+  row.action = action;
+  row.configurationName = this->catalog_.document().name;
+  row.contentHash = fingerprintContent(exported);
+  row.summary = summary;
+  this->history_writer_->enqueueConfigRevision(std::move(row));
+}
+
+void ApplicationService::persistCommandAudit(
+    const std::string &equipmentId,
+    const std::string &adapterId,
+    const std::string &command,
+    const std::string &result,
+    const std::string &errorCode,
+    std::int64_t durationMs,
+    const std::string &correlationId) const
+{
+  if (!this->history_writer_)
+  {
+    return;
+  }
+  CommandAuditRecord row;
+  row.tsUtcMs = toEpochMs(std::chrono::system_clock::now());
+  row.equipmentId = equipmentId;
+  row.adapterId = adapterId;
+  row.command = command;
+  row.result = result;
+  row.errorCode = errorCode;
+  row.durationMs = durationMs;
+  row.correlationId = correlationId;
+  this->history_writer_->enqueueCommandAudit(std::move(row));
+}
+
+
 void ApplicationService::start()
 {
   {
@@ -136,6 +299,10 @@ void ApplicationService::start()
     {
       return;
     }
+    // Open local historian without waiting on remote services. Failure is
+    // non-fatal: ICP and protocols continue; history reports degraded.
+    this->ensureHistoryWriter();
+    this->history_writer_->start();
     this->scheduler_ = std::make_unique<PollScheduler>(
         this->manager_, this->cache_, std::chrono::milliseconds(250));
     this->scheduler_->setAfterPollHook([this]() { this->onPollCycle(); });
@@ -148,21 +315,34 @@ void ApplicationService::start()
 void ApplicationService::stop()
 {
   std::unique_ptr<PollScheduler> scheduler;
+  bool was_running = false;
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
-    if (!this->running_)
+    if (this->running_)
+    {
+      was_running = true;
+      this->running_ = false;
+      scheduler = std::move(this->scheduler_);
+    }
+    else if (!this->history_writer_)
     {
       return;
     }
-    this->running_ = false;
-    scheduler = std::move(this->scheduler_);
   }
   if (scheduler)
   {
     scheduler->stop();
   }
-  this->manager_.disconnectAll();
-  this->recordEvent("info", "runtime", "ICP application service stopped");
+  if (was_running)
+  {
+    this->manager_.disconnectAll();
+    this->recordEvent("info", "runtime", "ICP application service stopped");
+  }
+  // Flush historian after the final event enqueue.
+  if (this->history_writer_)
+  {
+    this->history_writer_->stop();
+  }
 }
 
 bool ApplicationService::running() const
@@ -252,6 +432,7 @@ ConfigResult ApplicationService::setConfiguration(IcpConfigurationDocument docum
   if (result.ok)
   {
     this->recordEvent("info", "configuration", "Configuration replaced in memory");
+    this->persistConfigRevision("replace", "Configuration replaced in memory");
   }
   else
   {
@@ -275,6 +456,8 @@ ConfigResult ApplicationService::saveConfiguration()
         "info",
         "configuration",
         "Configuration saved to " + this->configuration_path_);
+    this->persistConfigRevision(
+        "save", "Configuration saved to " + this->configuration_path_);
   }
   else
   {
@@ -304,6 +487,8 @@ ConfigResult ApplicationService::loadConfiguration()
           "info",
           "configuration",
           "Configuration loaded from " + this->configuration_path_);
+      this->persistConfigRevision(
+          "load", "Configuration loaded from " + this->configuration_path_);
     }
     // Materialize only — never connect here. Peer-down must not block ICP
     // startup / HTTP. Background recovery (onPollCycle) owns first connect.
@@ -360,6 +545,7 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
     return result;
   }
   this->recordEvent("info", "configuration", "Adapter upserted", id);
+  this->persistConfigRevision("adapter_upsert", "Adapter upserted: " + id);
 
   // Catalog-only updates leave live protocol bindings (NodeIds, endpoints, etc.)
   // at construction-time values. Soft-failure alarms never clear after a GUI
@@ -437,6 +623,7 @@ ConfigResult ApplicationService::removeAdapterConfig(const std::string &adapterI
   if (result.ok)
   {
     this->recordEvent("info", "configuration", "Adapter removed", adapterId);
+    this->persistConfigRevision("adapter_remove", "Adapter removed: " + adapterId);
   }
   return result;
 }
@@ -725,6 +912,8 @@ EquipmentCommandResult ApplicationService::executeEquipmentCommand(
     ev.reason = out.message;
     ev.errorDetails = out.message;
     this->recordEvent(std::move(ev));
+    this->persistCommandAudit(
+        equipmentId, {}, command, "FAILED", "equipment_unavailable", -1, {});
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       CommandDiagnostic &rt =
@@ -839,6 +1028,14 @@ EquipmentCommandResult ApplicationService::executeEquipmentCommand(
     ev.errorDetails = executed.message;
   }
   this->recordEvent(std::move(ev));
+  this->persistCommandAudit(
+      equipmentId,
+      owner->id(),
+      command,
+      execution,
+      executed.accepted ? std::string{} : availability,
+      -1,
+      {});
   return out;
 }
 
@@ -1088,6 +1285,8 @@ void ApplicationService::recordEventLocked(ApplicationEvent event)
   const std::string level = event.level;
   const std::string adapterId = event.adapterId;
   const std::string message = event.message;
+  this->ensureHistoryWriter();
+  this->persistEventToHistory(event);
   this->events_.push_back(std::move(event));
   while (this->events_.size() > kMaxEvents)
   {
@@ -1368,6 +1567,162 @@ void ApplicationService::materializeEnabledAdaptersForRecovery()
   }
 }
 
+
+void ApplicationService::syncAlarmAndEquipmentHistoryLocked() const
+{
+  if (!this->history_writer_)
+  {
+    return;
+  }
+
+  const auto now = std::chrono::system_clock::now();
+  const std::int64_t nowMs = toEpochMs(now);
+  std::unordered_map<std::string, ActiveAlarmView> current;
+
+  for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
+  {
+    const AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
+    if (diag.activeFault || diag.lastObservedState == "FAULTED")
+    {
+      ActiveAlarmView alarm;
+      alarm.severity = "ERROR";
+      alarm.sourceType = "adapter";
+      alarm.sourceId = record.adapterId;
+      alarm.protocol = record.protocol;
+      alarm.category = "CONNECTION";
+      alarm.message =
+          diag.lastFaultError.empty() ? "Adapter is faulted" : diag.lastFaultError;
+      alarm.sinceUtc = diag.hasFaultedAt ? diag.faultedAt : diag.lastStateChangeAt;
+      current.emplace(alarmKeyFor(alarm), alarm);
+    }
+    else if (!diag.earlyWarning.empty() && diag.health == "DEGRADED")
+    {
+      ActiveAlarmView alarm;
+      alarm.severity = "WARNING";
+      alarm.sourceType = "adapter";
+      alarm.sourceId = record.adapterId;
+      alarm.protocol = record.protocol;
+      alarm.category = "COMMUNICATION";
+      alarm.message = diag.earlyWarning;
+      alarm.sinceUtc = diag.lastStateChangeAt;
+      current.emplace(alarmKeyFor(alarm), alarm);
+    }
+  }
+
+  for (const EquipmentSnapshot &snap : this->cache_.equipment())
+  {
+    if (snap.machineFault)
+    {
+      ActiveAlarmView alarm;
+      alarm.severity = "ERROR";
+      alarm.sourceType = "equipment";
+      alarm.sourceId = snap.equipmentId;
+      alarm.protocol = snap.protocol;
+      alarm.category = "EQUIPMENT";
+      alarm.message =
+          snap.lastError.empty() ? "Equipment machine fault active" : snap.lastError;
+      alarm.sinceUtc = snap.observedAtUtc;
+      current.emplace(alarmKeyFor(alarm), alarm);
+    }
+    else if (snap.stale && snap.communicationState == ConnectionState::Faulted)
+    {
+      ActiveAlarmView alarm;
+      alarm.severity = "ERROR";
+      alarm.sourceType = "equipment";
+      alarm.sourceId = snap.equipmentId;
+      alarm.protocol = snap.protocol;
+      alarm.category = "COMMUNICATION";
+      alarm.message =
+          snap.lastError.empty() ? "Equipment communication faulted" : snap.lastError;
+      alarm.sinceUtc = snap.observedAtUtc;
+      current.emplace(alarmKeyFor(alarm), alarm);
+    }
+    else if (
+        !snap.lastError.empty()
+        && snap.communicationState == ConnectionState::Connected)
+    {
+      ActiveAlarmView alarm;
+      alarm.severity = "WARNING";
+      alarm.sourceType = "equipment";
+      alarm.sourceId = snap.equipmentId;
+      alarm.protocol = snap.protocol;
+      alarm.category = "COMMUNICATION";
+      alarm.message = snap.lastError;
+      alarm.sinceUtc = snap.observedAtUtc;
+      current.emplace(alarmKeyFor(alarm), alarm);
+    }
+
+    const std::string state = equipmentHistoryState(snap);
+    auto prior = this->equipment_history_state_.find(snap.equipmentId);
+    if (prior == this->equipment_history_state_.end() || prior->second != state)
+    {
+      this->history_writer_->enqueueEquipmentStateTransition(
+          snap.equipmentId,
+          snap.adapterId,
+          state,
+          nowMs,
+          "equipment state " + state);
+      this->equipment_history_state_[snap.equipmentId] = state;
+    }
+  }
+
+  for (const auto &entry : current)
+  {
+    if (this->open_alarms_.count(entry.first) == 0)
+    {
+      AlarmEventRecord row;
+      row.alarmKey = entry.first;
+      row.action = "raised";
+      row.severity = entry.second.severity;
+      row.sourceType = entry.second.sourceType;
+      row.sourceId = entry.second.sourceId;
+      if (entry.second.sourceType == "equipment")
+      {
+        row.equipmentId = entry.second.sourceId;
+      }
+      else if (entry.second.sourceType == "adapter")
+      {
+        row.adapterId = entry.second.sourceId;
+      }
+      row.protocol = entry.second.protocol;
+      row.category = entry.second.category;
+      row.message = entry.second.message;
+      row.tsUtcMs = toEpochMs(
+          entry.second.sinceUtc.time_since_epoch().count() == 0 ? now
+                                                               : entry.second.sinceUtc);
+      this->history_writer_->enqueueAlarmEvent(std::move(row));
+    }
+  }
+
+  for (const auto &entry : this->open_alarms_)
+  {
+    if (current.count(entry.first) == 0)
+    {
+      AlarmEventRecord row;
+      row.alarmKey = entry.first;
+      row.action = "cleared";
+      row.severity = entry.second.severity;
+      row.sourceType = entry.second.sourceType;
+      row.sourceId = entry.second.sourceId;
+      if (entry.second.sourceType == "equipment")
+      {
+        row.equipmentId = entry.second.sourceId;
+      }
+      else if (entry.second.sourceType == "adapter")
+      {
+        row.adapterId = entry.second.sourceId;
+      }
+      row.protocol = entry.second.protocol;
+      row.category = entry.second.category;
+      row.message = entry.second.message;
+      row.tsUtcMs = nowMs;
+      this->history_writer_->enqueueAlarmEvent(std::move(row));
+    }
+  }
+
+  this->open_alarms_.swap(current);
+}
+
 void ApplicationService::scheduleAutoReconnectLocked(const std::string &adapterId) const
 {
   AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
@@ -1389,6 +1744,7 @@ void ApplicationService::onPollCycle()
       return;
     }
     this->refreshAllAdapterObservationsLocked();
+    this->syncAlarmAndEquipmentHistoryLocked();
 
     const auto now = std::chrono::steady_clock::now();
     for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
@@ -1588,6 +1944,33 @@ void ApplicationService::observeAdapterStateLocked(
 
     this->emitLifecycleTransitionLocked(
         adapterId, previous, state, leftStateDurationMs);
+
+    if (this->history_writer_)
+    {
+      std::string protocol;
+      if (const AdapterConfigRecord *record = this->catalog_.adapter(adapterId))
+      {
+        protocol = record->protocol;
+      }
+      std::string reason = previous + " → " + state;
+      std::string errorCode;
+      IndustrialAdapter *runtime =
+          const_cast<ApplicationService *>(this)->manager_.adapter(adapterId);
+      if (runtime != nullptr && state == "FAULTED" && !runtime->lastError().empty())
+      {
+        ApplicationEvent tmp;
+        tmp.errorDetails = runtime->lastError();
+        enrichCommunicationErrorFields(&tmp);
+        errorCode = tmp.errorCode;
+        reason += "; " + runtime->lastError();
+        if (reason.size() > 256)
+        {
+          reason.resize(256);
+        }
+      }
+      this->history_writer_->enqueueCommunicationTransition(
+          adapterId, protocol, state, toEpochMs(now), reason, errorCode);
+    }
   }
   else if (state == "CONNECTED")
   {

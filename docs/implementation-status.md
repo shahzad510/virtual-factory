@@ -8,6 +8,8 @@
 
 ---
 
+**ICP Milestone 1 (persistent history):** **IMPLEMENTED** / **TESTED** on `feature/icp-persistence-rbac-milestones` (`HistoryRepository`/SQLite/`GET /api/v1/history`). Does not restore live connection state. RBAC/MES integration **NOT STARTED**. See `docs/icp-history.md`.
+
 ## 1. Project identity
 
 MES + SCADA + **modular manufacturing platform** (ICP + MES Core). Gazebo Sim 8 is a **simulation plant** used to develop and test the normalized equipment model.

@@ -7,6 +7,7 @@
 #include <ctime>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -357,6 +358,249 @@ json applicationEventToJson(const ApplicationEvent &ev)
   }
   return out;
 }
+
+
+json historyStatusToJson(const HistoryStatus &st)
+{
+  return {
+      {"available", st.available},
+      {"degraded", st.degraded},
+      {"path", st.path},
+      {"message", st.message},
+      {"schemaVersion", st.schemaVersion},
+      {"droppedWrites", st.droppedWrites},
+  };
+}
+
+std::optional<std::int64_t> parseOptionalInt64Param(
+    const httplib::Request &req, const char *key)
+{
+  if (!req.has_param(key))
+  {
+    return std::nullopt;
+  }
+  try
+  {
+    return static_cast<std::int64_t>(std::stoll(req.get_param_value(key)));
+  }
+  catch (...)
+  {
+    return std::nullopt;
+  }
+}
+
+HistoryQuery historyQueryFromRequest(const httplib::Request &req)
+{
+  HistoryQuery q;
+  if (req.has_param("kind"))
+  {
+    q.kind = req.get_param_value("kind");
+  }
+  q.startUtcMs = parseOptionalInt64Param(req, "start");
+  if (!q.startUtcMs.has_value())
+  {
+    q.startUtcMs = parseOptionalInt64Param(req, "startUtcMs");
+  }
+  q.endUtcMs = parseOptionalInt64Param(req, "end");
+  if (!q.endUtcMs.has_value())
+  {
+    q.endUtcMs = parseOptionalInt64Param(req, "endUtcMs");
+  }
+  if (req.has_param("adapterId"))
+  {
+    q.adapterId = req.get_param_value("adapterId");
+  }
+  else if (req.has_param("adapter_id"))
+  {
+    q.adapterId = req.get_param_value("adapter_id");
+  }
+  if (req.has_param("equipmentId"))
+  {
+    q.equipmentId = req.get_param_value("equipmentId");
+  }
+  else if (req.has_param("equipment_id"))
+  {
+    q.equipmentId = req.get_param_value("equipment_id");
+  }
+  if (req.has_param("protocol"))
+  {
+    q.protocol = req.get_param_value("protocol");
+  }
+  if (req.has_param("category"))
+  {
+    q.category = req.get_param_value("category");
+  }
+  if (req.has_param("eventType"))
+  {
+    q.eventType = req.get_param_value("eventType");
+  }
+  else if (req.has_param("event_type"))
+  {
+    q.eventType = req.get_param_value("event_type");
+  }
+  if (req.has_param("severity"))
+  {
+    q.severity = req.get_param_value("severity");
+  }
+  if (req.has_param("limit"))
+  {
+    try
+    {
+      q.limit = static_cast<std::size_t>(std::stoul(req.get_param_value("limit")));
+    }
+    catch (...)
+    {
+    }
+  }
+  return q;
+}
+
+json historyQueryResultToJson(const HistoryQueryResult &result)
+{
+  json body = {
+      {"historian", historyStatusToJson(result.status)},
+      {"kind", result.kind},
+      {"authorizationNote",
+       "Milestone 2 will protect this endpoint with history.view"},
+  };
+  json items = json::array();
+  if (result.kind == "events")
+  {
+    for (const auto &row : result.events)
+    {
+      items.push_back({
+          {"id", row.id},
+          {"tsUtcMs", row.tsUtcMs},
+          {"level", row.level},
+          {"category", row.category},
+          {"eventType", row.eventType},
+          {"message", row.message},
+          {"adapterId", row.adapterId},
+          {"equipmentId", row.equipmentId},
+          {"protocol", row.protocol},
+          {"previousState", row.previousState},
+          {"newState", row.newState},
+          {"previousHealth", row.previousHealth},
+          {"newHealth", row.newHealth},
+          {"command", row.command},
+          {"reason", row.reason},
+          {"errorCode", row.errorCode},
+          {"errorDetails", row.errorDetails},
+          {"nodeId", row.nodeId},
+          {"recovery", row.recovery},
+          {"correlationId", row.correlationId},
+          {"durationMs", row.durationMs},
+          {"actorId", row.actorId},
+      });
+    }
+  }
+  else if (result.kind == "communication_intervals")
+  {
+    for (const auto &row : result.communicationIntervals)
+    {
+      items.push_back({
+          {"id", row.id},
+          {"adapterId", row.adapterId},
+          {"protocol", row.protocol},
+          {"state", row.state},
+          {"startedAtUtcMs", row.startedAtUtcMs},
+          {"endedAtUtcMs",
+           row.endedAtUtcMs.has_value() ? json(*row.endedAtUtcMs) : json(nullptr)},
+          {"reason", row.reason},
+          {"errorCode", row.errorCode},
+      });
+    }
+  }
+  else if (result.kind == "health_transitions")
+  {
+    for (const auto &row : result.healthTransitions)
+    {
+      items.push_back({
+          {"id", row.id},
+          {"adapterId", row.adapterId},
+          {"protocol", row.protocol},
+          {"previousHealth", row.previousHealth},
+          {"newHealth", row.newHealth},
+          {"tsUtcMs", row.tsUtcMs},
+          {"reason", row.reason},
+      });
+    }
+  }
+  else if (result.kind == "alarm_events")
+  {
+    for (const auto &row : result.alarmEvents)
+    {
+      items.push_back({
+          {"id", row.id},
+          {"alarmKey", row.alarmKey},
+          {"action", row.action},
+          {"severity", row.severity},
+          {"sourceType", row.sourceType},
+          {"sourceId", row.sourceId},
+          {"equipmentId", row.equipmentId},
+          {"adapterId", row.adapterId},
+          {"protocol", row.protocol},
+          {"category", row.category},
+          {"message", row.message},
+          {"tsUtcMs", row.tsUtcMs},
+          {"correlationId", row.correlationId},
+          {"actorId", row.actorId},
+      });
+    }
+  }
+  else if (result.kind == "equipment_state_intervals")
+  {
+    for (const auto &row : result.equipmentStateIntervals)
+    {
+      items.push_back({
+          {"id", row.id},
+          {"equipmentId", row.equipmentId},
+          {"adapterId", row.adapterId},
+          {"state", row.state},
+          {"startedAtUtcMs", row.startedAtUtcMs},
+          {"endedAtUtcMs",
+           row.endedAtUtcMs.has_value() ? json(*row.endedAtUtcMs) : json(nullptr)},
+          {"reason", row.reason},
+      });
+    }
+  }
+  else if (result.kind == "command_audit")
+  {
+    for (const auto &row : result.commandAudits)
+    {
+      items.push_back({
+          {"id", row.id},
+          {"tsUtcMs", row.tsUtcMs},
+          {"equipmentId", row.equipmentId},
+          {"adapterId", row.adapterId},
+          {"command", row.command},
+          {"result", row.result},
+          {"errorCode", row.errorCode},
+          {"durationMs", row.durationMs},
+          {"correlationId", row.correlationId},
+          {"actorId", row.actorId},
+      });
+    }
+  }
+  else if (result.kind == "config_revisions")
+  {
+    for (const auto &row : result.configRevisions)
+    {
+      items.push_back({
+          {"id", row.id},
+          {"tsUtcMs", row.tsUtcMs},
+          {"action", row.action},
+          {"configurationName", row.configurationName},
+          {"contentHash", row.contentHash},
+          {"summary", row.summary},
+          {"actorId", row.actorId},
+      });
+    }
+  }
+  body["items"] = std::move(items);
+  return body;
+}
+
 
 json commandDiagnosticToJson(const CommandDiagnostic &cmd)
 {
@@ -1112,6 +1356,13 @@ public:
            {"implementations", implementations}});
     });
 
+    server.Get("/api/v1/history", [this](const httplib::Request &req, httplib::Response &res) {
+      // Read-only historian. Authz (history.view) is Milestone 2.
+      const HistoryQuery query = historyQueryFromRequest(req);
+      const HistoryQueryResult result = service.queryHistory(query);
+      setJson(res, 200, historyQueryResultToJson(result));
+    });
+
     server.Get("/api/v1/events", [this](const httplib::Request &req, httplib::Response &res) {
       std::size_t limit = 100;
       if (req.has_param("limit"))
@@ -1137,8 +1388,8 @@ public:
             {{"bounded", true},
              {"scope", "runtime_session"},
              {"note",
-              "Recent events only. Historical data is bounded to the current "
-              "runtime/session; long-term persistence is not implemented."}}}});
+              "Recent in-memory events for the current process. Durable history "
+              "is available at GET /api/v1/history (kind=events)."}}}});
     });
 
     server.Get("/api/v1/health", [](const httplib::Request &, httplib::Response &res) {

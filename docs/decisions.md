@@ -1020,3 +1020,17 @@ See `docs/connectivity-integration-contract.md`. **PLANNED. NOT IMPLEMENTED.**
 **Alternatives:** SQLite (rejected until a requirement is demonstrated); YAML (JSON already used in industrial adapters); embedding secrets in the file (rejected).
 
 
+
+
+## ADR-048 — Embedded SQLite ICP historian (Milestone 1)
+
+- **Status:** Accepted
+- **Date:** 2026-09-14
+
+**Context:** Session diagnostics, alarms, and application events were process-lifetime only. Operators and future MES/SCADA consumers need durable operational facts without making ICP depend on a remote database.
+
+**Decision:** Add an application-level `HistoryRepository` with a local SQLite implementation behind an async writer. Persist transitions/events/audits — not live connection state or high-rate telemetry samples. Historian open failure must not block ICP startup or protocol operation.
+
+**Consequences:** `icp-history.sqlite` beside config; `GET /api/v1/history`; adapters remain persistence-unaware. RBAC (`history.view`) and MES connectors are later milestones.
+
+**Alternatives:** Persist into JSON config (rejected: wrong lifetime/shape); require PostgreSQL at startup (rejected: startup independence); restore CONNECTED from history (rejected: violates runtime independence).

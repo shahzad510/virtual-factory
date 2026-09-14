@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — ICP Milestone 1 persistent historical data (branch `feature/icp-persistence-rbac-milestones`)
+
+Additive SQLite historian on `v0.1.0-icp-runtime-stable` without rewriting runtime reconnect/health/GUI lifecycle:
+
+- `HistoryRepository` + `SqliteHistoryRepository` + `AsyncHistoryWriter`
+- Persist events, communication intervals, health transitions, alarm raise/clear, equipment state intervals, command audit, config revisions
+- `GET /api/v1/history` read API; local `icp-history.sqlite` (non-blocking; failure → degraded historian only)
+- `tests/icp_history_test.cc`, `docs/icp-history.md`
+- **Does not** restore CONNECTED/live telemetry; **does not** implement RBAC or MES/SCADA connectors
+
+
 Standalone ICP GUI / Application API (2026-08-30, isolated branch `cursor/icp-standalone-gui-a88d`): browser SPA (`icp/gui`) + C++ `/api/v1` (`ApplicationService`, `HttpApiServer`, `icp_server`) on ICP Core. Mock E2E configure/connect/equipment/live data/persist. PROFINET/PROFIBUS configure/validate/save without hardware; connect reports Hilscher hardware not detected. No MES/CIC. Hilscher remains optional. **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** **Do not merge to master.**
 
 ICP standalone acceptance validation (2026-08-31, branch `cursor/icp-standalone-validation-a88d`): full acceptance matrix, `icp_standalone_acceptance_test`, first-run config fix, equipment command API, acceptance report (`docs/icp-standalone-acceptance-report.md`). **17/17 ctest passed.** Product gate: **ACCEPTED** (software) with documented limitations. **Do not merge to master.**

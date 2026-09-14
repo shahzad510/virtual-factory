@@ -17,6 +17,8 @@
 #include <virtual_factory/icp/PollScheduler.hh>
 #include <virtual_factory/icp/config/ConfigurationCatalog.hh>
 #include <virtual_factory/icp/config/ConfigurationModel.hh>
+#include <virtual_factory/icp/history/AsyncHistoryWriter.hh>
+#include <virtual_factory/icp/history/HistoryTypes.hh>
 
 namespace virtual_factory
 {
@@ -271,7 +273,10 @@ struct HilscherDiagnosticsView
 class ApplicationService
 {
 public:
-  explicit ApplicationService(std::string configurationPath = "icp-config.json");
+  /// historyDatabasePath empty → derive icp-history.sqlite next to configuration.
+  explicit ApplicationService(
+      std::string configurationPath = "icp-config.json",
+      std::string historyDatabasePath = {});
   ~ApplicationService();
 
   ApplicationService(const ApplicationService &) = delete;
@@ -280,6 +285,11 @@ public:
   void start();
   void stop();
   bool running() const;
+
+  /// Historian availability (independent of protocol adapter health).
+  HistoryStatus historyStatus() const;
+  HistoryQueryResult queryHistory(const HistoryQuery &query) const;
+  const std::string &historyDatabasePath() const;
 
   ApplicationStatus status() const;
   std::vector<ProtocolCapability> protocols() const;
@@ -370,8 +380,26 @@ private:
   void materializeEnabledAdaptersForRecovery();
   static void enrichCommunicationErrorFields(ApplicationEvent *event);
 
+  void ensureHistoryWriter();
+  void persistEventToHistory(const ApplicationEvent &event) const;
+  void persistConfigRevision(const std::string &action, const std::string &summary) const;
+  void persistCommandAudit(
+      const std::string &equipmentId,
+      const std::string &adapterId,
+      const std::string &command,
+      const std::string &result,
+      const std::string &errorCode,
+      std::int64_t durationMs,
+      const std::string &correlationId) const;
+  void syncAlarmAndEquipmentHistoryLocked() const;
+  static std::int64_t toEpochMs(std::chrono::system_clock::time_point tp);
+  static std::string alarmKeyFor(const ActiveAlarmView &alarm);
+  static std::string equipmentHistoryState(const EquipmentSnapshot &snap);
+
   mutable std::mutex mutex_;
   std::string configuration_path_;
+  std::string history_database_path_;
+  mutable std::unique_ptr<AsyncHistoryWriter> history_writer_;
   ConfigurationCatalog catalog_;
   AdapterManager manager_;
   LiveStateCache cache_;
@@ -386,6 +414,10 @@ private:
   mutable std::unordered_map<std::string, CommandDiagnostic> command_runtime_;
   /// Adapters currently inside reconnectAdapter() (for recovery event category).
   mutable std::unordered_map<std::string, bool> reconnect_in_progress_;
+  /// Open alarm keys for raise/clear history (process-lifetime tracking only).
+  mutable std::unordered_map<std::string, ActiveAlarmView> open_alarms_;
+  /// Last persisted equipment operational history state per equipment id.
+  mutable std::unordered_map<std::string, std::string> equipment_history_state_;
   std::chrono::system_clock::time_point service_started_at_{};
 };
 

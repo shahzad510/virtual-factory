@@ -25,6 +25,7 @@ MES + SCADA + industrial adapters, with Gazebo Sim as a **simulation plant**. Ga
 | — | [mqtt-scalability-test.md](mqtt-scalability-test.md) | MQTT multi-equipment **validation record** (measured scale ≠ production proof). |
 | — | [icp-product-architecture.md](icp-product-architecture.md) | **ICP** product architecture (ADR-042, ADR-044). |
 | — | [icp-configuration.md](icp-configuration.md) | **ICP-1B** persistent configuration format and API. |
+| — | [icp-history.md](icp-history.md) | **ICP Milestone 1** SQLite historical persistence + `/api/v1/history`. |
 | — | [icp-gui-architecture.md](icp-gui-architecture.md) | **ICP standalone GUI** + Application API architecture. |
 | — | [icp-standalone-acceptance-report.md](icp-standalone-acceptance-report.md) | **ICP standalone acceptance / validation** (validation branch). |
 | — | [mes-core-product-architecture.md](mes-core-product-architecture.md) | **MES Core** product architecture (ADR-045). |

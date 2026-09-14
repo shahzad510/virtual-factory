@@ -298,6 +298,22 @@ target_link_libraries(icp_application_api_test PRIVATE virtual_factory_icp pthre
 add_test(NAME icp_application_api_test COMMAND icp_application_api_test)
 set_tests_properties(icp_application_api_test PROPERTIES TIMEOUT 120)
 
+add_executable(icp_history_test
+    tests/icp_history_test.cc
+)
+target_include_directories(icp_history_test
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/cpp-httplib
+)
+if (_VF_NLOHMANN_FOR_ICP_API)
+  target_include_directories(icp_history_test PRIVATE ${_VF_NLOHMANN_FOR_ICP_API})
+endif()
+target_compile_definitions(icp_history_test
+    PRIVATE VF_ICP_GUI_ROOT="${CMAKE_SOURCE_DIR}/icp/gui")
+target_link_libraries(icp_history_test PRIVATE virtual_factory_icp pthread)
+add_test(NAME icp_history_test COMMAND icp_history_test)
+set_tests_properties(icp_history_test PROPERTIES TIMEOUT 120)
+
 add_executable(icp_standalone_acceptance_test
     tests/icp_standalone_acceptance_test.cc
     tests/opcua_test_server.cc

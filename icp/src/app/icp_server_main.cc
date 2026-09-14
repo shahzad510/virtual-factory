@@ -27,6 +27,7 @@ int main(int argc, char **argv)
   std::string host = envOr("ICP_BIND_HOST", "127.0.0.1");
   int port = 8080;
   std::string configPath = envOr("ICP_CONFIG_PATH", "icp-config.json");
+  std::string historyPath = envOr("ICP_HISTORY_PATH", "");
 #ifdef VF_ICP_GUI_ROOT
   std::string guiRoot = envOr("ICP_GUI_ROOT", VF_ICP_GUI_ROOT);
 #else
@@ -48,6 +49,10 @@ int main(int argc, char **argv)
     {
       configPath = argv[++i];
     }
+    else if ((arg == "--history" || arg == "--history-db") && i + 1 < argc)
+    {
+      historyPath = argv[++i];
+    }
     else if ((arg == "--gui-root" || arg == "-g") && i + 1 < argc)
     {
       guiRoot = argv[++i];
@@ -59,13 +64,15 @@ int main(int argc, char **argv)
           << "  --host <addr>       bind address (default 127.0.0.1)\n"
           << "  --port <port>       bind port (default 8080)\n"
           << "  --config <path>     ICP-1B JSON configuration path\n"
+          << "  --history <path>    SQLite history DB (default beside config)\n"
           << "  --gui-root <path>   static GUI root directory\n"
-          << "No MES. No CIC. Hilscher remains optional.\n";
+          << "No MES. No CIC. Historian is local SQLite only.\n"
+          << "Hilscher remains optional.\n";
       return 0;
     }
   }
 
-  virtual_factory::icp::ApplicationService service(configPath);
+  virtual_factory::icp::ApplicationService service(configPath, historyPath);
   service.start();
   // Best-effort load of existing configuration (empty/missing is OK).
   (void)service.loadConfiguration();
@@ -83,6 +90,14 @@ int main(int argc, char **argv)
             << std::endl;
   std::cout << "GUI root: " << guiRoot << std::endl;
   std::cout << "Config:   " << configPath << std::endl;
+  std::cout << "History:  " << service.historyDatabasePath() << std::endl;
+  {
+    const auto hist = service.historyStatus();
+    std::cout << "Historian: "
+              << (hist.available ? (hist.degraded ? "degraded" : "available")
+                                 : "unavailable")
+              << " (" << hist.message << ")" << std::endl;
+  }
   std::cout << "MES dependency: no" << std::endl;
   std::cout << "CIC dependency: no" << std::endl;
   std::cout << "Press Ctrl+C to stop." << std::endl;
