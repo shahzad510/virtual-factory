@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — ICP lifecycle isolation (per-adapter parallel connect/recovery)
+
+- `LifecycleExecutor`: owned worker pool; **per-adapter** FIFO serialization; **cross-adapter** parallelism; generation tokens invalidate stale recovery after explicit Disconnect
+- `PollScheduler` / `onPollCycle` **enqueue** recovery only — never call blocking `adapter->connect()` on the poll thread
+- Explicit HTTP Connect/Disconnect/Reconnect return `accepted:true` without waiting on industrial I/O
+- `AdapterManager::forEachAdapterNonBlocking` so sibling polling continues while one adapter holds lifecycle I/O
+- Regression: `icp_lifecycle_isolation_test` (deterministic blackhole OPC UA + mock independence + HTTP responsiveness)
+
 ### Added — ICP M1.1 historical alarm/event architecture and GUI
 
 - Schema v2 `alarm_occurrence` + lifecycle actions on `alarm_event` (`raised`/`acknowledged`/`cleared`)

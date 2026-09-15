@@ -34,6 +34,27 @@ void expect(bool condition, const std::string &message)
   }
 }
 
+
+bool waitForAdapterState(
+    ApplicationService &service,
+    const std::string &adapterId,
+    const std::string &state,
+    int timeoutMs = 8000)
+{
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (std::chrono::steady_clock::now() < deadline)
+  {
+    auto view = service.adapter(adapterId);
+    if (view && view->connectionState == state)
+    {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return false;
+}
+
 std::string tempConfigPath()
 {
   std::ostringstream stream;
@@ -896,7 +917,10 @@ int main()
     expect(life.upsertAdapterConfig(opcua).ok, "upsert opcua-life");
 
     auto connected = life.connectAdapter("opcua-life");
-    expect(!connected.ok, "connect to dead endpoint fails");
+    expect(connected.ok && connected.accepted,
+           "connect to dead endpoint is accepted asynchronously");
+    expect(waitForAdapterState(life, "opcua-life", "FAULTED", 8000),
+           "async connect to dead endpoint becomes FAULTED");
     expect(life.status().runtimeAdapterCount == 1,
            "failed connect still keeps runtime adapter object");
     auto view = life.adapter("opcua-life");
@@ -911,9 +935,9 @@ int main()
 
     // FAULTED remains recoverable via Disconnect / Connect API.
     expect(life.disconnectAdapter("opcua-life").ok, "disconnect from FAULTED");
-    view = life.adapter("opcua-life");
-    expect(view.has_value() && view->connectionState == "DISCONNECTED",
+    expect(waitForAdapterState(life, "opcua-life", "DISCONNECTED", 5000),
            "explicit disconnect yields DISCONNECTED");
+    view = life.adapter("opcua-life");
     expect(life.status().runtimeAdapterCount == 1,
            "runtime adapter remains after disconnect");
 
@@ -941,9 +965,13 @@ int main()
     for (int i = 0; i < 3; ++i)
     {
       (void)life.connectAdapter("opcua-life");
+      expect(waitForAdapterState(life, "opcua-life", "FAULTED", 8000),
+             "attempt reaches FAULTED");
       expect(life.status().runtimeAdapterCount == 1,
              "runtimeAdapters stays 1 across failed reconnect attempts");
       expect(life.disconnectAdapter("opcua-life").ok, "disconnect between attempts");
+      expect(waitForAdapterState(life, "opcua-life", "DISCONNECTED", 5000),
+             "disconnect between attempts settles");
     }
 
     life.stop();
@@ -1085,7 +1113,11 @@ int main()
     }
 
     expect(svc.connectAdapter("mock-cmd").ok, "reconnect mock-cmd");
+    expect(waitForAdapterState(svc, "mock-cmd", "CONNECTED", 5000),
+           "mock-cmd CONNECTED after connect");
     expect(svc.reconnectAdapter("mock-cmd").ok, "explicit reconnect mock-cmd");
+    expect(waitForAdapterState(svc, "mock-cmd", "CONNECTED", 5000),
+           "mock-cmd CONNECTED after reconnect");
     {
       bool sawRecovery = false;
       for (const auto &ev : svc.events(100))

@@ -21,6 +21,9 @@ struct AdapterManagerResult
 {
   bool ok{false};
   std::string message;
+  /// True when ICP accepted lifecycle work for async execution (connect /
+  /// disconnect / reconnect). Callers observe outcomes via adapter state.
+  bool accepted{false};
 };
 
 /// Owns IndustrialAdapter instances for the ICP runtime (ICP-1A).
@@ -79,6 +82,11 @@ public:
   /// Uses a shared_ptr snapshot so removeAdapter cannot destroy under fn.
   /// Serializes each adapter's I/O against connect/disconnect for that adapter.
   void forEachAdapter(const std::function<void(IndustrialAdapter &)> &fn);
+
+  /// Like forEachAdapter, but skips adapters whose I/O mutex is held (e.g. by
+  /// lifecycle connect). Used by PollScheduler so sibling polling continues.
+  void forEachAdapterNonBlocking(
+      const std::function<void(IndustrialAdapter &)> &fn);
 
 private:
   struct Entry

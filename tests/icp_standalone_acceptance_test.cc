@@ -141,6 +141,18 @@ void testMockFullStackE2E()
   expect(service.upsertAdapterConfig(mockAdapterRecord("mock-acc")).ok, "upsert mock");
   expect(service.saveConfiguration().ok, "save mock config");
   expect(service.connectAdapter("mock-acc").ok, "connect mock");
+  expect([&]() {
+    for (int i = 0; i < 100; ++i)
+    {
+      auto view = service.adapter("mock-acc");
+      if (view && view->connectionState == "CONNECTED")
+      {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  }(), "mock-acc reaches CONNECTED after async accept");
   std::this_thread::sleep_for(std::chrono::milliseconds(400));
 
   auto snap = service.equipmentById("Motor-Accept");
@@ -163,6 +175,15 @@ void testMockFullStackE2E()
          "machine state RUNNING after start");
 
   expect(service.disconnectAdapter("mock-acc").ok, "disconnect mock");
+  for (int i = 0; i < 100; ++i)
+  {
+    auto view = service.adapter("mock-acc");
+    if (view && view->connectionState == "DISCONNECTED")
+    {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
   snap = service.equipmentById("Motor-Accept");
   expect(!snap || snap->stale || snap->communicationState != virtual_factory::ConnectionState::Connected,
          "stale or disconnected after disconnect");

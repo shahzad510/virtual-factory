@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <virtual_factory/icp/AdapterManager.hh>
+#include <virtual_factory/icp/LifecycleExecutor.hh>
 #include <virtual_factory/icp/LiveStateCache.hh>
 #include <virtual_factory/icp/PollScheduler.hh>
 #include <virtual_factory/icp/config/ConfigurationCatalog.hh>
@@ -378,6 +379,12 @@ private:
       const std::string &newState,
       std::int64_t durationMs) const;
   void onPollCycle();
+  void executeLifecycleJob(const LifecycleJob &job);
+  void applyConnectOutcome(
+      const std::string &adapterId,
+      const AdapterManagerResult &connected,
+      bool emitFailureEvent,
+      bool reconnectStyleFailure);
   void scheduleAutoReconnectLocked(const std::string &adapterId) const;
   /// Create missing enabled runtime adapters without connecting. Arms ICP-owned
   /// background connect so peer-down at startup cannot block HTTP/control plane.
@@ -415,6 +422,7 @@ private:
   ConfigurationCatalog catalog_;
   AdapterManager manager_;
   LiveStateCache cache_;
+  LifecycleExecutor lifecycle_;
   std::unique_ptr<PollScheduler> scheduler_;
   bool running_{false};
   bool configuration_loaded_{false};

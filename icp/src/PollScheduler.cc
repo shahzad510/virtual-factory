@@ -52,7 +52,7 @@ bool PollScheduler::running() const
 
 void PollScheduler::pollOnce()
 {
-  this->manager_.forEachAdapter(
+  this->manager_.forEachAdapterNonBlocking(
       [this](IndustrialAdapter &adapter) { this->pollAdapterLocked(adapter); });
 
   std::function<void()> hook;
