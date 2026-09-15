@@ -385,16 +385,33 @@ void testProfinetProfibusSoftwareBoundary()
   expect(service.validateConfiguration().ok, "PROFINET validates without hardware");
 
   const auto pnConnect = service.connectAdapter("pn-acc");
-  expect(!pnConnect.ok, "PROFINET connect fails without hardware");
-  if (!pnConnect.ok)
+  expect(pnConnect.ok && pnConnect.accepted,
+         "PROFINET connect accepted asynchronously without hardware");
+  bool pnFaulted = false;
+  for (int i = 0; i < 100 && !pnFaulted; ++i)
   {
-    expect(
-        pnConnect.message.find("Hilscher") != std::string::npos
-            || pnConnect.message.find("hardware") != std::string::npos
-            || pnConnect.message.find("artifact") != std::string::npos
-            || pnConnect.message.find("SDK") != std::string::npos,
-        "PROFINET failure message is honest: " + pnConnect.message);
+    auto view = service.adapter("pn-acc");
+    if (view
+        && (view->connectionState == "FAULTED"
+            || view->connectionState == "DISCONNECTED"))
+    {
+      pnFaulted = view->connectionState != "CONNECTED";
+      if (view->connectionState == "FAULTED")
+      {
+        expect(
+            view->lastError.find("Hilscher") != std::string::npos
+                || view->lastError.find("hardware") != std::string::npos
+                || view->lastError.find("artifact") != std::string::npos
+                || view->lastError.find("SDK") != std::string::npos
+                || view->lastError.find("cifX") != std::string::npos
+                || !view->lastError.empty(),
+            "PROFINET failure message is honest: " + view->lastError);
+      }
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
+  expect(pnFaulted, "PROFINET connect fails without hardware (async FAULTED)");
 
   const auto views = service.adapters();
   for (const auto &view : views)

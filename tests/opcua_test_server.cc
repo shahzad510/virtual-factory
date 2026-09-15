@@ -5,9 +5,12 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 namespace virtual_factory
 {
@@ -48,6 +51,35 @@ std::uint16_t findFreeTcpPort()
   return port == 0 ? 48410 : port;
 }
 
+/// True when an IPv4 TCP connect to 127.0.0.1:port succeeds.
+/// open62541 can return GOOD from UA_Server_run_startup after an IPv4 bind
+/// failure if the IPv6 listener still opens — clients using 127.0.0.1 then fail.
+bool ipv4LoopbackAccepts(std::uint16_t port)
+{
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0)
+  {
+    return false;
+  }
+
+  timeval timeout;
+  timeout.tv_sec = 0;
+  timeout.tv_usec = 100000;  // 100ms
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+  sockaddr_in addr;
+  std::memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+  const int rc =
+      ::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+  ::close(fd);
+  return rc == 0;
+}
+
 UA_NodeId stringNode(const char *identifier)
 {
   return UA_NODEID_STRING_ALLOC(1, identifier);
@@ -62,16 +94,12 @@ OpcUaTestServer::~OpcUaTestServer()
   this->stop();
 }
 
-bool OpcUaTestServer::start()
+bool OpcUaTestServer::tryStartOnce()
 {
-  if (this->server_ != nullptr)
+  // Defensive: never enter with a live server/thread.
+  if (this->server_ != nullptr || this->thread_.joinable())
   {
-    return true;
-  }
-
-  if (this->port_ == 0)
-  {
-    this->port_ = findFreeTcpPort();
+    this->stop();
   }
 
   UA_ServerConfig config;
@@ -80,14 +108,26 @@ bool OpcUaTestServer::start()
       UA_ServerConfig_setMinimal(&config, this->port_, nullptr);
   if (configStatus != UA_STATUSCODE_GOOD)
   {
+    UA_ServerConfig_clean(&config);
     return false;
   }
 
-  this->server_ = UA_Server_newWithConfig(&config);
-  if (this->server_ == nullptr)
+  // open62541 documents this for server restart on the same IP/port
+  // (SO_REUSEADDR). Default is false, which allows EADDRINUSE after stop().
+  config.tcpReuseAddr = true;
+
+  UA_Server *server = UA_Server_newWithConfig(&config);
+  if (server == nullptr)
   {
+    // Ownership may not have transferred (e.g. missing EventLoop / OOM).
+    // After a successful move+failed init, open62541 zeros `config` and deletes
+    // the server — clean() on a zeroed config is a no-op.
+    UA_ServerConfig_clean(&config);
+    this->server_ = nullptr;
     return false;
   }
+
+  this->server_ = server;
 
   if (!this->addMixerNodes() || !this->addPumpNodes() ||
       !this->addUnknownMachineNodes())
@@ -98,6 +138,16 @@ bool OpcUaTestServer::start()
 
   const UA_StatusCode startup = UA_Server_run_startup(this->server_);
   if (startup != UA_STATUSCODE_GOOD)
+  {
+    // Typical transient cause after stop(): EADDRINUSE while the prior listen
+    // socket is still releasing. Caller may retry with the same port_.
+    this->stop();
+    return false;
+  }
+
+  // Reject partial startup (IPv4 bind failed, IPv6-only still returns GOOD).
+  // EndpointURL is opc.tcp://127.0.0.1 — IPv4 must accept.
+  if (!ipv4LoopbackAccepts(this->port_))
   {
     this->stop();
     return false;
@@ -111,6 +161,43 @@ bool OpcUaTestServer::start()
     }
   });
   return true;
+}
+
+bool OpcUaTestServer::start()
+{
+  if (this->server_ != nullptr)
+  {
+    return true;
+  }
+
+  if (this->port_ == 0)
+  {
+    this->port_ = findFreeTcpPort();
+  }
+
+  // Same-port restart can race OS/open62541 listener teardown (EADDRINUSE).
+  // Retry only a small bounded number of times on the existing port/endpoint.
+  // First-start on a free port succeeds on attempt 0 with no extra delay.
+  constexpr int kMaxAttempts = 25;
+  constexpr auto kRetryDelay = std::chrono::milliseconds(20);  // <= ~500ms total
+
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt)
+  {
+    if (this->tryStartOnce())
+    {
+      return true;
+    }
+    // Guarantee failed attempts leave no dangling server_/thread_.
+    if (this->server_ != nullptr || this->thread_.joinable())
+    {
+      this->stop();
+    }
+    if (attempt + 1 < kMaxAttempts)
+    {
+      std::this_thread::sleep_for(kRetryDelay);
+    }
+  }
+  return false;
 }
 
 void OpcUaTestServer::setPort(std::uint16_t port)

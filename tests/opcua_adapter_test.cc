@@ -329,6 +329,49 @@ void useAsMes(virtual_factory::IndustrialAdapter &adapter)
 
 /// GUI/config stores expanded NodeId text; mapping must yield bare identifier
 /// so makeNodeId() builds ns=N;s=Ident — never ns=N;s=ns=N;s=Ident.
+void testOpcUaFixtureSamePortRestart()
+{
+  // Focused DEVELOPMENT fixture check: stop() → start() must reuse the same
+  // port/endpoint without requiring a new endpoint allocation.
+  virtual_factory::test::OpcUaTestServer server;
+  expect(server.start(), "fixture same-port: initial start");
+  if (server.port() == 0)
+  {
+    return;
+  }
+  const std::uint16_t port = server.port();
+  const std::string endpoint = server.endpointUrl();
+
+  for (int i = 0; i < 8; ++i)
+  {
+    server.stop();
+    expect(server.start(), "fixture same-port: restart after stop");
+    expect(server.port() == port, "fixture same-port: port preserved");
+    expect(server.endpointUrl() == endpoint, "fixture same-port: endpoint preserved");
+    // start() probes IPv4 127.0.0.1 accept; also verify OPC UA session works.
+    {
+      virtual_factory::OpcUaAdapterConfig cfg;
+      cfg.endpointUrl = endpoint;
+      cfg.equipment = {mixerMapping()};
+      virtual_factory::OpcUaIndustrialAdapter adapter("fixture-restart", cfg);
+      expect(adapter.connect(), "fixture same-port: connect after restart");
+      expect(adapter.connected(), "fixture same-port: connected after restart");
+      adapter.disconnect();
+    }
+    expect(server.start(), "fixture same-port: idempotent start while running");
+  }
+
+  // Explicit setPort before first start must still be honored.
+  virtual_factory::test::OpcUaTestServer pinned;
+  pinned.setPort(port);
+  // Port may still be held by `server` — stop first, then start pinned.
+  server.stop();
+  expect(pinned.start(), "fixture same-port: start with explicit setPort");
+  expect(pinned.port() == port, "fixture same-port: setPort preserved");
+  expect(pinned.endpointUrl() == endpoint, "fixture same-port: setPort endpoint");
+  pinned.stop();
+}
+
 void testGuiConfigNodeRefMapping()
 {
   using virtual_factory::opcUaNodeRefFromConfig;
@@ -402,6 +445,7 @@ void testGuiStyleExpandedAddressReadsFromServer(
 
 int main()
 {
+  testOpcUaFixtureSamePortRestart();
   testGuiConfigNodeRefMapping();
 
   virtual_factory::test::OpcUaTestServer server;
@@ -522,8 +566,15 @@ int main()
          "communication failure is not a machine process fault");
 
   expect(server.start(), "test server restarts on the same port");
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
   expect(server.endpointUrl() == endpoint, "reconnect uses the same endpoint");
+  // Strengthen same-port restart under adapter Faulted recovery pressure.
+  for (int i = 0; i < 3; ++i)
+  {
+    server.stop();
+    expect(server.start(), "repeated same-port restart under reconnect test");
+    expect(server.endpointUrl() == endpoint, "repeated restart keeps endpoint");
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
   expect(adapter.connect(), "connect after Faulted reconnects");
   expect(adapter.connectionState() ==
              virtual_factory::ConnectionState::Connected,

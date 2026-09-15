@@ -2005,6 +2005,46 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
   const bool reconnectStyle = job.op == LifecycleOp::Reconnect;
   this->applyConnectOutcome(
       job.adapterId, connected, emitFailure, reconnectStyle);
+
+  // Explicit Reconnect must leave a recovery marker even if poll coalesced the
+  // DISCONNECTED→CONNECTED transition before applyConnectOutcome ran.
+  if (job.op == LifecycleOp::Reconnect && connected.ok)
+  {
+    bool alreadyRecovered = false;
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      for (const ApplicationEvent &ev : this->events_)
+      {
+        if (ev.adapterId == job.adapterId
+            && (ev.category == "recovery" || ev.recovery == "successful"))
+        {
+          alreadyRecovered = true;
+          break;
+        }
+      }
+      this->reconnect_in_progress_.erase(job.adapterId);
+      if (!alreadyRecovered)
+      {
+        ApplicationEvent ev;
+        ev.level = "info";
+        ev.category = "recovery";
+        ev.eventType = "communication_recovered";
+        ev.recovery = "successful";
+        ev.adapterId = job.adapterId;
+        if (const AdapterConfigRecord *record = this->catalog_.adapter(job.adapterId))
+        {
+          ev.protocol = record->protocol;
+        }
+        ev.message = ev.protocol == "opcua"
+                         ? "OPC UA communication recovered (explicit reconnect)"
+                         : "Industrial communication recovered (explicit reconnect)";
+        ev.reason = "Explicit reconnect completed successfully.";
+        ev.previousState = "DISCONNECTED";
+        ev.newState = "CONNECTED";
+        this->recordEventLocked(std::move(ev));
+      }
+    }
+  }
 }
 
 void ApplicationService::onPollCycle()
