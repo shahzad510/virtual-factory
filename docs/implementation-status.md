@@ -11,6 +11,8 @@
 **ICP Milestone 1 (persistent history):** **IMPLEMENTED** / **TESTED** on `feature/icp-persistence-rbac-milestones` (`HistoryRepository`/SQLite/`GET /api/v1/history`). Does not restore live connection state. RBAC/MES integration **NOT STARTED**. See `docs/icp-history.md`.
 
 **ICP M1.1 (alarm/event history + GUI):** **IMPLEMENTED** / **TESTED** on `cursor/icp-m1-1-alarm-history-gui-a88d` (occurrence lifecycle, acknowledge, ISO timestamps, Active/Alarm/Event History GUI, CSV export). Protocol adapters unchanged.
+
+**ICP lifecycle isolation:** **IMPLEMENTED** / **TESTED** on `cursor/icp-lifecycle-isolation-a88d` (baseline M1.1 `71c2eb1`). Blocking connect/disconnect/reconnect I/O runs on `LifecycleExecutor` (per-adapter serial, cross-adapter parallel). Poll thread only observes/schedules/enqueues. HTTP Connect/Reconnect are async-accepted. `icp_lifecycle_isolation_test` proves mock + HTTP independence under blackhole OPC UA.
 ## 1. Project identity
 
 MES + SCADA + **modular manufacturing platform** (ICP + MES Core). Gazebo Sim 8 is a **simulation plant** used to develop and test the normalized equipment model.
@@ -225,8 +227,9 @@ Gazebo plugin does **not** link `virtual_factory_industrial`, open62541, libmodb
 
 ### ICP runtime (ICP-1A)
 
-- `virtual_factory::icp::AdapterManager` — owns adapters; connect/disconnect; duplicate adapter id / equipment id collision checks
-- `virtual_factory::icp::PollScheduler` — one scheduler thread; `pollOnce()`; **no** app-level auto-reconnect
+- `virtual_factory::icp::AdapterManager` — owns adapters; connect/disconnect; duplicate adapter id / equipment id collision checks; `forEachAdapterNonBlocking` for poll
+- `virtual_factory::icp::PollScheduler` — one scheduler thread; `pollOnce()`; after-poll hook schedules recovery by **enqueue only**
+- `virtual_factory::icp::LifecycleExecutor` — bounded worker pool; per-adapter lifecycle serialization; generation cancellation for Disconnect
 - `virtual_factory::icp::LiveStateCache` — latest-value snapshots with `observedAtUtc` on **cache DTOs only**
 - `virtual_factory::icp::AdapterFactory` — in-memory create helpers for Phase 6 adapters
 - Library: `virtual_factory_icp` under `icp/`

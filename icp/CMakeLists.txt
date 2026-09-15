@@ -20,6 +20,7 @@ add_library(virtual_factory_icp STATIC
     src/LiveStateCache.cc
     src/AdapterManager.cc
     src/PollScheduler.cc
+    src/LifecycleExecutor.cc
     src/AdapterFactory.cc
     src/config/ConfigurationValidator.cc
     src/config/JsonFileConfigurationRepository.cc

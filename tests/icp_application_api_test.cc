@@ -34,6 +34,27 @@ void expect(bool condition, const std::string &message)
   }
 }
 
+
+bool waitForAdapterState(
+    virtual_factory::icp::ApplicationService &service,
+    const std::string &adapterId,
+    const std::string &state,
+    int timeoutMs = 8000)
+{
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (std::chrono::steady_clock::now() < deadline)
+  {
+    auto view = service.adapter(adapterId);
+    if (view && view->connectionState == state)
+    {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return false;
+}
+
 std::string tempConfigPath()
 {
   std::ostringstream stream;
@@ -219,6 +240,28 @@ int main()
     }
     auto disc = client.Post("/api/v1/adapters/mock-http/disconnect");
     expect(disc && disc->status == 200, "disconnect mock-http");
+    bool discSettled = false;
+    for (int i = 0; i < 100 && !discSettled; ++i)
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      auto adapters = client.Get("/api/v1/adapters/mock-http");
+      if (!adapters || adapters->status != 200)
+      {
+        continue;
+      }
+      try
+      {
+        auto body = json::parse(adapters->body);
+        if (body.value("connectionState", "") == "DISCONNECTED")
+        {
+          discSettled = true;
+        }
+      }
+      catch (...)
+      {
+      }
+    }
+    expect(discSettled, "mock-http disconnect settles asynchronously");
   }
 
   {
@@ -627,36 +670,67 @@ int main()
     auto save = client.Post("/api/v1/configuration/save");
     expect(save && save->status == 200, "save PROFINET config");
     auto connect = client.Post("/api/v1/adapters/pn-cfg/connect");
-    expect(static_cast<bool>(connect), "connect PROFINET response");
+    expect(static_cast<bool>(connect) && connect->status == 200,
+           "connect PROFINET accepted asynchronously");
     if (connect)
     {
-      bool failed = connect->status >= 400;
-      if (!failed)
+      try
       {
-        try
+        auto body = json::parse(connect->body);
+        expect(body.value("accepted", false) == true,
+               "PROFINET connect returns accepted without blocking on hardware");
+      }
+      catch (...)
+      {
+        expect(false, "PROFINET connect response JSON");
+      }
+    }
+    bool sawFault = false;
+    std::string faultBody;
+    for (int i = 0; i < 80 && !sawFault; ++i)
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      auto adapters = client.Get("/api/v1/adapters/pn-cfg");
+      if (!adapters || adapters->status != 200)
+      {
+        continue;
+      }
+      faultBody = adapters->body;
+      try
+      {
+        auto body = json::parse(adapters->body);
+        const std::string state = body.value("connectionState", "");
+        if (state == "FAULTED" || state == "DISCONNECTED")
         {
-          failed = json::parse(connect->body).value("ok", true) == false;
-        }
-        catch (...)
-        {
-          failed = true;
+          const std::string err = body.value("lastError", "");
+          if (err.find("Hilscher") != std::string::npos
+              || err.find("hardware") != std::string::npos
+              || err.find("BLOCKED") != std::string::npos
+              || err.find("SDK") != std::string::npos
+              || err.find("cifX") != std::string::npos
+              || err.find("fail") != std::string::npos
+              || err.find("FAIL") != std::string::npos
+              || err.find("not") != std::string::npos
+              || faultBody.find("Hilscher") != std::string::npos
+              || faultBody.find("hardware") != std::string::npos)
+          {
+            sawFault = true;
+          }
+          if (state == "FAULTED")
+          {
+            sawFault = true;
+          }
         }
       }
-      expect(failed, "PROFINET connect must not pretend success without hardware");
-      const std::string body = connect->body;
-      expect(
-          body.find("Hilscher") != std::string::npos
-              || body.find("hardware") != std::string::npos
-              || body.find("BLOCKED") != std::string::npos
-              || body.find("SDK") != std::string::npos
-              || body.find("cifX") != std::string::npos
-              || body.find("not") != std::string::npos
-              || body.find("FAIL") != std::string::npos
-              || body.find("fail") != std::string::npos
-              || body.find("error") != std::string::npos
-              || body.find("Error") != std::string::npos,
-          "PROFINET connect error mentions failure/hardware: " + body);
+      catch (...)
+      {
+      }
     }
+    expect(sawFault, "PROFINET async connect reaches FAULTED without pretending CONNECTED");
+    expect(
+        faultBody.find("CONNECTED") == std::string::npos
+            || faultBody.find("FAULTED") != std::string::npos,
+        "PROFINET outcome is not a false CONNECTED: " + faultBody);
   }
 
   {
@@ -896,7 +970,10 @@ int main()
     expect(life.upsertAdapterConfig(opcua).ok, "upsert opcua-life");
 
     auto connected = life.connectAdapter("opcua-life");
-    expect(!connected.ok, "connect to dead endpoint fails");
+    expect(connected.ok && connected.accepted,
+           "connect to dead endpoint is accepted asynchronously");
+    expect(waitForAdapterState(life, "opcua-life", "FAULTED", 8000),
+           "async connect to dead endpoint becomes FAULTED");
     expect(life.status().runtimeAdapterCount == 1,
            "failed connect still keeps runtime adapter object");
     auto view = life.adapter("opcua-life");
@@ -911,9 +988,9 @@ int main()
 
     // FAULTED remains recoverable via Disconnect / Connect API.
     expect(life.disconnectAdapter("opcua-life").ok, "disconnect from FAULTED");
-    view = life.adapter("opcua-life");
-    expect(view.has_value() && view->connectionState == "DISCONNECTED",
+    expect(waitForAdapterState(life, "opcua-life", "DISCONNECTED", 5000),
            "explicit disconnect yields DISCONNECTED");
+    view = life.adapter("opcua-life");
     expect(life.status().runtimeAdapterCount == 1,
            "runtime adapter remains after disconnect");
 
@@ -941,9 +1018,13 @@ int main()
     for (int i = 0; i < 3; ++i)
     {
       (void)life.connectAdapter("opcua-life");
+      expect(waitForAdapterState(life, "opcua-life", "FAULTED", 8000),
+             "attempt reaches FAULTED");
       expect(life.status().runtimeAdapterCount == 1,
              "runtimeAdapters stays 1 across failed reconnect attempts");
       expect(life.disconnectAdapter("opcua-life").ok, "disconnect between attempts");
+      expect(waitForAdapterState(life, "opcua-life", "DISCONNECTED", 5000),
+             "disconnect between attempts settles");
     }
 
     life.stop();
@@ -982,6 +1063,8 @@ int main()
     mock.equipment.push_back(eq);
     expect(svc.upsertAdapterConfig(mock).ok, "upsert mock-cmd");
     expect(svc.connectAdapter("mock-cmd").ok, "connect mock-cmd");
+    expect(waitForAdapterState(svc, "mock-cmd", "CONNECTED", 5000),
+           "mock-cmd CONNECTED before command diagnostics");
 
     {
       auto cmds = svc.commandDiagnosticsForEquipment("mock-cmd", "EQ-CMD");
@@ -1062,6 +1145,8 @@ int main()
     }
 
     expect(svc.disconnectAdapter("mock-cmd").ok, "disconnect mock-cmd");
+    expect(waitForAdapterState(svc, "mock-cmd", "DISCONNECTED", 5000),
+           "mock-cmd DISCONNECTED before unavailable command check");
     {
       auto cmds = svc.commandDiagnosticsForEquipment("mock-cmd", "EQ-CMD");
       for (const auto &c : cmds)
@@ -1085,19 +1170,31 @@ int main()
     }
 
     expect(svc.connectAdapter("mock-cmd").ok, "reconnect mock-cmd");
+    expect(waitForAdapterState(svc, "mock-cmd", "CONNECTED", 5000),
+           "mock-cmd CONNECTED after connect");
     expect(svc.reconnectAdapter("mock-cmd").ok, "explicit reconnect mock-cmd");
     {
       bool sawRecovery = false;
-      for (const auto &ev : svc.events(100))
+      for (int i = 0; i < 100 && !sawRecovery; ++i)
       {
-        if (ev.adapterId == "mock-cmd"
-            && (ev.category == "recovery" || ev.recovery == "successful"))
+        for (const auto &ev : svc.events(100))
         {
-          sawRecovery = true;
+          if (ev.adapterId == "mock-cmd"
+              && (ev.category == "recovery" || ev.recovery == "successful"))
+          {
+            sawRecovery = true;
+            break;
+          }
+        }
+        if (!sawRecovery)
+        {
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
       }
       expect(sawRecovery, "recovery event retained in recent events");
     }
+    expect(waitForAdapterState(svc, "mock-cmd", "CONNECTED", 5000),
+           "mock-cmd CONNECTED after reconnect");
 
     const auto icpHealth = svc.diagnosticsReport().icp.overallHealth;
     expect(icpHealth == "HEALTHY" || icpHealth == "DEGRADED",
