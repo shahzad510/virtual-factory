@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — Connect/Reconnect must not remove/recreate under io_mutex
+
+- Explicit Connect/Reconnect use `ensureRuntimeAdapterPresent()` (create-if-missing only)
+- Config/upsert rematerialization keeps `ensureRuntimeAdapter()` (replace)
+- Hardened `icp_lifecycle_isolation_test` to wait for OPC UA recovery in-flight before HTTP Connect
+
 ### Added — ICP lifecycle isolation (per-adapter parallel connect/recovery)
 
 - `LifecycleExecutor`: owned worker pool; **per-adapter** FIFO serialization; **cross-adapter** parallelism; generation tokens invalidate stale recovery after explicit Disconnect

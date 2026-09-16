@@ -137,6 +137,39 @@ bool waitForAdapterState(
   return false;
 }
 
+/// Wait until ICP has scheduled/started automatic recovery for adapterId while
+/// the adapter is still not FAULTED (connect I/O still in progress or queued).
+bool waitForRecoveryInFlight(
+    virtual_factory::icp::ApplicationService &service,
+    const std::string &adapterId,
+    int timeoutMs)
+{
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (std::chrono::steady_clock::now() < deadline)
+  {
+    const auto report = service.diagnosticsReport();
+    for (const auto &row : report.adapters)
+    {
+      if (row.adapter.adapterId != adapterId)
+      {
+        continue;
+      }
+      // onPollCycle bumps reconnectCount when enqueueing RecoveryConnect.
+      // State still DISCONNECTED (or not yet FAULTED) means connect I/O has not
+      // finished — the adapter io_mutex is held or about to be held by the worker.
+      if (row.session.reconnectCount >= 1
+          && row.adapter.connectionState != "FAULTED"
+          && row.adapter.connectionState != "CONNECTED")
+      {
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return false;
+}
+
 virtual_factory::icp::AdapterConfigRecord makeOpcUa(
     const std::string &id, const std::string &endpoint, int timeoutMs)
 {
@@ -213,12 +246,17 @@ int main()
 
   const auto t0 = std::chrono::steady_clock::now();
 
-  // Explicit HTTP Connect on unreachable OPC UA must return immediately.
+  // Deterministic: recovery must be in-flight before explicit HTTP Connect.
+  // This is the race that previously blocked HTTP on ensureRuntimeAdapter→remove.
+  expect(waitForRecoveryInFlight(service, "opcua-bh", kOpcTimeoutMs),
+         "OPC UA recovery is in-flight before explicit Connect");
+
   const int port = 19000 + (::getpid() % 1000);
   HttpApiServer api(service, "", "127.0.0.1", port);
   expect(api.start(), "HTTP API starts");
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
+  // Intentional tight client timeout (must stay at 2s — do not raise to pass).
   httplib::Client client("127.0.0.1", port);
   client.set_connection_timeout(1, 0);
   client.set_read_timeout(2, 0);
@@ -239,6 +277,22 @@ int main()
     expect(connectRes->body.find("\"accepted\":true") != std::string::npos
                || connectRes->body.find("\"accepted\": true") != std::string::npos,
            "connect response includes accepted:true");
+  }
+
+  // Repeated Connect while OPC UA lifecycle is blocked must stay fast + accepted
+  // (per-adapter serialization; no concurrent connect for the same adapter).
+  for (int i = 0; i < 3; ++i)
+  {
+    const auto tRepeat = std::chrono::steady_clock::now();
+    auto repeat = client.Post("/api/v1/adapters/opcua-bh/connect");
+    const auto repeatMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - tRepeat)
+                              .count();
+    expect(repeat && repeat->status == 200,
+           "repeated POST connect accepted while recovery blocked");
+    expect(repeatMs < 500,
+           "repeated Connect does not wait for OPC UA timeout ("
+               + std::to_string(repeatMs) + "ms)");
   }
 
   // While OPC UA connect is in-flight, sibling GETs must stay responsive.
@@ -342,6 +396,23 @@ int main()
                            .count();
   expect(recon && recon->status == 200, "POST reconnect accepted");
   expect(reconMs < 500, "HTTP Reconnect returns without OPC UA timeout wait");
+  if (recon)
+  {
+    expect(recon->body.find("\"accepted\":true") != std::string::npos
+               || recon->body.find("\"accepted\": true") != std::string::npos,
+           "reconnect response includes accepted:true");
+  }
+
+  // Second reconnect while first is in-flight must also return quickly.
+  {
+    const auto tRe2 = std::chrono::steady_clock::now();
+    auto recon2 = client.Post("/api/v1/adapters/opcua-bh/reconnect");
+    const auto recon2Ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - tRe2)
+                              .count();
+    expect(recon2 && recon2->status == 200, "second reconnect accepted (serialized)");
+    expect(recon2Ms < 500, "second reconnect does not wait for OPC UA timeout");
+  }
 
   auto getDuring = client.Get("/api/v1/status");
   expect(getDuring && getDuring->status == 200,

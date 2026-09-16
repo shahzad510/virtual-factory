@@ -748,7 +748,10 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
     diag.autoConnectDesired = true;
   }
 
-  AdapterManagerResult ensured = this->ensureRuntimeAdapter(*record);
+  // Reuse an existing runtime adapter — never remove/recreate on Connect.
+  // removeAdapter waits on io_mutex held by in-flight OPC UA connect and would
+  // block the HTTP worker for timeoutMs.
+  AdapterManagerResult ensured = this->ensureRuntimeAdapterPresent(*record);
   if (!ensured.ok)
   {
     ApplicationEvent ev;
@@ -844,7 +847,8 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
     return {false, "adapter '" + adapterId + "' is disabled"};
   }
 
-  AdapterManagerResult ensured = this->ensureRuntimeAdapter(*record);
+  // Reuse existing runtime — same rule as Connect (no remove under io_mutex).
+  AdapterManagerResult ensured = this->ensureRuntimeAdapterPresent(*record);
   if (!ensured.ok)
   {
     return ensured;
@@ -2790,6 +2794,8 @@ AdapterManagerResult ApplicationService::ensureRuntimeAdapter(
   // Build the replacement first. Never remove the live adapter until the new
   // instance is ready — otherwise a create failure leaves runtimeAdapters=0 and
   // the GUI reports DISCONNECTED with no recoverable runtime object.
+  // Config/upsert rematerialization only — Connect/Reconnect use
+  // ensureRuntimeAdapterPresent() so they never block on io_mutex.
   std::string error;
   std::unique_ptr<IndustrialAdapter> adapter =
       this->createRuntimeAdapter(record, &error);
@@ -2807,6 +2813,27 @@ AdapterManagerResult ApplicationService::ensureRuntimeAdapter(
     this->cache_.removeAdapterEquipment(record.adapterId);
   }
 
+  return this->manager_.addAdapter(std::move(adapter));
+}
+
+AdapterManagerResult ApplicationService::ensureRuntimeAdapterPresent(
+    const AdapterConfigRecord &record)
+{
+  if (this->manager_.adapter(record.adapterId) != nullptr)
+  {
+    return {true, "runtime adapter present"};
+  }
+
+  std::string error;
+  std::unique_ptr<IndustrialAdapter> adapter =
+      this->createRuntimeAdapter(record, &error);
+  if (!adapter)
+  {
+    AdapterManagerResult result;
+    result.ok = false;
+    result.message = error.empty() ? "failed to create runtime adapter" : error;
+    return result;
+  }
   return this->manager_.addAdapter(std::move(adapter));
 }
 
