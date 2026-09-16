@@ -85,7 +85,11 @@ json configResultToJson(const ConfigResult &result)
 
 json managerResultToJson(const AdapterManagerResult &result)
 {
-  return {{"ok", result.ok}, {"message", result.message}};
+  return {
+      {"ok", result.ok},
+      {"accepted", result.accepted},
+      {"message", result.message},
+  };
 }
 
 json equipmentToJson(const EquipmentSnapshot &snap)

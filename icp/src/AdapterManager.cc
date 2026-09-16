@@ -323,6 +323,26 @@ void AdapterManager::forEachAdapter(
   }
 }
 
+void AdapterManager::forEachAdapterNonBlocking(
+    const std::function<void(IndustrialAdapter &)> &fn)
+{
+  // try_lock: skip adapters busy with lifecycle I/O so sibling polling continues.
+  const std::vector<Handle> handles = this->snapshotHandles();
+  for (const Handle &handle : handles)
+  {
+    if (handle.adapter == nullptr || handle.io_mutex == nullptr)
+    {
+      continue;
+    }
+    std::unique_lock<std::mutex> io(*handle.io_mutex, std::try_to_lock);
+    if (!io.owns_lock())
+    {
+      continue;
+    }
+    fn(*handle.adapter);
+  }
+}
+
 AdapterManager::Handle AdapterManager::handleFor(const std::string &adapterId)
 {
   std::lock_guard<std::mutex> lock(this->mutex_);

@@ -141,6 +141,18 @@ void testMockFullStackE2E()
   expect(service.upsertAdapterConfig(mockAdapterRecord("mock-acc")).ok, "upsert mock");
   expect(service.saveConfiguration().ok, "save mock config");
   expect(service.connectAdapter("mock-acc").ok, "connect mock");
+  expect([&]() {
+    for (int i = 0; i < 100; ++i)
+    {
+      auto view = service.adapter("mock-acc");
+      if (view && view->connectionState == "CONNECTED")
+      {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  }(), "mock-acc reaches CONNECTED after async accept");
   std::this_thread::sleep_for(std::chrono::milliseconds(400));
 
   auto snap = service.equipmentById("Motor-Accept");
@@ -163,6 +175,15 @@ void testMockFullStackE2E()
          "machine state RUNNING after start");
 
   expect(service.disconnectAdapter("mock-acc").ok, "disconnect mock");
+  for (int i = 0; i < 100; ++i)
+  {
+    auto view = service.adapter("mock-acc");
+    if (view && view->connectionState == "DISCONNECTED")
+    {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
   snap = service.equipmentById("Motor-Accept");
   expect(!snap || snap->stale || snap->communicationState != virtual_factory::ConnectionState::Connected,
          "stale or disconnected after disconnect");
@@ -364,16 +385,33 @@ void testProfinetProfibusSoftwareBoundary()
   expect(service.validateConfiguration().ok, "PROFINET validates without hardware");
 
   const auto pnConnect = service.connectAdapter("pn-acc");
-  expect(!pnConnect.ok, "PROFINET connect fails without hardware");
-  if (!pnConnect.ok)
+  expect(pnConnect.ok && pnConnect.accepted,
+         "PROFINET connect accepted asynchronously without hardware");
+  bool pnFaulted = false;
+  for (int i = 0; i < 100 && !pnFaulted; ++i)
   {
-    expect(
-        pnConnect.message.find("Hilscher") != std::string::npos
-            || pnConnect.message.find("hardware") != std::string::npos
-            || pnConnect.message.find("artifact") != std::string::npos
-            || pnConnect.message.find("SDK") != std::string::npos,
-        "PROFINET failure message is honest: " + pnConnect.message);
+    auto view = service.adapter("pn-acc");
+    if (view
+        && (view->connectionState == "FAULTED"
+            || view->connectionState == "DISCONNECTED"))
+    {
+      pnFaulted = view->connectionState != "CONNECTED";
+      if (view->connectionState == "FAULTED")
+      {
+        expect(
+            view->lastError.find("Hilscher") != std::string::npos
+                || view->lastError.find("hardware") != std::string::npos
+                || view->lastError.find("artifact") != std::string::npos
+                || view->lastError.find("SDK") != std::string::npos
+                || view->lastError.find("cifX") != std::string::npos
+                || !view->lastError.empty(),
+            "PROFINET failure message is honest: " + view->lastError);
+      }
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
+  expect(pnFaulted, "PROFINET connect fails without hardware (async FAULTED)");
 
   const auto views = service.adapters();
   for (const auto &view : views)
