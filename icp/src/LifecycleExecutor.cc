@@ -115,6 +115,75 @@ std::uint64_t LifecycleExecutor::generation(const std::string &adapterId) const
   return it->second.generation;
 }
 
+bool LifecycleExecutor::isConnectStyle(LifecycleOp op)
+{
+  return op == LifecycleOp::Connect || op == LifecycleOp::RecoveryConnect;
+}
+
+bool LifecycleExecutor::shouldCoalesceLocked(
+    const AdapterSlot &slot, const LifecycleJob &job) const
+{
+  if (job.op == LifecycleOp::Disconnect)
+  {
+    return false;
+  }
+
+  auto matches = [&](LifecycleOp existingOp, std::uint64_t existingGen) {
+    if (existingGen != job.generation)
+    {
+      return false;
+    }
+    if (job.op == LifecycleOp::Reconnect)
+    {
+      return existingOp == LifecycleOp::Reconnect;
+    }
+    // Connect and RecoveryConnect are interchangeable for coalescing: both
+    // perform the same connect I/O for this generation.
+    if (isConnectStyle(job.op))
+    {
+      return isConnectStyle(existingOp);
+    }
+    return existingOp == job.op;
+  };
+
+  if (slot.inFlight && matches(slot.inFlightOp, slot.inFlightGeneration))
+  {
+    return true;
+  }
+  for (const LifecycleJob &pending : slot.pending)
+  {
+    if (matches(pending.op, pending.generation))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool LifecycleExecutor::hasInFlightOrPending(
+    const std::string &adapterId, LifecycleOp op) const
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  const auto it = this->slots_.find(adapterId);
+  if (it == this->slots_.end())
+  {
+    return false;
+  }
+  const AdapterSlot &slot = it->second;
+  if (slot.inFlight && slot.inFlightOp == op)
+  {
+    return true;
+  }
+  for (const LifecycleJob &pending : slot.pending)
+  {
+    if (pending.op == op && pending.generation == slot.generation)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool LifecycleExecutor::enqueue(LifecycleJob job)
 {
   if (job.adapterId.empty())
@@ -132,16 +201,9 @@ bool LifecycleExecutor::enqueue(LifecycleJob job)
     {
       return false;
     }
-    if (job.op == LifecycleOp::RecoveryConnect)
+    if (this->shouldCoalesceLocked(slot, job))
     {
-      for (const LifecycleJob &pending : slot.pending)
-      {
-        if (pending.op == LifecycleOp::RecoveryConnect
-            && pending.generation == job.generation)
-        {
-          return true;  // coalesced
-        }
-      }
+      return true;  // accepted / no-op duplicate
     }
     slot.pending.push_back(std::move(job));
   }
@@ -171,6 +233,8 @@ bool LifecycleExecutor::takeNextJobLocked(LifecycleJob *out)
     *out = slot.pending.front();
     slot.pending.pop_front();
     slot.inFlight = true;
+    slot.inFlightOp = out->op;
+    slot.inFlightGeneration = out->generation;
     ++this->inFlightCount_;
     return true;
   }
