@@ -51,10 +51,11 @@ void LifecycleExecutor::stop()
     }
     this->stopping_ = true;
     this->running_ = false;
-    // Drop queued (not in-flight) work — shutdown must not start new connects.
+    // Drop queued connect/disconnect/reconnect — shutdown must not start new
+    // connects. Preserve Teardown so extracted adapters still disconnect.
     for (auto &entry : this->slots_)
     {
-      entry.second.pending.clear();
+      clearInvalidatablePendingLocked(entry.second);
     }
   }
   this->cv_.notify_all();
@@ -93,14 +94,28 @@ bool LifecycleExecutor::running() const
   return this->running_;
 }
 
+void LifecycleExecutor::clearInvalidatablePendingLocked(AdapterSlot &slot)
+{
+  std::deque<LifecycleJob> keep;
+  for (LifecycleJob &job : slot.pending)
+  {
+    if (job.op == LifecycleOp::Teardown)
+    {
+      keep.push_back(std::move(job));
+    }
+  }
+  slot.pending = std::move(keep);
+}
+
 std::uint64_t LifecycleExecutor::bumpGeneration(const std::string &adapterId)
 {
   std::lock_guard<std::mutex> lock(this->mutex_);
   AdapterSlot &slot = this->slots_[adapterId];
   ++slot.generation;
-  // Drop queued jobs for this adapter; in-flight work checks generation on exit
-  // paths in ApplicationService and will not schedule follow-on recovery.
-  slot.pending.clear();
+  // Drop queued connect/disconnect/reconnect; in-flight work checks generation
+  // on exit paths in ApplicationService. Preserve Teardown — extracted adapters
+  // must still disconnect under their io_mutex before destruction.
+  clearInvalidatablePendingLocked(slot);
   return slot.generation;
 }
 
@@ -123,7 +138,7 @@ bool LifecycleExecutor::isConnectStyle(LifecycleOp op)
 bool LifecycleExecutor::shouldCoalesceLocked(
     const AdapterSlot &slot, const LifecycleJob &job) const
 {
-  if (job.op == LifecycleOp::Disconnect)
+  if (job.op == LifecycleOp::Disconnect || job.op == LifecycleOp::Teardown)
   {
     return false;
   }
@@ -197,7 +212,8 @@ bool LifecycleExecutor::enqueue(LifecycleJob job)
       return false;
     }
     AdapterSlot &slot = this->slots_[job.adapterId];
-    if (job.generation != slot.generation)
+    // Teardown is not generation-gated: it owns an already-extracted instance.
+    if (job.op != LifecycleOp::Teardown && job.generation != slot.generation)
     {
       return false;
     }
@@ -220,8 +236,9 @@ bool LifecycleExecutor::takeNextJobLocked(LifecycleJob *out)
     {
       continue;
     }
-    // Drop stale jobs at the front.
+    // Drop stale non-Teardown jobs at the front. Teardown always runs.
     while (!slot.pending.empty()
+           && slot.pending.front().op != LifecycleOp::Teardown
            && slot.pending.front().generation != slot.generation)
     {
       slot.pending.pop_front();

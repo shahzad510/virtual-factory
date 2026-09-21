@@ -554,7 +554,7 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
     }
   }
 
-  const ConfigResult result = this->catalog_.upsertAdapter(std::move(adapter));
+  ConfigResult result = this->catalog_.upsertAdapter(std::move(adapter));
   if (!result.ok)
   {
     this->recordEvent("error", "configuration", result.message, id);
@@ -581,8 +581,29 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
 
   if (!record->enabled)
   {
-    this->manager_.removeAdapter(id);
+    // Disable: invalidate connect/recovery, extract without protocol wait,
+    // async Teardown. HTTP must not block on io_mutex / disconnect.
+    (void)this->lifecycle_.bumpGeneration(id);
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      AdapterSessionDiagnostics &diag = this->diagnosticsFor(id);
+      diag.autoConnectDesired = false;
+      diag.autoReconnectInFlight = false;
+      diag.nextAutoReconnectAt = {};
+      this->reconnect_in_progress_.erase(id);
+    }
+    AdapterManager::ExtractedAdapter extracted = this->manager_.extractAdapter(id);
     this->cache_.removeAdapterEquipment(id);
+    if (extracted.adapter != nullptr)
+    {
+      this->scheduleAdapterTeardown(id, std::move(extracted));
+      result.accepted = true;
+      result.message = "adapter disable accepted";
+    }
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      this->observeAdapterStateLocked(id, "DISCONNECTED");
+    }
     return result;
   }
 
@@ -594,7 +615,14 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
   if (!ensured.ok)
   {
     this->recordEvent("error", "configuration", ensured.message, id);
+    result.ok = false;
+    result.message = ensured.message;
     return result;
+  }
+  if (ensured.accepted)
+  {
+    result.accepted = true;
+    result.message = "adapter rematerialize accepted";
   }
 
   if (should_connect)
@@ -610,6 +638,11 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
     job.op = LifecycleOp::Connect;
     job.generation = this->lifecycle_.generation(id);
     (void)this->lifecycle_.enqueue(std::move(job));
+    result.accepted = true;
+    if (result.message == "ok" || result.message.empty())
+    {
+      result.message = "adapter rematerialize accepted";
+    }
   }
   else
   {
@@ -622,18 +655,41 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
 
 ConfigResult ApplicationService::removeAdapterConfig(const std::string &adapterId)
 {
-  // Cancel queued/in-flight recovery for this adapter before teardown.
+  // Cancel queued/in-flight recovery for this adapter before teardown. Extract
+  // runtime without waiting on io_mutex; Teardown disconnects asynchronously.
   (void)this->lifecycle_.bumpGeneration(adapterId);
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+    diag.autoConnectDesired = false;
+    diag.autoReconnectInFlight = false;
+    diag.nextAutoReconnectAt = {};
+    this->reconnect_in_progress_.erase(adapterId);
+  }
+
+  bool teardown_scheduled = false;
   if (this->manager_.adapter(adapterId) != nullptr)
   {
-    this->manager_.removeAdapter(adapterId);
+    AdapterManager::ExtractedAdapter extracted =
+        this->manager_.extractAdapter(adapterId);
     this->cache_.removeAdapterEquipment(adapterId);
+    if (extracted.adapter != nullptr)
+    {
+      this->scheduleAdapterTeardown(adapterId, std::move(extracted));
+      teardown_scheduled = true;
+    }
   }
-  const ConfigResult result = this->catalog_.removeAdapter(adapterId);
+
+  ConfigResult result = this->catalog_.removeAdapter(adapterId);
   if (result.ok)
   {
     this->recordEvent("info", "configuration", "Adapter removed", adapterId);
     this->persistConfigRevision("adapter_remove", "Adapter removed: " + adapterId);
+    if (teardown_scheduled)
+    {
+      result.accepted = true;
+      result.message = "adapter remove accepted";
+    }
   }
   return result;
 }
@@ -1926,9 +1982,31 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
     this->reconnect_in_progress_.erase(adapterId);
   };
 
-  if (job.generation != this->lifecycle_.generation(job.adapterId))
+  if (job.op != LifecycleOp::Teardown
+      && job.generation != this->lifecycle_.generation(job.adapterId))
   {
     clearFlight(job.adapterId);
+    return;
+  }
+
+  if (job.op == LifecycleOp::Teardown)
+  {
+    if (job.teardownAdapter != nullptr && job.teardownIoMutex != nullptr)
+    {
+      std::lock_guard<std::mutex> io(*job.teardownIoMutex);
+      if (job.teardownAdapter->connectionState()
+          != ConnectionState::Disconnected)
+      {
+        job.teardownAdapter->disconnect();
+      }
+    }
+    else if (job.teardownAdapter != nullptr
+             && job.teardownAdapter->connectionState()
+                 != ConnectionState::Disconnected)
+    {
+      job.teardownAdapter->disconnect();
+    }
+    // Drop shared_ptrs on return — disconnect completed under io_mutex first.
     return;
   }
 
@@ -2839,13 +2917,74 @@ AdapterManagerResult ApplicationService::ensureRuntimeAdapter(
     return result;
   }
 
+  AdapterManager::ExtractedAdapter extracted;
   if (this->manager_.adapter(record.adapterId) != nullptr)
   {
-    this->manager_.removeAdapter(record.adapterId);
+    // Invalidate stale Connect/Recovery against this id, then extract without
+    // waiting on protocol I/O so HTTP/config workers stay responsive.
+    (void)this->lifecycle_.bumpGeneration(record.adapterId);
+    extracted = this->manager_.extractAdapter(record.adapterId);
     this->cache_.removeAdapterEquipment(record.adapterId);
   }
 
-  return this->manager_.addAdapter(std::move(adapter));
+  AdapterManagerResult added = this->manager_.addAdapter(std::move(adapter));
+  if (!added.ok)
+  {
+    if (extracted.adapter != nullptr)
+    {
+      this->scheduleAdapterTeardown(record.adapterId, std::move(extracted));
+      added.accepted = true;
+    }
+    return added;
+  }
+
+  if (extracted.adapter != nullptr)
+  {
+    this->scheduleAdapterTeardown(record.adapterId, std::move(extracted));
+    added.accepted = true;
+    added.message = "runtime rematerialized; teardown accepted";
+  }
+  return added;
+}
+
+void ApplicationService::scheduleAdapterTeardown(
+    const std::string &adapterId, AdapterManager::ExtractedAdapter extracted)
+{
+  if (extracted.adapter == nullptr)
+  {
+    return;
+  }
+
+  // Retain local shared_ptrs until enqueue stores its own copy (or we sync).
+  // enqueue(LifecycleJob) takes by value — a failed enqueue must not be the
+  // last owner or the adapter destructor could disconnect without io_mutex.
+  std::shared_ptr<IndustrialAdapter> adapter = std::move(extracted.adapter);
+  std::shared_ptr<std::mutex> io_mutex = std::move(extracted.io_mutex);
+
+  LifecycleJob job;
+  job.adapterId = adapterId;
+  job.op = LifecycleOp::Teardown;
+  job.generation = this->lifecycle_.generation(adapterId);
+  job.teardownAdapter = adapter;
+  job.teardownIoMutex = io_mutex;
+  if (this->lifecycle_.enqueue(std::move(job)))
+  {
+    return;
+  }
+
+  // Executor stopped: finish disconnect under io_mutex before destroying.
+  if (io_mutex != nullptr)
+  {
+    std::lock_guard<std::mutex> io(*io_mutex);
+    if (adapter->connectionState() != ConnectionState::Disconnected)
+    {
+      adapter->disconnect();
+    }
+  }
+  else if (adapter->connectionState() != ConnectionState::Disconnected)
+  {
+    adapter->disconnect();
+  }
 }
 
 AdapterManagerResult ApplicationService::ensureRuntimeAdapterPresent(
