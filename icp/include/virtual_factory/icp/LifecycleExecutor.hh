@@ -1,6 +1,7 @@
 #ifndef VIRTUAL_FACTORY_ICP_LIFECYCLE_EXECUTOR_HH_
 #define VIRTUAL_FACTORY_ICP_LIFECYCLE_EXECUTOR_HH_
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -18,6 +19,12 @@ namespace virtual_factory
 {
 namespace icp
 {
+
+/// Default bound for LifecycleExecutor::stop() / ApplicationService::stop().
+/// Chosen above typical default protocol timeoutMs (2000) and test blackhole
+/// windows (2500) so well-behaved adapters finish cleanly; hung adapters are
+/// abandoned after this grace with shared_ptr lifetime keep-alive.
+inline constexpr std::chrono::milliseconds kLifecycleShutdownGrace{5000};
 
 /// Lifecycle operations that may block on industrial I/O (connect/teardown).
 /// Serialized per adapter; different adapters may run concurrently.
@@ -51,6 +58,8 @@ struct LifecycleJob
 /// - Per-adapter FIFO: at most one in-flight job per adapterId.
 /// - Cross-adapter parallelism: workers pull independent adapters concurrently.
 /// - Generation tokens invalidate stale recovery/connect after Disconnect.
+/// - Shutdown is bounded: after the grace period, workers may be detached while
+///   keepAlive + shared State keep referenced adapters / condition_variables alive.
 /// - Not PollScheduler: poll must never call blocking connect().
 class LifecycleExecutor
 {
@@ -68,10 +77,16 @@ public:
   /// Start worker pool (default sized for concurrent multi-adapter recovery).
   void start(std::size_t workerCount = 4);
 
-  /// Stop accepting work, drain in-flight jobs (bounded wait), join workers.
-  void stop();
+  /// Stop accepting work, drain in-flight jobs up to grace, then join or
+  /// abandon. keepAlive is retained if workers are detached so protocol I/O
+  /// can finish against still-living adapter/runtime state.
+  void stop(std::chrono::milliseconds grace = kLifecycleShutdownGrace,
+            std::shared_ptr<void> keepAlive = {});
 
   bool running() const;
+
+  /// True when the last stop() detached workers that have not yet finished.
+  bool hasAbandonedWorkers() const;
 
   /// Invalidate queued/stale work for this adapter; returns the new generation.
   /// Pending Teardown jobs are preserved (extracted adapters must still disconnect).
@@ -101,23 +116,27 @@ private:
     std::deque<LifecycleJob> pending;
   };
 
-  void workerMain();
-  bool takeNextJobLocked(LifecycleJob *out);
-  void completeJob(const std::string &adapterId);
-  static bool isConnectStyle(LifecycleOp op);
-  /// Caller holds mutex_. Drop connect/disconnect/reconnect; keep Teardown.
-  static void clearInvalidatablePendingLocked(AdapterSlot &slot);
-  /// Caller holds mutex_.
-  bool shouldCoalesceLocked(const AdapterSlot &slot, const LifecycleJob &job) const;
+  struct State;
 
-  mutable std::mutex mutex_;
-  std::condition_variable cv_;
-  bool running_{false};
-  bool stopping_{false};
-  Handler handler_;
-  std::unordered_map<std::string, AdapterSlot> slots_;
+  /// Detached workers + keepAlive + State retained until workers finish.
+  struct AbandonedCohort
+  {
+    std::vector<std::thread> workers;
+    std::shared_ptr<void> keepAlive;
+    std::shared_ptr<State> state;
+  };
+
+  static void workerMain(const std::shared_ptr<State> &state);
+  static bool takeNextJobLocked(State &state, LifecycleJob *out);
+  static void completeJob(State &state, const std::string &adapterId);
+  static bool isConnectStyle(LifecycleOp op);
+  static void clearInvalidatablePendingLocked(AdapterSlot &slot);
+  bool shouldCoalesceLocked(const AdapterSlot &slot, const LifecycleJob &job) const;
+  static void runTeardown(const LifecycleJob &job);
+
+  std::shared_ptr<State> state_;
   std::vector<std::thread> workers_;
-  std::size_t inFlightCount_{0};
+  std::shared_ptr<AbandonedCohort> abandoned_;
 };
 
 }  // namespace icp

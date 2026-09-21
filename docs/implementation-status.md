@@ -17,6 +17,8 @@
 **ICP P0 configuration isolation:** **IMPLEMENTED** / **TESTED**. HTTP/API DELETE, disable, and upsert rematerialize extract the runtime adapter and enqueue `LifecycleOp::Teardown` — they never block on `io_mutex` / protocol disconnect. Catalog update returns `accepted:true` when teardown/rematerialization is async. Generation bump invalidates stale Connect/RecoveryConnect. `icp_configuration_isolation_test` covers DELETE/disable/upsert races under blackhole OPC UA.
 
 **ICP P1 command isolation:** **IMPLEMENTED** / **TESTED**. `AdapterManager::executeEquipmentCommand` resolves `equipment_owner_`, locks only the owning adapter's `io_mutex`, runs `Equipment::execute` + optional cache refresh under that lock, then releases. No unlock-then-execute race with poll/lifecycle. Cross-adapter commands remain parallel. `icp_command_isolation_test` covers same-adapter serialization and blackhole OPC UA peer independence.
+
+**ICP P2 shutdown isolation:** **IMPLEMENTED** / **TESTED**. `LifecycleExecutor::stop(grace)` drains then detaches hung workers with shared_ptr keep-alive (`kLifecycleShutdownGrace` = 5s). `disconnectAllBounded` disconnects adapters in parallel and abandons hung disconnects. Teardown runs inline in the executor (no ApplicationService). `icp_shutdown_isolation_test` proves bounded stop under blackhole OPC UA and intentionally hung adapters.
 ## 1. Project identity
 
 MES + SCADA + **modular manufacturing platform** (ICP + MES Core). Gazebo Sim 8 is a **simulation plant** used to develop and test the normalized equipment model.

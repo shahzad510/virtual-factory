@@ -127,7 +127,7 @@ ApplicationService::ApplicationService(
               : std::move(historyDatabasePath))
     , service_started_at_(std::chrono::system_clock::now())
 {
-  this->lifecycle_.setHandler(
+  this->lifecycle_->setHandler(
       [this](const LifecycleJob &job) { this->executeLifecycleJob(job); });
 }
 
@@ -316,9 +316,10 @@ void ApplicationService::start()
     this->ensureHistoryWriter();
     this->history_writer_->start();
     // Lifecycle workers own blocking connect/disconnect I/O. Poll only enqueues.
-    this->lifecycle_.start(4);
+    this->shutdown_flag_->store(false);
+    this->lifecycle_->start(4);
     this->scheduler_ = std::make_unique<PollScheduler>(
-        this->manager_, this->cache_, std::chrono::milliseconds(250));
+        *this->manager_, *this->cache_, std::chrono::milliseconds(250));
     this->scheduler_->setAfterPollHook([this]() { this->onPollCycle(); });
     this->scheduler_->start();
     this->running_ = true;
@@ -332,6 +333,7 @@ void ApplicationService::stop()
   bool was_running = false;
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
+    this->shutdown_flag_->store(true);
     if (this->running_)
     {
       was_running = true;
@@ -347,11 +349,35 @@ void ApplicationService::stop()
   {
     scheduler->stop();
   }
-  // Drain lifecycle workers before destroying/disconnecting adapters.
-  this->lifecycle_.stop();
+
+  // Pin manager/cache/lifecycle for any abandoned workers (protocol-neutral).
+  struct ShutdownPin
+  {
+    std::shared_ptr<AdapterManager> manager;
+    std::shared_ptr<LiveStateCache> cache;
+    std::shared_ptr<LifecycleExecutor> lifecycle;
+    std::shared_ptr<std::atomic<bool>> shutdown_flag;
+    std::vector<std::shared_ptr<IndustrialAdapter>> adapters;
+  };
+  auto pin = std::make_shared<ShutdownPin>();
+  pin->manager = this->manager_;
+  pin->cache = this->cache_;
+  pin->lifecycle = this->lifecycle_;
+  pin->shutdown_flag = this->shutdown_flag_;
+
+  // Bounded lifecycle drain; detach hung workers with pin keep-alive.
+  this->lifecycle_->stop(kLifecycleShutdownGrace, pin);
+
   if (was_running)
   {
-    this->manager_.disconnectAll();
+    // Parallel per-adapter disconnect — one hung peer must not block others.
+    (void)this->manager_->disconnectAllBounded(
+        kLifecycleShutdownGrace, &pin->adapters);
+    if (this->lifecycle_->hasAbandonedWorkers() || !pin->adapters.empty())
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      this->shutdown_keep_alives_.push_back(pin);
+    }
     this->recordEvent("info", "runtime", "ICP application service stopped");
   }
   // Flush historian after the final event enqueue.
@@ -374,7 +400,7 @@ ApplicationStatus ApplicationService::status() const
   out.schedulerRunning = this->running_ && this->scheduler_
                          && this->scheduler_->running();
   out.configuredAdapterCount = this->catalog_.adapterCount();
-  out.runtimeAdapterCount = this->manager_.adapterCount();
+  out.runtimeAdapterCount = this->manager_->adapterCount();
   out.configurationPath = this->configuration_path_;
   out.configurationName = this->catalog_.document().name;
   out.configurationLoaded = this->configuration_loaded_;
@@ -407,7 +433,7 @@ ApplicationStatus ApplicationService::status() const
     }
   }
 
-  const auto snapshots = this->cache_.equipment();
+  const auto snapshots = this->cache_->equipment();
   out.equipmentCount = snapshots.size();
   for (const EquipmentSnapshot &snap : snapshots)
   {
@@ -538,7 +564,7 @@ std::string ApplicationService::exportConfigurationJson() const
 ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter)
 {
   const std::string id = adapter.adapterId;
-  IndustrialAdapter *existing = this->manager_.adapter(id);
+  IndustrialAdapter *existing = this->manager_->adapter(id);
   const bool had_runtime = existing != nullptr;
   ConnectionState prior_state = ConnectionState::Disconnected;
   bool auto_connect_desired = false;
@@ -583,7 +609,7 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
   {
     // Disable: invalidate connect/recovery, extract without protocol wait,
     // async Teardown. HTTP must not block on io_mutex / disconnect.
-    (void)this->lifecycle_.bumpGeneration(id);
+    (void)this->lifecycle_->bumpGeneration(id);
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       AdapterSessionDiagnostics &diag = this->diagnosticsFor(id);
@@ -592,8 +618,8 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
       diag.nextAutoReconnectAt = {};
       this->reconnect_in_progress_.erase(id);
     }
-    AdapterManager::ExtractedAdapter extracted = this->manager_.extractAdapter(id);
-    this->cache_.removeAdapterEquipment(id);
+    AdapterManager::ExtractedAdapter extracted = this->manager_->extractAdapter(id);
+    this->cache_->removeAdapterEquipment(id);
     if (extracted.adapter != nullptr)
     {
       this->scheduleAdapterTeardown(id, std::move(extracted));
@@ -636,8 +662,8 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
     LifecycleJob job;
     job.adapterId = id;
     job.op = LifecycleOp::Connect;
-    job.generation = this->lifecycle_.generation(id);
-    (void)this->lifecycle_.enqueue(std::move(job));
+    job.generation = this->lifecycle_->generation(id);
+    (void)this->lifecycle_->enqueue(std::move(job));
     result.accepted = true;
     if (result.message == "ok" || result.message.empty())
     {
@@ -657,7 +683,7 @@ ConfigResult ApplicationService::removeAdapterConfig(const std::string &adapterI
 {
   // Cancel queued/in-flight recovery for this adapter before teardown. Extract
   // runtime without waiting on io_mutex; Teardown disconnects asynchronously.
-  (void)this->lifecycle_.bumpGeneration(adapterId);
+  (void)this->lifecycle_->bumpGeneration(adapterId);
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
@@ -668,11 +694,11 @@ ConfigResult ApplicationService::removeAdapterConfig(const std::string &adapterI
   }
 
   bool teardown_scheduled = false;
-  if (this->manager_.adapter(adapterId) != nullptr)
+  if (this->manager_->adapter(adapterId) != nullptr)
   {
     AdapterManager::ExtractedAdapter extracted =
-        this->manager_.extractAdapter(adapterId);
-    this->cache_.removeAdapterEquipment(adapterId);
+        this->manager_->extractAdapter(adapterId);
+    this->cache_->removeAdapterEquipment(adapterId);
     if (extracted.adapter != nullptr)
     {
       this->scheduleAdapterTeardown(adapterId, std::move(extracted));
@@ -710,7 +736,7 @@ std::vector<RuntimeAdapterView> ApplicationService::adapters() const
     // touch protocol I/O objects. Connection/error text must come from the
     // poll-owned diagnostics snapshot — not live adapter fields — so GUI
     // list/status fetches cannot race reconnect teardown/connect.
-    view.runtimePresent = this->manager_.adapter(record.adapterId) != nullptr;
+    view.runtimePresent = this->manager_->adapter(record.adapterId) != nullptr;
     view.connectionState =
         view.runtimePresent ? "DISCONNECTED" : "NOT_CONFIGURED";
     {
@@ -830,8 +856,8 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
   LifecycleJob job;
   job.adapterId = adapterId;
   job.op = LifecycleOp::Connect;
-  job.generation = this->lifecycle_.generation(adapterId);
-  if (!this->lifecycle_.enqueue(std::move(job)))
+  job.generation = this->lifecycle_->generation(adapterId);
+  if (!this->lifecycle_->enqueue(std::move(job)))
   {
     AdapterManagerResult result;
     result.ok = false;
@@ -849,14 +875,14 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
 AdapterManagerResult ApplicationService::disconnectAdapter(
     const std::string &adapterId)
 {
-  if (this->manager_.adapter(adapterId) == nullptr
+  if (this->manager_->adapter(adapterId) == nullptr
       && this->catalog_.adapter(adapterId) == nullptr)
   {
     return {false, "adapter not found: " + adapterId};
   }
 
   // Invalidate queued recovery/connect before enqueueing Disconnect.
-  const std::uint64_t generation = this->lifecycle_.bumpGeneration(adapterId);
+  const std::uint64_t generation = this->lifecycle_->bumpGeneration(adapterId);
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
@@ -871,11 +897,11 @@ AdapterManagerResult ApplicationService::disconnectAdapter(
   job.adapterId = adapterId;
   job.op = LifecycleOp::Disconnect;
   job.generation = generation;
-  if (!this->lifecycle_.enqueue(std::move(job)))
+  if (!this->lifecycle_->enqueue(std::move(job)))
   {
     // Executor stopped: best-effort sync disconnect for clean teardown paths.
-    AdapterManagerResult result = this->manager_.disconnectAdapter(adapterId);
-    this->cache_.removeAdapterEquipment(adapterId);
+    AdapterManagerResult result = this->manager_->disconnectAdapter(adapterId);
+    this->cache_->removeAdapterEquipment(adapterId);
     if (result.ok)
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
@@ -914,7 +940,7 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
   // generation (which would invalidate the in-flight job) or enqueue another
   // full protocol-timeout window. Preserve generation semantics for a genuine
   // new Reconnect after the current one finishes or after Disconnect.
-  if (this->lifecycle_.hasInFlightOrPending(adapterId, LifecycleOp::Reconnect))
+  if (this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Reconnect))
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     ++this->diagnosticsFor(adapterId).reconnectCount;
@@ -929,7 +955,7 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
   }
 
   // Cancel stale recovery for this adapter; reconnect is a fresh intent.
-  const std::uint64_t generation = this->lifecycle_.bumpGeneration(adapterId);
+  const std::uint64_t generation = this->lifecycle_->bumpGeneration(adapterId);
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     ++this->diagnosticsFor(adapterId).reconnectCount;
@@ -942,7 +968,7 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
   job.adapterId = adapterId;
   job.op = LifecycleOp::Reconnect;
   job.generation = generation;
-  if (!this->lifecycle_.enqueue(std::move(job)))
+  if (!this->lifecycle_->enqueue(std::move(job)))
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     this->reconnect_in_progress_.erase(adapterId);
@@ -958,13 +984,13 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
 
 std::vector<EquipmentSnapshot> ApplicationService::equipment() const
 {
-  return this->cache_.equipment();
+  return this->cache_->equipment();
 }
 
 std::optional<EquipmentSnapshot> ApplicationService::equipmentById(
     const std::string &id) const
 {
-  return this->cache_.equipmentById(id);
+  return this->cache_->equipmentById(id);
 }
 
 EquipmentCommandResult ApplicationService::executeEquipmentCommand(
@@ -980,12 +1006,12 @@ EquipmentCommandResult ApplicationService::executeEquipmentCommand(
   // then call Equipment::execute() — that races poll/connect/disconnect on the
   // same protocol client. Never scan foreign adapters.
   const ManagedEquipmentCommandResult managed =
-      this->manager_.executeEquipmentCommand(
+      this->manager_->executeEquipmentCommand(
           equipmentId,
           command,
           parameter,
           [this](IndustrialAdapter &adapter) {
-            this->cache_.updateFromAdapter(adapter);
+            this->cache_->updateFromAdapter(adapter);
           });
 
   if (!managed.equipmentFound)
@@ -1169,7 +1195,7 @@ std::vector<CommandDiagnostic> ApplicationService::commandDiagnosticsForEquipmen
   }
 
   std::string lifecycle = "DISCONNECTED";
-  bool runtimePresent = this->manager_.adapter(adapterId) != nullptr;
+  bool runtimePresent = this->manager_->adapter(adapterId) != nullptr;
   bool connected = false;
   // Prefer configured command names over live equipmentById(). Looking up live
   // equipment takes the adapter io_mutex; if protocol teardown is slow that
@@ -1315,12 +1341,12 @@ const ConfigurationCatalog &ApplicationService::catalog() const
 
 AdapterManager &ApplicationService::manager()
 {
-  return this->manager_;
+  return *this->manager_;
 }
 
 LiveStateCache &ApplicationService::cache()
 {
-  return this->cache_;
+  return *this->cache_;
 }
 
 void ApplicationService::recordEvent(
@@ -1396,7 +1422,7 @@ void ApplicationService::emitLifecycleTransitionLocked(
   }
 
   IndustrialAdapter *runtime =
-      const_cast<ApplicationService *>(this)->manager_.adapter(adapterId);
+      const_cast<ApplicationService *>(this)->manager_->adapter(adapterId);
   const std::string runtimeError =
       (runtime != nullptr) ? runtime->lastError() : std::string{};
 
@@ -1604,7 +1630,7 @@ void ApplicationService::materializeEnabledAdaptersForRecovery()
     {
       continue;
     }
-    if (this->manager_.adapter(record.adapterId) != nullptr)
+    if (this->manager_->adapter(record.adapterId) != nullptr)
     {
       continue;
     }
@@ -1678,7 +1704,7 @@ void ApplicationService::syncAlarmAndEquipmentHistoryLocked() const
     }
   }
 
-  for (const EquipmentSnapshot &snap : this->cache_.equipment())
+  for (const EquipmentSnapshot &snap : this->cache_->equipment())
   {
     if (snap.machineFault)
     {
@@ -1861,11 +1887,11 @@ void ApplicationService::applyConnectOutcome(
     bool emitFailureEvent,
     bool reconnectStyleFailure)
 {
-  IndustrialAdapter *runtime = this->manager_.adapter(adapterId);
+  IndustrialAdapter *runtime = this->manager_->adapter(adapterId);
   const AdapterConfigRecord *record = this->catalog_.adapter(adapterId);
   if (connected.ok && runtime != nullptr)
   {
-    this->cache_.updateFromAdapter(*runtime);
+    this->cache_->updateFromAdapter(*runtime);
     std::lock_guard<std::mutex> lock(this->mutex_);
     AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
     ++diag.successfulConnections;
@@ -1873,7 +1899,7 @@ void ApplicationService::applyConnectOutcome(
     diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
     diag.nextAutoReconnectAt = {};
     this->observeAdapterStateLocked(adapterId, "CONNECTED");
-    for (const EquipmentSnapshot &snap : this->cache_.equipment())
+    for (const EquipmentSnapshot &snap : this->cache_->equipment())
     {
       if (snap.adapterId == adapterId && snap.hasSuccessfulCommunication)
       {
@@ -1887,8 +1913,8 @@ void ApplicationService::applyConnectOutcome(
 
   if (runtime != nullptr)
   {
-    this->cache_.updateFromAdapter(*runtime);
-    this->cache_.markAdapterCommunication(
+    this->cache_->updateFromAdapter(*runtime);
+    this->cache_->markAdapterCommunication(
         adapterId, runtime->connectionState(), runtime->lastError());
   }
 
@@ -1969,45 +1995,43 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
     return;
   }
 
-  auto clearFlight = [this](const std::string &adapterId) {
+  // Extend lifetime of runtime objects for abandoned-shutdown workers.
+  const std::shared_ptr<AdapterManager> manager = this->manager_;
+  const std::shared_ptr<LiveStateCache> cache = this->cache_;
+  const std::shared_ptr<LifecycleExecutor> lifecycle = this->lifecycle_;
+  const std::shared_ptr<std::atomic<bool>> shutting = this->shutdown_flag_;
+  if (!manager || !cache || !lifecycle || !shutting)
+  {
+    return;
+  }
+
+  auto clearFlight = [this, shutting](const std::string &adapterId) {
+    if (shutting->load())
+    {
+      return;
+    }
     std::lock_guard<std::mutex> lock(this->mutex_);
     this->diagnosticsFor(adapterId).autoReconnectInFlight = false;
     this->reconnect_in_progress_.erase(adapterId);
   };
 
-  if (job.op != LifecycleOp::Teardown
-      && job.generation != this->lifecycle_.generation(job.adapterId))
+  // Teardown is handled inline by LifecycleExecutor (lifetime-safe).
+  if (job.op == LifecycleOp::Teardown)
+  {
+    return;
+  }
+
+  if (job.generation != lifecycle->generation(job.adapterId))
   {
     clearFlight(job.adapterId);
     return;
   }
 
-  if (job.op == LifecycleOp::Teardown)
-  {
-    if (job.teardownAdapter != nullptr && job.teardownIoMutex != nullptr)
-    {
-      std::lock_guard<std::mutex> io(*job.teardownIoMutex);
-      if (job.teardownAdapter->connectionState()
-          != ConnectionState::Disconnected)
-      {
-        job.teardownAdapter->disconnect();
-      }
-    }
-    else if (job.teardownAdapter != nullptr
-             && job.teardownAdapter->connectionState()
-                 != ConnectionState::Disconnected)
-    {
-      job.teardownAdapter->disconnect();
-    }
-    // Drop shared_ptrs on return — disconnect completed under io_mutex first.
-    return;
-  }
-
   if (job.op == LifecycleOp::Disconnect)
   {
-    AdapterManagerResult result = this->manager_.disconnectAdapter(job.adapterId);
-    this->cache_.removeAdapterEquipment(job.adapterId);
-    if (result.ok)
+    AdapterManagerResult result = manager->disconnectAdapter(job.adapterId);
+    cache->removeAdapterEquipment(job.adapterId);
+    if (result.ok && !shutting->load())
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       this->diagnosticsFor(job.adapterId).autoConnectDesired = false;
@@ -2019,23 +2043,25 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
 
   if (job.op == LifecycleOp::Reconnect)
   {
-    (void)this->manager_.disconnectAdapter(job.adapterId);
-    this->cache_.removeAdapterEquipment(job.adapterId);
+    (void)manager->disconnectAdapter(job.adapterId);
+    cache->removeAdapterEquipment(job.adapterId);
+    if (!shutting->load())
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       this->observeAdapterStateLocked(job.adapterId, "DISCONNECTED");
     }
-    if (job.generation != this->lifecycle_.generation(job.adapterId))
+    if (job.generation != lifecycle->generation(job.adapterId))
     {
       clearFlight(job.adapterId);
       return;
     }
     bool desired = false;
+    if (!shutting->load())
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       desired = this->diagnosticsFor(job.adapterId).autoConnectDesired;
     }
-    if (!desired)
+    if (!desired || shutting->load())
     {
       clearFlight(job.adapterId);
       return;
@@ -2049,12 +2075,13 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
   }
 
   bool desired = false;
+  if (!shutting->load())
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     desired = this->diagnosticsFor(job.adapterId).autoConnectDesired;
     if (job.op == LifecycleOp::RecoveryConnect)
     {
-      IndustrialAdapter *before = this->manager_.adapter(job.adapterId);
+      IndustrialAdapter *before = manager->adapter(job.adapterId);
       if (before != nullptr
           && before->connectionState() == ConnectionState::Faulted)
       {
@@ -2062,15 +2089,27 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
       }
     }
   }
-  if (!desired)
+  if (!desired || shutting->load())
   {
     clearFlight(job.adapterId);
     return;
   }
 
-  AdapterManagerResult connected = this->manager_.connectAdapter(job.adapterId);
+  AdapterManagerResult connected = manager->connectAdapter(job.adapterId);
 
-  bool stale = job.generation != this->lifecycle_.generation(job.adapterId);
+  // After potentially long protocol I/O: if shutdown began, do not touch AS
+  // diagnostics. Keep adapters consistent via manager/cache only.
+  if (shutting->load())
+  {
+    if (connected.ok)
+    {
+      (void)manager->disconnectAdapter(job.adapterId);
+      cache->removeAdapterEquipment(job.adapterId);
+    }
+    return;
+  }
+
+  bool stale = job.generation != lifecycle->generation(job.adapterId);
   bool stillDesired = false;
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
@@ -2080,8 +2119,8 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
   {
     if (connected.ok)
     {
-      (void)this->manager_.disconnectAdapter(job.adapterId);
-      this->cache_.removeAdapterEquipment(job.adapterId);
+      (void)manager->disconnectAdapter(job.adapterId);
+      cache->removeAdapterEquipment(job.adapterId);
     }
     clearFlight(job.adapterId);
     {
@@ -2090,7 +2129,7 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
       {
         // Stale completion must not overwrite a newer authoritative state
         // (e.g. FAULTED from enterFault) with a forced DISCONNECTED.
-        IndustrialAdapter *runtime = this->manager_.adapter(job.adapterId);
+        IndustrialAdapter *runtime = manager->adapter(job.adapterId);
         if (runtime != nullptr)
         {
           this->observeAdapterStateLocked(
@@ -2173,7 +2212,7 @@ void ApplicationService::onPollCycle()
       {
         continue;
       }
-      IndustrialAdapter *runtime = this->manager_.adapter(record.adapterId);
+      IndustrialAdapter *runtime = this->manager_->adapter(record.adapterId);
       if (runtime == nullptr)
       {
         continue;
@@ -2221,8 +2260,8 @@ void ApplicationService::onPollCycle()
     LifecycleJob job;
     job.adapterId = adapterId;
     job.op = LifecycleOp::RecoveryConnect;
-    job.generation = this->lifecycle_.generation(adapterId);
-    if (!this->lifecycle_.enqueue(std::move(job)))
+    job.generation = this->lifecycle_->generation(adapterId);
+    if (!this->lifecycle_->enqueue(std::move(job)))
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       this->diagnosticsFor(adapterId).autoReconnectInFlight = false;
@@ -2282,7 +2321,7 @@ void ApplicationService::observeAdapterStateLocked(
         diag.faultedAt = now;
       }
       IndustrialAdapter *runtime =
-          const_cast<ApplicationService *>(this)->manager_.adapter(adapterId);
+          const_cast<ApplicationService *>(this)->manager_->adapter(adapterId);
       if (runtime != nullptr && !runtime->lastError().empty())
       {
         diag.lastFaultError = runtime->lastError();
@@ -2331,7 +2370,7 @@ void ApplicationService::observeAdapterStateLocked(
       std::string reason = previous + " → " + state;
       std::string errorCode;
       IndustrialAdapter *runtime =
-          const_cast<ApplicationService *>(this)->manager_.adapter(adapterId);
+          const_cast<ApplicationService *>(this)->manager_->adapter(adapterId);
       if (runtime != nullptr && state == "FAULTED" && !runtime->lastError().empty())
       {
         ApplicationEvent tmp;
@@ -2380,7 +2419,7 @@ void ApplicationService::observeAdapterStateLocked(
   diag.healthReason.clear();
   std::string runtimeLastError;
   if (IndustrialAdapter *runtime =
-          const_cast<ApplicationService *>(this)->manager_.adapter(adapterId))
+          const_cast<ApplicationService *>(this)->manager_->adapter(adapterId))
   {
     runtimeLastError = runtime->lastError();
   }
@@ -2467,7 +2506,7 @@ void ApplicationService::refreshAllAdapterObservationsLocked() const
   {
     std::string state = "DISCONNECTED";
     IndustrialAdapter *runtime =
-        const_cast<ApplicationService *>(this)->manager_.adapter(record.adapterId);
+        const_cast<ApplicationService *>(this)->manager_->adapter(record.adapterId);
     if (runtime != nullptr)
     {
       state = connectionStateName(runtime->connectionState());
@@ -2477,7 +2516,7 @@ void ApplicationService::refreshAllAdapterObservationsLocked() const
       if (state == "CONNECTED")
       {
         bool needsSync = false;
-        for (const EquipmentSnapshot &snap : this->cache_.equipment())
+        for (const EquipmentSnapshot &snap : this->cache_->equipment())
         {
           if (snap.adapterId == record.adapterId
               && snap.lastError != runtime->lastError())
@@ -2488,8 +2527,7 @@ void ApplicationService::refreshAllAdapterObservationsLocked() const
         }
         if (needsSync)
         {
-          const_cast<LiveStateCache &>(this->cache_)
-              .markAdapterCommunication(
+          const_cast<ApplicationService *>(this)->cache_->markAdapterCommunication(
                   record.adapterId,
                   ConnectionState::Connected,
                   runtime->lastError());
@@ -2503,7 +2541,7 @@ void ApplicationService::refreshAllAdapterObservationsLocked() const
       AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
       bool sawGood = false;
       auto latestGood = diag.lastSuccessfulCommunicationAt;
-      for (const EquipmentSnapshot &snap : this->cache_.equipment())
+      for (const EquipmentSnapshot &snap : this->cache_->equipment())
       {
         if (snap.adapterId != record.adapterId)
         {
@@ -2543,7 +2581,7 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
                                    && this->scheduler_->running();
   report.system.configuredAdapters = this->catalog_.adapterCount();
 
-  const auto snapshots = this->cache_.equipment();
+  const auto snapshots = this->cache_->equipment();
   report.equipment = snapshots;
 
   std::size_t historicalFaults = 0;
@@ -2569,7 +2607,7 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
     }
 
     view.adapter.runtimePresent =
-        this->manager_.adapter(record.adapterId) != nullptr;
+        this->manager_->adapter(record.adapterId) != nullptr;
     const AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
     if (!diag.lastObservedState.empty())
     {
@@ -2840,7 +2878,7 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
   report.icp.eventBufferSize = this->events_.size();
   report.icp.eventBufferCapacity = kMaxEvents;
   report.icp.configuredAdapters = this->catalog_.adapterCount();
-  report.icp.runtimeAdapters = this->manager_.adapterCount();
+  report.icp.runtimeAdapters = this->manager_->adapterCount();
   report.icp.liveEquipmentCount = snapshots.size();
   report.icp.applicationUptimeMs =
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2911,16 +2949,16 @@ AdapterManagerResult ApplicationService::ensureRuntimeAdapter(
   }
 
   AdapterManager::ExtractedAdapter extracted;
-  if (this->manager_.adapter(record.adapterId) != nullptr)
+  if (this->manager_->adapter(record.adapterId) != nullptr)
   {
     // Invalidate stale Connect/Recovery against this id, then extract without
     // waiting on protocol I/O so HTTP/config workers stay responsive.
-    (void)this->lifecycle_.bumpGeneration(record.adapterId);
-    extracted = this->manager_.extractAdapter(record.adapterId);
-    this->cache_.removeAdapterEquipment(record.adapterId);
+    (void)this->lifecycle_->bumpGeneration(record.adapterId);
+    extracted = this->manager_->extractAdapter(record.adapterId);
+    this->cache_->removeAdapterEquipment(record.adapterId);
   }
 
-  AdapterManagerResult added = this->manager_.addAdapter(std::move(adapter));
+  AdapterManagerResult added = this->manager_->addAdapter(std::move(adapter));
   if (!added.ok)
   {
     if (extracted.adapter != nullptr)
@@ -2957,10 +2995,10 @@ void ApplicationService::scheduleAdapterTeardown(
   LifecycleJob job;
   job.adapterId = adapterId;
   job.op = LifecycleOp::Teardown;
-  job.generation = this->lifecycle_.generation(adapterId);
+  job.generation = this->lifecycle_->generation(adapterId);
   job.teardownAdapter = adapter;
   job.teardownIoMutex = io_mutex;
-  if (this->lifecycle_.enqueue(std::move(job)))
+  if (this->lifecycle_->enqueue(std::move(job)))
   {
     return;
   }
@@ -2983,7 +3021,7 @@ void ApplicationService::scheduleAdapterTeardown(
 AdapterManagerResult ApplicationService::ensureRuntimeAdapterPresent(
     const AdapterConfigRecord &record)
 {
-  if (this->manager_.adapter(record.adapterId) != nullptr)
+  if (this->manager_->adapter(record.adapterId) != nullptr)
   {
     return {true, "runtime adapter present"};
   }
@@ -2998,7 +3036,7 @@ AdapterManagerResult ApplicationService::ensureRuntimeAdapterPresent(
     result.message = error.empty() ? "failed to create runtime adapter" : error;
     return result;
   }
-  return this->manager_.addAdapter(std::move(adapter));
+  return this->manager_->addAdapter(std::move(adapter));
 }
 
 std::unique_ptr<IndustrialAdapter> ApplicationService::createRuntimeAdapter(

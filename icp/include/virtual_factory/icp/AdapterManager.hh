@@ -2,6 +2,7 @@
 #define VIRTUAL_FACTORY_ICP_ADAPTER_MANAGER_HH_
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -86,7 +87,22 @@ public:
   AdapterManagerResult connectAdapter(const std::string &adapterId);
   AdapterManagerResult disconnectAdapter(const std::string &adapterId);
 
+  /// Disconnect every enrolled adapter serially (unit-test helper). Prefer
+  /// disconnectAllBounded on application shutdown paths.
   void disconnectAll();
+
+  /// Disconnect every enrolled adapter without holding mutex_ during I/O.
+  /// Adapters are disconnected in parallel. After grace, unfinished disconnect
+  /// threads are detached; their adapter shared_ptrs remain in keepAliveOut so
+  /// protocol I/O cannot use-after-free. Returns the number of adapters that
+  /// had not finished disconnect when grace expired.
+  std::size_t disconnectAllBounded(
+      std::chrono::milliseconds grace,
+      std::vector<std::shared_ptr<IndustrialAdapter>> *keepAliveOut = nullptr);
+
+  /// Extract every enrolled adapter (clear ownership, mark unenrolled) without
+  /// disconnecting. Used when shutdown abandons in-flight I/O.
+  std::vector<ExtractedAdapter> extractAllAdapters();
 
   IndustrialAdapter *adapter(const std::string &adapterId);
   const IndustrialAdapter *adapter(const std::string &adapterId) const;
