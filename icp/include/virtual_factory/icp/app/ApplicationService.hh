@@ -356,13 +356,16 @@ public:
   void recordEvent(ApplicationEvent event);
 
 private:
-  /// Rematerialize runtime for config changes: create replacement, then swap.
-  /// May wait on the adapter I/O mutex during remove — config path only.
+  /// Rematerialize runtime for config changes: create replacement, extract old
+  /// without blocking on protocol I/O, enqueue Teardown for the old instance.
   AdapterManagerResult ensureRuntimeAdapter(const AdapterConfigRecord &record);
   /// Connect/Reconnect path: create only if missing; never remove/recreate.
   /// Must not block on industrial I/O or an in-flight lifecycle connect.
   AdapterManagerResult ensureRuntimeAdapterPresent(
       const AdapterConfigRecord &record);
+  /// Enqueue LifecycleOp::Teardown for an extracted runtime (or sync if stopped).
+  void scheduleAdapterTeardown(
+      const std::string &adapterId, AdapterManager::ExtractedAdapter extracted);
   std::unique_ptr<IndustrialAdapter> createRuntimeAdapter(
       const AdapterConfigRecord &record, std::string *error) const;
   static std::string connectionStateName(ConnectionState state);

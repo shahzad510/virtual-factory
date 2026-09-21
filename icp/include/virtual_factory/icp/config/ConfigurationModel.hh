@@ -23,6 +23,10 @@ struct ConfigResult
   bool ok{false};
   std::string message;
   std::vector<ConfigIssue> issues;
+  /// True when the catalog mutation succeeded and runtime teardown /
+  /// rematerialization was accepted for async LifecycleExecutor execution.
+  /// Callers must not treat accepted as "runtime fully removed/reconnected".
+  bool accepted{false};
 };
 
 /// Credential *references* only. ICP-1B does not implement a secret vault.

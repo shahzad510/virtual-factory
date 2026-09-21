@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — P0 configuration isolation (DELETE/disable/upsert vs protocol I/O)
+
+- `AdapterManager::extractAdapter` removes runtime + clears equipment ownership without waiting on protocol disconnect
+- `LifecycleOp::Teardown` disconnects extracted adapters under their `io_mutex` on the lifecycle pool (never generation-cleared)
+- `removeAdapterConfig` / disable / `ensureRuntimeAdapter` rematerialize no longer call synchronous `removeAdapter` on HTTP/config paths
+- `ConfigResult.accepted` + HTTP JSON distinguish catalog accept vs in-progress runtime teardown
+- Regression: `icp_configuration_isolation_test` (blackhole OPC UA + DELETE/disable/upsert races)
+
 ### Fixed — coalesce Connect/Reconnect; stale jobs must not paint DISCONNECTED
 
 - `LifecycleExecutor`: coalesce Connect↔RecoveryConnect and duplicate Reconnect for the same adapter+generation (pending or in-flight); Disconnect never coalesced

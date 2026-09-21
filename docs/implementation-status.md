@@ -13,6 +13,8 @@
 **ICP M1.1 (alarm/event history + GUI):** **IMPLEMENTED** / **TESTED** on `cursor/icp-m1-1-alarm-history-gui-a88d` (occurrence lifecycle, acknowledge, ISO timestamps, Active/Alarm/Event History GUI, CSV export). Protocol adapters unchanged.
 
 **ICP lifecycle isolation:** **IMPLEMENTED** / **TESTED** on `cursor/icp-lifecycle-isolation-a88d` (baseline M1.1 `71c2eb1`). Blocking connect/disconnect/reconnect I/O runs on `LifecycleExecutor` (per-adapter serial, cross-adapter parallel). Poll thread only observes/schedules/enqueues. HTTP Connect/Reconnect are async-accepted. Cross-adapter equipment collision/ownership uses a manager-level index (no peer `io_mutex` wait). `icp_lifecycle_isolation_test` proves mock + HTTP independence under blackhole OPC UA.
+
+**ICP P0 configuration isolation:** **IMPLEMENTED** / **TESTED**. HTTP/API DELETE, disable, and upsert rematerialize extract the runtime adapter and enqueue `LifecycleOp::Teardown` — they never block on `io_mutex` / protocol disconnect. Catalog update returns `accepted:true` when teardown/rematerialization is async. Generation bump invalidates stale Connect/RecoveryConnect. `icp_configuration_isolation_test` covers DELETE/disable/upsert races under blackhole OPC UA.
 ## 1. Project identity
 
 MES + SCADA + **modular manufacturing platform** (ICP + MES Core). Gazebo Sim 8 is a **simulation plant** used to develop and test the normalized equipment model.

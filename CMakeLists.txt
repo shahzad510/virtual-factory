@@ -312,6 +312,20 @@ target_link_libraries(icp_lifecycle_isolation_test PRIVATE virtual_factory_icp p
 add_test(NAME icp_lifecycle_isolation_test COMMAND icp_lifecycle_isolation_test)
 set_tests_properties(icp_lifecycle_isolation_test PROPERTIES TIMEOUT 60)
 
+add_executable(icp_configuration_isolation_test
+    tests/icp_configuration_isolation_test.cc
+)
+target_include_directories(icp_configuration_isolation_test
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/cpp-httplib
+)
+if (_VF_NLOHMANN_FOR_ICP_API)
+  target_include_directories(icp_configuration_isolation_test PRIVATE ${_VF_NLOHMANN_FOR_ICP_API})
+endif()
+target_link_libraries(icp_configuration_isolation_test PRIVATE virtual_factory_icp pthread)
+add_test(NAME icp_configuration_isolation_test COMMAND icp_configuration_isolation_test)
+set_tests_properties(icp_configuration_isolation_test PROPERTIES TIMEOUT 90)
+
 add_executable(icp_history_test
     tests/icp_history_test.cc
 )

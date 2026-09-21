@@ -5,11 +5,14 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include <virtual_factory/industrial/IndustrialAdapter.hh>
 
 namespace virtual_factory
 {
@@ -23,7 +26,10 @@ enum class LifecycleOp
   Connect,
   Disconnect,
   Reconnect,
-  RecoveryConnect
+  RecoveryConnect,
+  /// Disconnect + release an already-extracted runtime adapter. Not generation-
+  /// gated: config DELETE/disable/rematerialize must always finish teardown.
+  Teardown
 };
 
 struct LifecycleJob
@@ -32,7 +38,12 @@ struct LifecycleJob
   LifecycleOp op{LifecycleOp::Connect};
   /// Must match the adapter's current generation when the job runs, otherwise
   /// the job is dropped (e.g. after explicit Disconnect bumped the generation).
+  /// Ignored for Teardown (extracted instances are always torn down).
   std::uint64_t generation{0};
+  /// Teardown only: runtime removed from AdapterManager, held until disconnect
+  /// under teardownIoMutex completes (invariant: no destroy during protocol I/O).
+  std::shared_ptr<IndustrialAdapter> teardownAdapter;
+  std::shared_ptr<std::mutex> teardownIoMutex;
 };
 
 /// Owned worker pool for adapter lifecycle I/O.
@@ -63,14 +74,16 @@ public:
   bool running() const;
 
   /// Invalidate queued/stale work for this adapter; returns the new generation.
+  /// Pending Teardown jobs are preserved (extracted adapters must still disconnect).
   std::uint64_t bumpGeneration(const std::string &adapterId);
 
   std::uint64_t generation(const std::string &adapterId) const;
 
   /// Enqueue a job. Duplicate connect-style / Reconnect work for the same
   /// adapter+generation is coalesced (including against an in-flight job of the
-  /// same kind). Disconnect is never coalesced. Returns false if stopped or the
-  /// job generation is stale.
+  /// same kind). Disconnect and Teardown are never coalesced. Teardown ignores
+  /// generation staleness. Returns false if stopped or (non-Teardown) generation
+  /// is stale.
   bool enqueue(LifecycleJob job);
 
   /// True when this adapter already has the given op in-flight or pending
@@ -92,6 +105,8 @@ private:
   bool takeNextJobLocked(LifecycleJob *out);
   void completeJob(const std::string &adapterId);
   static bool isConnectStyle(LifecycleOp op);
+  /// Caller holds mutex_. Drop connect/disconnect/reconnect; keep Teardown.
+  static void clearInvalidatablePendingLocked(AdapterSlot &slot);
   /// Caller holds mutex_.
   bool shouldCoalesceLocked(const AdapterSlot &slot, const LifecycleJob &job) const;
 

@@ -38,25 +38,31 @@ AdapterManagerResult AdapterManager::addAdapter(
   return {true, "added"};
 }
 
+AdapterManager::ExtractedAdapter AdapterManager::extractAdapter(
+    const std::string &adapterId)
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  auto it = this->adapters_.find(adapterId);
+  if (it == this->adapters_.end())
+  {
+    return {};
+  }
+  ExtractedAdapter out;
+  out.adapter = std::move(it->second.adapter);
+  out.io_mutex = std::move(it->second.io_mutex);
+  this->adapters_.erase(it);
+  // Release equipment ownership immediately so a rematerialized peer can claim
+  // the same ids without racing the old instance's disconnect.
+  this->clearEquipmentOwnershipLocked(adapterId);
+  return out;
+}
+
 AdapterManagerResult AdapterManager::removeAdapter(const std::string &adapterId)
 {
-  Handle doomed;
-  {
-    std::lock_guard<std::mutex> lock(this->mutex_);
-    auto it = this->adapters_.find(adapterId);
-    if (it == this->adapters_.end())
-    {
-      return {false, "adapter not found: " + adapterId};
-    }
-    doomed.adapter = std::move(it->second.adapter);
-    doomed.io_mutex = std::move(it->second.io_mutex);
-    this->adapters_.erase(it);
-    this->clearEquipmentOwnershipLocked(adapterId);
-  }
-
+  ExtractedAdapter doomed = this->extractAdapter(adapterId);
   if (doomed.adapter == nullptr)
   {
-    return {true, "removed"};
+    return {false, "adapter not found: " + adapterId};
   }
 
   if (doomed.io_mutex)

@@ -52,7 +52,21 @@ public:
   /// Does not connect. Equipment id collisions are checked on connect().
   AdapterManagerResult addAdapter(std::unique_ptr<IndustrialAdapter> adapter);
 
-  /// Disconnect (if needed) and destroy the adapter.
+  /// Runtime handle extracted from the manager without protocol disconnect.
+  /// Caller must disconnect under io_mutex before dropping the shared_ptr
+  /// (typically via LifecycleOp::Teardown).
+  struct ExtractedAdapter
+  {
+    std::shared_ptr<IndustrialAdapter> adapter;
+    std::shared_ptr<std::mutex> io_mutex;
+  };
+
+  /// Remove from the manager map and clear equipment ownership without waiting
+  /// on protocol I/O. Empty adapter if not found.
+  ExtractedAdapter extractAdapter(const std::string &adapterId);
+
+  /// Extract, then disconnect synchronously under io_mutex, then destroy.
+  /// Prefer extractAdapter + LifecycleOp::Teardown on HTTP/config paths.
   AdapterManagerResult removeAdapter(const std::string &adapterId);
 
   AdapterManagerResult connectAdapter(const std::string &adapterId);

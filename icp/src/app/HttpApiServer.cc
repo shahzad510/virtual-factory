@@ -78,6 +78,7 @@ json configResultToJson(const ConfigResult &result)
   }
   return {
       {"ok", result.ok},
+      {"accepted", result.accepted},
       {"message", result.message},
       {"issues", issues},
   };
