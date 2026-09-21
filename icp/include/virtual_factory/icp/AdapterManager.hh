@@ -35,6 +35,9 @@ struct AdapterManagerResult
 /// the manager mutex (prevents HTTP/scheduler deadlocks on slow OPC UA peers).
 /// Each adapter also has a dedicated I/O mutex so poll cannot race connect /
 /// disconnect / remove on the same protocol client.
+///
+/// Equipment id collisions and cross-adapter ownership lookups use a
+/// manager-level index (guarded by mutex_), never another adapter's io_mutex.
 /// Equipment* from adapters remain non-owning views.
 class AdapterManager
 {
@@ -63,7 +66,12 @@ public:
   std::vector<std::string> adapterIds() const;
   std::size_t adapterCount() const;
 
-  /// Non-owning equipment lookup across connected (or Faulted) adapters.
+  /// Adapter id that currently owns equipmentId in the manager index (empty if
+  /// none). Does not take any adapter io_mutex.
+  std::string ownerAdapterId(const std::string &equipmentId) const;
+
+  /// Non-owning equipment lookup via ownership index; locks only the owning
+  /// adapter's io_mutex (never a foreign adapter's).
   Equipment *equipmentById(const std::string &equipmentId);
   std::vector<Equipment *> allEquipment();
 
@@ -103,8 +111,12 @@ private:
     std::shared_ptr<std::mutex> io_mutex;
   };
 
-  AdapterManagerResult checkEquipmentIdCollisions(
-      IndustrialAdapter &candidate) const;
+  /// Claim equipment ids for adapterId in equipment_owner_. Caller holds mutex_.
+  AdapterManagerResult claimEquipmentOwnershipLocked(
+      const std::string &adapterId, const std::vector<std::string> &equipmentIds);
+  /// Drop all ownership rows for adapterId. Caller holds mutex_.
+  void clearEquipmentOwnershipLocked(const std::string &adapterId);
+
   Entry *findEntry(const std::string &adapterId);
   const Entry *findEntry(const std::string &adapterId) const;
   Handle handleFor(const std::string &adapterId);
@@ -112,6 +124,9 @@ private:
 
   mutable std::mutex mutex_;
   std::unordered_map<std::string, Entry> adapters_;
+  /// equipmentId → adapterId. Updated only under mutex_ at connect/disconnect
+  /// boundaries — never requires a peer adapter's io_mutex.
+  std::unordered_map<std::string, std::string> equipment_owner_;
 };
 
 }  // namespace icp
