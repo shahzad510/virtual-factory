@@ -934,13 +934,11 @@ EquipmentCommandResult ApplicationService::executeEquipmentCommand(
     return out;
   }
 
-  IndustrialAdapter *owner = nullptr;
-  this->manager_.forEachAdapter([&](IndustrialAdapter &adapter) {
-    if (owner == nullptr && adapter.equipmentById(equipmentId) != nullptr)
-    {
-      owner = &adapter;
-    }
-  });
+  // Ownership via manager index — never walk/lock foreign adapter io_mutexes
+  // (a blackhole OPC UA connect must not stall mock commands).
+  const std::string ownerId = this->manager_.ownerAdapterId(equipmentId);
+  IndustrialAdapter *owner =
+      ownerId.empty() ? nullptr : this->manager_.adapter(ownerId);
   if (owner == nullptr)
   {
     out.message = "no adapter owns equipment '" + equipmentId + "'";

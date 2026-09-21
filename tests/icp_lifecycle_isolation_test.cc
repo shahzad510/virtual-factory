@@ -251,6 +251,26 @@ int main()
   expect(waitForRecoveryInFlight(service, "opcua-bh", kOpcTimeoutMs),
          "OPC UA recovery is in-flight before explicit Connect");
 
+  // Mock must reach CONNECTED without joining the OPC UA io_mutex. Measure from
+  // this point so the wait is not diluted by later HTTP setup.
+  const auto tMock0 = std::chrono::steady_clock::now();
+  const bool mockConnectedEarly =
+      waitForAdapterState(service, "mock-bh", "CONNECTED", 500);
+  const auto mockEarlyMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - tMock0)
+                               .count();
+  expect(mockConnectedEarly,
+         "mock CONNECTED independently while OPC UA blackhole connect is in-flight");
+  expect(mockEarlyMs < 500,
+         "mock CONNECTED without waiting on OPC UA io_mutex ("
+             + std::to_string(mockEarlyMs) + "ms)");
+  {
+    auto opcuaView = service.adapter("opcua-bh");
+    expect(opcuaView.has_value() && opcuaView->connectionState != "FAULTED"
+               && opcuaView->connectionState != "CONNECTED",
+           "OPC UA still in-flight when mock becomes CONNECTED");
+  }
+
   const int port = 19000 + (::getpid() % 1000);
   HttpApiServer api(service, "", "127.0.0.1", port);
   expect(api.start(), "HTTP API starts");
@@ -322,7 +342,7 @@ int main()
     }
   });
 
-  // Mock must connect without waiting for the OPC UA timeout window.
+  // Mock must remain CONNECTED without having waited for the OPC UA timeout.
   const bool mockConnected =
       waitForAdapterState(service, "mock-bh", "CONNECTED", kOpcTimeoutMs - 400);
   const auto mockMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -334,8 +354,21 @@ int main()
              + "ms)");
 
   // Mock remains usable (command) while OPC UA is still connecting/faulting.
+  // Command ownership must not block on the OPC UA adapter's io_mutex.
+  {
+    auto opcuaView = service.adapter("opcua-bh");
+    expect(opcuaView.has_value() && opcuaView->connectionState != "CONNECTED",
+           "OPC UA blackhole still not CONNECTED before mock command");
+  }
+  const auto tCmd0 = std::chrono::steady_clock::now();
   auto cmd = service.executeEquipmentCommand("EQ-MOCK-BH", "start", 0.0);
+  const auto cmdMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - tCmd0)
+                         .count();
   expect(cmd.ok, "mock command usable during OPC UA lifecycle: " + cmd.message);
+  expect(cmdMs < 500,
+         "mock command does not wait on OPC UA io_mutex ("
+             + std::to_string(cmdMs) + "ms)");
 
   // Polling of mock continues: telemetry should refresh while OPC UA blocked.
   double speedBefore = -1.0;

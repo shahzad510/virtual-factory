@@ -51,6 +51,7 @@ AdapterManagerResult AdapterManager::removeAdapter(const std::string &adapterId)
     doomed.adapter = std::move(it->second.adapter);
     doomed.io_mutex = std::move(it->second.io_mutex);
     this->adapters_.erase(it);
+    this->clearEquipmentOwnershipLocked(adapterId);
   }
 
   if (doomed.adapter == nullptr)
@@ -81,46 +82,11 @@ AdapterManagerResult AdapterManager::connectAdapter(const std::string &adapterId
     return {false, "adapter not found: " + adapterId};
   }
 
+  std::vector<std::string> candidateIds;
   {
     std::lock_guard<std::mutex> io(*handle.io_mutex);
     if (handle.adapter->connectionState() == ConnectionState::Connected)
     {
-      return {true, "already connected"};
-    }
-
-    // Protocol I/O without manager lock — OPC UA connect must not block HTTP/UI.
-    // Per-adapter io_mutex serializes against poll/disconnect on this adapter.
-    if (!handle.adapter->connect())
-    {
-      return {false, handle.adapter->lastError().empty()
-                         ? "connect failed"
-                         : handle.adapter->lastError()};
-    }
-  }
-
-  bool removed = false;
-  {
-    std::lock_guard<std::mutex> lock(this->mutex_);
-    Entry *entry = this->findEntry(adapterId);
-    if (entry == nullptr || entry->adapter.get() != handle.adapter.get())
-    {
-      removed = true;
-    }
-  }
-  if (removed)
-  {
-    std::lock_guard<std::mutex> io(*handle.io_mutex);
-    handle.adapter->disconnect();
-    return {false, "adapter removed during connect: " + adapterId};
-  }
-
-  // Collision check without the manager map lock held across equipment walks.
-  // Serialize each peer via its I/O mutex so poll cannot mutate bound_ mid-check.
-  AdapterManagerResult collision{true, "ok"};
-  {
-    std::vector<std::string> candidateIds;
-    {
-      std::lock_guard<std::mutex> io(*handle.io_mutex);
       for (Equipment *equipment : handle.adapter->equipment())
       {
         if (equipment != nullptr)
@@ -129,41 +95,57 @@ AdapterManagerResult AdapterManager::connectAdapter(const std::string &adapterId
         }
       }
     }
-
-    const std::vector<Handle> peers = this->snapshotHandles();
-    for (const std::string &eqId : candidateIds)
+    else
     {
-      for (const Handle &peer : peers)
+      // Protocol I/O without manager lock — OPC UA connect must not block
+      // HTTP/UI. Per-adapter io_mutex serializes against poll/disconnect on
+      // this adapter only.
+      if (!handle.adapter->connect())
       {
-        if (peer.adapter == nullptr || peer.io_mutex == nullptr)
-        {
-          continue;
-        }
-        if (peer.adapter.get() == handle.adapter.get())
-        {
-          continue;
-        }
-        std::lock_guard<std::mutex> io(*peer.io_mutex);
-        if (peer.adapter->equipmentById(eqId) != nullptr)
-        {
-          collision = {false,
-                       "equipment id collision: " + eqId + " also on adapter " +
-                           peer.adapter->id()};
-          break;
-        }
+        return {false, handle.adapter->lastError().empty()
+                           ? "connect failed"
+                           : handle.adapter->lastError()};
       }
-      if (!collision.ok)
+      for (Equipment *equipment : handle.adapter->equipment())
       {
-        break;
+        if (equipment != nullptr)
+        {
+          candidateIds.push_back(equipment->id());
+        }
       }
     }
   }
 
-  if (!collision.ok)
+  bool removed = false;
+  AdapterManagerResult claim{true, "ok"};
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    Entry *entry = this->findEntry(adapterId);
+    if (entry == nullptr || entry->adapter.get() != handle.adapter.get())
+    {
+      removed = true;
+    }
+    else
+    {
+      // Ownership / collision via manager index — never wait on a peer io_mutex.
+      claim = this->claimEquipmentOwnershipLocked(adapterId, candidateIds);
+    }
+  }
+  if (removed)
   {
     std::lock_guard<std::mutex> io(*handle.io_mutex);
     handle.adapter->disconnect();
-    return collision;
+    return {false, "adapter removed during connect: " + adapterId};
+  }
+  if (!claim.ok)
+  {
+    std::lock_guard<std::mutex> io(*handle.io_mutex);
+    handle.adapter->disconnect();
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      this->clearEquipmentOwnershipLocked(adapterId);
+    }
+    return claim;
   }
 
   return {true, "connected"};
@@ -177,6 +159,10 @@ AdapterManagerResult AdapterManager::disconnectAdapter(
   {
     return {false, "adapter not found: " + adapterId};
   }
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    this->clearEquipmentOwnershipLocked(adapterId);
+  }
   std::lock_guard<std::mutex> io(*handle.io_mutex);
   handle.adapter->disconnect();
   return {true, "disconnected"};
@@ -185,6 +171,10 @@ AdapterManagerResult AdapterManager::disconnectAdapter(
 void AdapterManager::disconnectAll()
 {
   const std::vector<Handle> handles = this->snapshotHandles();
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    this->equipment_owner_.clear();
+  }
   for (const Handle &handle : handles)
   {
     if (handle.adapter == nullptr || handle.io_mutex == nullptr)
@@ -222,30 +212,71 @@ std::size_t AdapterManager::adapterCount() const
   return this->adapters_.size();
 }
 
+std::string AdapterManager::ownerAdapterId(const std::string &equipmentId) const
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  const auto it = this->equipment_owner_.find(equipmentId);
+  if (it == this->equipment_owner_.end())
+  {
+    return {};
+  }
+  return it->second;
+}
+
 Equipment *AdapterManager::equipmentById(const std::string &equipmentId)
 {
-  const std::vector<Handle> handles = this->snapshotHandles();
-  for (const Handle &handle : handles)
+  Handle handle;
   {
-    if (handle.adapter == nullptr || handle.io_mutex == nullptr)
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    const auto it = this->equipment_owner_.find(equipmentId);
+    if (it == this->equipment_owner_.end())
     {
-      continue;
+      return nullptr;
     }
-    std::lock_guard<std::mutex> io(*handle.io_mutex);
-    Equipment *equipment = handle.adapter->equipmentById(equipmentId);
-    if (equipment != nullptr)
+    Entry *entry = this->findEntry(it->second);
+    if (entry == nullptr || entry->adapter == nullptr)
     {
-      return equipment;
+      return nullptr;
     }
+    handle = {entry->adapter, entry->io_mutex};
   }
-  return nullptr;
+  if (handle.adapter == nullptr || handle.io_mutex == nullptr)
+  {
+    return nullptr;
+  }
+  // Only the owning adapter's io_mutex — never a foreign adapter's.
+  std::lock_guard<std::mutex> io(*handle.io_mutex);
+  return handle.adapter->equipmentById(equipmentId);
 }
 
 std::vector<Equipment *> AdapterManager::allEquipment()
 {
-  const std::vector<Handle> handles = this->snapshotHandles();
+  std::vector<Handle> owners;
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    std::unordered_map<std::string, Handle> byAdapter;
+    for (const auto &owned : this->equipment_owner_)
+    {
+      if (byAdapter.count(owned.second) != 0)
+      {
+        continue;
+      }
+      Entry *entry = this->findEntry(owned.second);
+      if (entry == nullptr || entry->adapter == nullptr)
+      {
+        continue;
+      }
+      byAdapter.emplace(owned.second, Handle{entry->adapter, entry->io_mutex});
+    }
+    owners.reserve(byAdapter.size());
+    for (auto &entry : byAdapter)
+    {
+      owners.push_back(std::move(entry.second));
+    }
+  }
+
   std::vector<Equipment *> out;
-  for (const Handle &handle : handles)
+  for (const Handle &handle : owners)
   {
     if (handle.adapter == nullptr || handle.io_mutex == nullptr)
     {
@@ -343,6 +374,53 @@ void AdapterManager::forEachAdapterNonBlocking(
   }
 }
 
+AdapterManagerResult AdapterManager::claimEquipmentOwnershipLocked(
+    const std::string &adapterId, const std::vector<std::string> &equipmentIds)
+{
+  for (const std::string &eqId : equipmentIds)
+  {
+    if (eqId.empty())
+    {
+      continue;
+    }
+    const auto it = this->equipment_owner_.find(eqId);
+    if (it != this->equipment_owner_.end() && it->second != adapterId)
+    {
+      return {false,
+              "equipment id collision: " + eqId + " also on adapter " +
+                  it->second};
+    }
+  }
+  // Drop prior claims for this adapter, then install the current set. Reconnect
+  // / already-connected refresh must not leave stale equipment ids behind.
+  this->clearEquipmentOwnershipLocked(adapterId);
+  for (const std::string &eqId : equipmentIds)
+  {
+    if (eqId.empty())
+    {
+      continue;
+    }
+    this->equipment_owner_[eqId] = adapterId;
+  }
+  return {true, "ok"};
+}
+
+void AdapterManager::clearEquipmentOwnershipLocked(const std::string &adapterId)
+{
+  for (auto it = this->equipment_owner_.begin();
+       it != this->equipment_owner_.end();)
+  {
+    if (it->second == adapterId)
+    {
+      it = this->equipment_owner_.erase(it);
+    }
+    else
+    {
+      ++it;
+    }
+  }
+}
+
 AdapterManager::Handle AdapterManager::handleFor(const std::string &adapterId)
 {
   std::lock_guard<std::mutex> lock(this->mutex_);
@@ -367,39 +445,6 @@ std::vector<AdapterManager::Handle> AdapterManager::snapshotHandles()
     }
   }
   return out;
-}
-
-AdapterManagerResult AdapterManager::checkEquipmentIdCollisions(
-    IndustrialAdapter &candidate) const
-{
-  // Caller must hold mutex_ (connect post-check). Only inspects in-memory
-  // equipment lists; protocol I/O is not performed here.
-  for (Equipment *equipment : candidate.equipment())
-  {
-    if (equipment == nullptr)
-    {
-      continue;
-    }
-    const std::string &eqId = equipment->id();
-    for (const auto &entry : this->adapters_)
-    {
-      if (entry.second.adapter.get() == &candidate)
-      {
-        continue;
-      }
-      if (entry.second.adapter == nullptr)
-      {
-        continue;
-      }
-      if (entry.second.adapter->equipmentById(eqId) != nullptr)
-      {
-        return {false,
-                "equipment id collision: " + eqId + " also on adapter " +
-                    entry.second.adapter->id()};
-      }
-    }
-  }
-  return {true, "ok"};
 }
 
 AdapterManager::Entry *AdapterManager::findEntry(const std::string &adapterId)

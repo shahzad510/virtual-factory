@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — cross-adapter io_mutex isolation (equipment ownership index)
+
+- `AdapterManager` keeps a manager-level `equipmentId → adapterId` index under `mutex_`
+- `connectAdapter` collision/claim uses the index only — never blocks on a peer `io_mutex`
+- `equipmentById` / command ownership lock only the owning adapter's `io_mutex`
+- Strengthened `icp_lifecycle_isolation_test`: mock CONNECTED + command while OPC UA blackhole connect is in-flight, with sub-500ms bounds
+
 ### Fixed — Connect/Reconnect must not remove/recreate under io_mutex
 
 - Explicit Connect/Reconnect use `ensureRuntimeAdapterPresent()` (create-if-missing only)
