@@ -1,6 +1,7 @@
 #ifndef VIRTUAL_FACTORY_ICP_ADAPTER_MANAGER_HH_
 #define VIRTUAL_FACTORY_ICP_ADAPTER_MANAGER_HH_
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,18 @@ struct AdapterManagerResult
   bool accepted{false};
 };
 
+/// Outcome of a managed equipment command (protocol I/O under owner io_mutex).
+struct ManagedEquipmentCommandResult
+{
+  /// False when equipment is missing, extracted, or not in the ownership index.
+  bool equipmentFound{false};
+  /// False when the owning adapter is present but not Connected.
+  bool adapterConnected{false};
+  std::string adapterId;
+  std::string message;
+  CommandResult command;
+};
+
 /// Owns IndustrialAdapter instances for the ICP runtime (ICP-1A).
 ///
 /// One adapter = one industrial source/session (ADR-026 family). Not a
@@ -34,11 +47,12 @@ struct AdapterManagerResult
 /// Ownership: shared_ptr so connect/poll/disconnect I/O can run without holding
 /// the manager mutex (prevents HTTP/scheduler deadlocks on slow OPC UA peers).
 /// Each adapter also has a dedicated I/O mutex so poll cannot race connect /
-/// disconnect / remove on the same protocol client.
+/// disconnect / remove / command on the same protocol client.
 ///
 /// Equipment id collisions and cross-adapter ownership lookups use a
 /// manager-level index (guarded by mutex_), never another adapter's io_mutex.
-/// Equipment* from adapters remain non-owning views.
+/// Equipment* from adapters remain non-owning views — command I/O must use
+/// executeEquipmentCommand() so execute() runs while holding the owner lock.
 class AdapterManager
 {
 public:
@@ -86,8 +100,20 @@ public:
 
   /// Non-owning equipment lookup via ownership index; locks only the owning
   /// adapter's io_mutex (never a foreign adapter's).
+  /// Do not call Equipment::execute() on the returned pointer after this
+  /// returns — use executeEquipmentCommand() for protocol command I/O.
   Equipment *equipmentById(const std::string &equipmentId);
   std::vector<Equipment *> allEquipment();
+
+  /// Resolve ownership, lock ONLY the owning adapter's io_mutex, execute the
+  /// command, then optionally refresh cache/state via underLockAfterExecute
+  /// while still holding that same io_mutex. Never takes a foreign io_mutex
+  /// and never holds mutex_ during protocol I/O.
+  ManagedEquipmentCommandResult executeEquipmentCommand(
+      const std::string &equipmentId,
+      const std::string &command,
+      double parameter,
+      const std::function<void(IndustrialAdapter &)> &underLockAfterExecute = {});
 
   /// Snapshot of registered adapter ids for the poller (thread-safe copy).
   std::vector<std::string> snapshotAdapterIds() const;
@@ -117,12 +143,16 @@ private:
     /// Shared so poll/connect/disconnect/remove can serialize the same adapter
     /// after the manager map lock is released.
     std::shared_ptr<std::mutex> io_mutex;
+    /// Cleared on extract/remove so command I/O can detect unenrollment without
+    /// taking mutex_ while holding io_mutex (avoids deadlock with disconnect).
+    std::shared_ptr<std::atomic<bool>> enrolled;
   };
 
   struct Handle
   {
     std::shared_ptr<IndustrialAdapter> adapter;
     std::shared_ptr<std::mutex> io_mutex;
+    std::shared_ptr<std::atomic<bool>> enrolled;
   };
 
   /// Claim equipment ids for adapterId in equipment_owner_. Caller holds mutex_.
