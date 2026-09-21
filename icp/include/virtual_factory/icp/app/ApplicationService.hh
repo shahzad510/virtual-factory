@@ -7,6 +7,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <atomic>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -429,11 +430,20 @@ private:
   std::string history_database_path_;
   mutable std::unique_ptr<AsyncHistoryWriter> history_writer_;
   ConfigurationCatalog catalog_;
-  AdapterManager manager_;
-  LiveStateCache cache_;
-  LifecycleExecutor lifecycle_;
+  /// Shared so abandoned lifecycle/disconnect threads can outlive stop() without
+  /// use-after-free on protocol I/O (P2 shutdown isolation).
+  std::shared_ptr<AdapterManager> manager_{std::make_shared<AdapterManager>()};
+  std::shared_ptr<LiveStateCache> cache_{std::make_shared<LiveStateCache>()};
+  std::shared_ptr<LifecycleExecutor> lifecycle_{
+      std::make_shared<LifecycleExecutor>()};
+  /// Shared with in-flight lifecycle jobs so abandoned workers can skip
+  /// ApplicationService diagnostics after shutdown without touching `this`.
+  std::shared_ptr<std::atomic<bool>> shutdown_flag_{
+      std::make_shared<std::atomic<bool>>(false)};
   std::unique_ptr<PollScheduler> scheduler_;
   bool running_{false};
+  /// Intentional process-lifetime pins for abandoned shutdown I/O.
+  std::vector<std::shared_ptr<void>> shutdown_keep_alives_;
   bool configuration_loaded_{false};
   std::string configuration_load_state_;
   std::deque<ApplicationEvent> events_;

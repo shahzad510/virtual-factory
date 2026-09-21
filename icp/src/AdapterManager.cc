@@ -1,5 +1,6 @@
 #include <virtual_factory/icp/AdapterManager.hh>
 
+#include <thread>
 #include <utility>
 
 namespace virtual_factory
@@ -9,7 +10,8 @@ namespace icp
 
 AdapterManager::~AdapterManager()
 {
-  this->disconnectAll();
+  // Destructor must not hang the process on a stuck protocol disconnect.
+  (void)this->disconnectAllBounded(std::chrono::seconds(5), nullptr);
 }
 
 AdapterManagerResult AdapterManager::addAdapter(
@@ -183,6 +185,8 @@ AdapterManagerResult AdapterManager::disconnectAdapter(
 
 void AdapterManager::disconnectAll()
 {
+  // Legacy helper: disconnect in place, leave adapters enrolled in the map.
+  // Application shutdown uses disconnectAllBounded() which clears the map.
   const std::vector<Handle> handles = this->snapshotHandles();
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
@@ -195,8 +199,128 @@ void AdapterManager::disconnectAll()
       continue;
     }
     std::lock_guard<std::mutex> io(*handle.io_mutex);
-    handle.adapter->disconnect();
+    if (handle.adapter->connectionState() != ConnectionState::Disconnected)
+    {
+      handle.adapter->disconnect();
+    }
   }
+}
+
+std::vector<AdapterManager::ExtractedAdapter> AdapterManager::extractAllAdapters()
+{
+  std::vector<ExtractedAdapter> out;
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  out.reserve(this->adapters_.size());
+  for (auto it = this->adapters_.begin(); it != this->adapters_.end();)
+  {
+    ExtractedAdapter extracted;
+    extracted.adapter = std::move(it->second.adapter);
+    extracted.io_mutex = std::move(it->second.io_mutex);
+    if (it->second.enrolled)
+    {
+      it->second.enrolled->store(false);
+    }
+    out.push_back(std::move(extracted));
+    it = this->adapters_.erase(it);
+  }
+  this->equipment_owner_.clear();
+  return out;
+}
+
+std::size_t AdapterManager::disconnectAllBounded(
+    std::chrono::milliseconds grace,
+    std::vector<std::shared_ptr<IndustrialAdapter>> *keepAliveOut)
+{
+  const std::vector<Handle> handles = this->snapshotHandles();
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    this->equipment_owner_.clear();
+    for (auto &entry : this->adapters_)
+    {
+      if (entry.second.enrolled)
+      {
+        entry.second.enrolled->store(false);
+      }
+    }
+  }
+
+  if (handles.empty())
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    this->adapters_.clear();
+    return 0;
+  }
+
+  auto remaining =
+      std::make_shared<std::atomic<std::size_t>>(handles.size());
+  auto finished =
+      std::make_shared<std::vector<std::uint8_t>>(handles.size(), 0);
+
+  std::vector<std::thread> threads;
+  threads.reserve(handles.size());
+  for (std::size_t i = 0; i < handles.size(); ++i)
+  {
+    threads.emplace_back([handles, remaining, finished, i]() {
+      const Handle &handle = handles[i];
+      if (handle.adapter != nullptr && handle.io_mutex != nullptr)
+      {
+        std::lock_guard<std::mutex> io(*handle.io_mutex);
+        if (handle.adapter->connectionState() != ConnectionState::Disconnected)
+        {
+          handle.adapter->disconnect();
+        }
+      }
+      (*finished)[i] = 1;
+      remaining->fetch_sub(1);
+    });
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + grace;
+  while (remaining->load() != 0
+         && std::chrono::steady_clock::now() < deadline)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  std::size_t unfinished = remaining->load();
+  if (keepAliveOut != nullptr)
+  {
+    for (std::size_t i = 0; i < handles.size(); ++i)
+    {
+      if ((*finished)[i] == 0 && handles[i].adapter != nullptr)
+      {
+        keepAliveOut->push_back(handles[i].adapter);
+      }
+    }
+  }
+
+  for (std::thread &thread : threads)
+  {
+    if (!thread.joinable())
+    {
+      continue;
+    }
+    if (unfinished == 0)
+    {
+      thread.join();
+    }
+    else
+    {
+      // Detach unfinished (and finished-but-not-joined) workers. Adapter
+      // shared_ptrs in keepAliveOut / Handle keep protocol objects alive.
+      thread.detach();
+    }
+  }
+
+  // Drop enrolled adapters from the map so AS destruction does not reconnect
+  // ownership — shared_ptrs may still live in keepAlive / abandoned I/O.
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    this->adapters_.clear();
+    this->equipment_owner_.clear();
+  }
+
+  return unfinished;
 }
 
 IndustrialAdapter *AdapterManager::adapter(const std::string &adapterId)

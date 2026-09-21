@@ -8,7 +8,21 @@ namespace virtual_factory
 namespace icp
 {
 
-LifecycleExecutor::LifecycleExecutor() = default;
+struct LifecycleExecutor::State
+{
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool running{false};
+  bool stopping{false};
+  Handler handler;
+  std::unordered_map<std::string, AdapterSlot> slots;
+  std::size_t inFlightCount{0};
+};
+
+LifecycleExecutor::LifecycleExecutor()
+    : state_(std::make_shared<State>())
+{
+}
 
 LifecycleExecutor::~LifecycleExecutor()
 {
@@ -17,14 +31,14 @@ LifecycleExecutor::~LifecycleExecutor()
 
 void LifecycleExecutor::setHandler(Handler handler)
 {
-  std::lock_guard<std::mutex> lock(this->mutex_);
-  this->handler_ = std::move(handler);
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  this->state_->handler = std::move(handler);
 }
 
 void LifecycleExecutor::start(std::size_t workerCount)
 {
-  std::lock_guard<std::mutex> lock(this->mutex_);
-  if (this->running_)
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  if (this->state_->running)
   {
     return;
   }
@@ -32,40 +46,122 @@ void LifecycleExecutor::start(std::size_t workerCount)
   {
     workerCount = 1;
   }
-  this->stopping_ = false;
-  this->running_ = true;
+  this->state_->stopping = false;
+  this->state_->running = true;
   this->workers_.reserve(workerCount);
   for (std::size_t i = 0; i < workerCount; ++i)
   {
-    this->workers_.emplace_back([this]() { this->workerMain(); });
+    // Capture state_ by shared_ptr so abandoned/detached workers never wait on
+    // a destroyed condition_variable (pthread_cond_destroy would hang).
+    std::shared_ptr<State> state = this->state_;
+    this->workers_.emplace_back([state]() { workerMain(state); });
   }
 }
 
-void LifecycleExecutor::stop()
+void LifecycleExecutor::runTeardown(const LifecycleJob &job)
 {
+  if (job.teardownAdapter == nullptr)
   {
-    std::lock_guard<std::mutex> lock(this->mutex_);
-    if (!this->running_ && this->workers_.empty())
+    return;
+  }
+  if (job.teardownIoMutex != nullptr)
+  {
+    std::lock_guard<std::mutex> io(*job.teardownIoMutex);
+    if (job.teardownAdapter->connectionState() != ConnectionState::Disconnected)
+    {
+      job.teardownAdapter->disconnect();
+    }
+  }
+  else if (job.teardownAdapter->connectionState()
+           != ConnectionState::Disconnected)
+  {
+    job.teardownAdapter->disconnect();
+  }
+}
+
+void LifecycleExecutor::stop(
+    std::chrono::milliseconds grace, std::shared_ptr<void> keepAlive)
+{
+  std::shared_ptr<State> state = this->state_;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (!state->running && this->workers_.empty())
     {
       return;
     }
-    this->stopping_ = true;
-    this->running_ = false;
-    // Drop queued connect/disconnect/reconnect — shutdown must not start new
-    // connects. Preserve Teardown so extracted adapters still disconnect.
-    for (auto &entry : this->slots_)
+    state->stopping = true;
+    state->running = false;
+    for (auto &entry : state->slots)
     {
       clearInvalidatablePendingLocked(entry.second);
     }
   }
-  this->cv_.notify_all();
+  state->cv.notify_all();
 
-  // Bound drain: in-flight industrial I/O should finish via adapter timeouts.
+  if (grace.count() < 0)
   {
-    std::unique_lock<std::mutex> lock(this->mutex_);
-    this->cv_.wait_for(lock, std::chrono::seconds(30), [this]() {
-      return this->inFlightCount_ == 0;
+    grace = std::chrono::milliseconds{0};
+  }
+
+  {
+    std::unique_lock<std::mutex> lock(state->mutex);
+    state->cv.wait_for(lock, grace, [&]() {
+      if (state->inFlightCount != 0)
+      {
+        return false;
+      }
+      for (const auto &entry : state->slots)
+      {
+        if (!entry.second.pending.empty())
+        {
+          return false;
+        }
+      }
+      return true;
     });
+  }
+
+  bool busy = false;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    busy = state->inFlightCount != 0;
+    if (!busy)
+    {
+      for (const auto &entry : state->slots)
+      {
+        if (!entry.second.pending.empty())
+        {
+          busy = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (busy)
+  {
+    auto cohort = std::make_shared<AbandonedCohort>();
+    cohort->workers = std::move(this->workers_);
+    cohort->keepAlive = std::move(keepAlive);
+    // Keep State alive for detached workers still in protocol I/O or cv.wait.
+    cohort->state = state;
+    this->workers_.clear();
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      this->abandoned_ = cohort;
+      state->stopping = false;
+    }
+    for (std::thread &worker : cohort->workers)
+    {
+      if (worker.joinable())
+      {
+        worker.detach();
+      }
+    }
+    // Replace state so a subsequent start()/dtor uses a fresh control block and
+    // never destroys the abandoned workers' condition_variable.
+    this->state_ = std::make_shared<State>();
+    return;
   }
 
   for (std::thread &worker : this->workers_)
@@ -77,10 +173,10 @@ void LifecycleExecutor::stop()
   }
   this->workers_.clear();
   {
-    std::lock_guard<std::mutex> lock(this->mutex_);
-    this->stopping_ = false;
-    this->inFlightCount_ = 0;
-    for (auto &entry : this->slots_)
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->stopping = false;
+    state->inFlightCount = 0;
+    for (auto &entry : state->slots)
     {
       entry.second.inFlight = false;
       entry.second.pending.clear();
@@ -88,10 +184,18 @@ void LifecycleExecutor::stop()
   }
 }
 
+bool LifecycleExecutor::hasAbandonedWorkers() const
+{
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  // After abandon, state_ is replaced; abandoned_ lives on the old path via
+  // the cohort pointer stored before replacement — keep a side flag.
+  return this->abandoned_ != nullptr;
+}
+
 bool LifecycleExecutor::running() const
 {
-  std::lock_guard<std::mutex> lock(this->mutex_);
-  return this->running_;
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  return this->state_->running;
 }
 
 void LifecycleExecutor::clearInvalidatablePendingLocked(AdapterSlot &slot)
@@ -109,21 +213,18 @@ void LifecycleExecutor::clearInvalidatablePendingLocked(AdapterSlot &slot)
 
 std::uint64_t LifecycleExecutor::bumpGeneration(const std::string &adapterId)
 {
-  std::lock_guard<std::mutex> lock(this->mutex_);
-  AdapterSlot &slot = this->slots_[adapterId];
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  AdapterSlot &slot = this->state_->slots[adapterId];
   ++slot.generation;
-  // Drop queued connect/disconnect/reconnect; in-flight work checks generation
-  // on exit paths in ApplicationService. Preserve Teardown — extracted adapters
-  // must still disconnect under their io_mutex before destruction.
   clearInvalidatablePendingLocked(slot);
   return slot.generation;
 }
 
 std::uint64_t LifecycleExecutor::generation(const std::string &adapterId) const
 {
-  std::lock_guard<std::mutex> lock(this->mutex_);
-  const auto it = this->slots_.find(adapterId);
-  if (it == this->slots_.end())
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  const auto it = this->state_->slots.find(adapterId);
+  if (it == this->state_->slots.end())
   {
     return 0;
   }
@@ -152,8 +253,6 @@ bool LifecycleExecutor::shouldCoalesceLocked(
     {
       return existingOp == LifecycleOp::Reconnect;
     }
-    // Connect and RecoveryConnect are interchangeable for coalescing: both
-    // perform the same connect I/O for this generation.
     if (isConnectStyle(job.op))
     {
       return isConnectStyle(existingOp);
@@ -178,9 +277,9 @@ bool LifecycleExecutor::shouldCoalesceLocked(
 bool LifecycleExecutor::hasInFlightOrPending(
     const std::string &adapterId, LifecycleOp op) const
 {
-  std::lock_guard<std::mutex> lock(this->mutex_);
-  const auto it = this->slots_.find(adapterId);
-  if (it == this->slots_.end())
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  const auto it = this->state_->slots.find(adapterId);
+  if (it == this->state_->slots.end())
   {
     return false;
   }
@@ -206,37 +305,35 @@ bool LifecycleExecutor::enqueue(LifecycleJob job)
     return false;
   }
   {
-    std::lock_guard<std::mutex> lock(this->mutex_);
-    if (!this->running_ || this->stopping_)
+    std::lock_guard<std::mutex> lock(this->state_->mutex);
+    if (!this->state_->running || this->state_->stopping)
     {
       return false;
     }
-    AdapterSlot &slot = this->slots_[job.adapterId];
-    // Teardown is not generation-gated: it owns an already-extracted instance.
+    AdapterSlot &slot = this->state_->slots[job.adapterId];
     if (job.op != LifecycleOp::Teardown && job.generation != slot.generation)
     {
       return false;
     }
     if (this->shouldCoalesceLocked(slot, job))
     {
-      return true;  // accepted / no-op duplicate
+      return true;
     }
     slot.pending.push_back(std::move(job));
   }
-  this->cv_.notify_one();
+  this->state_->cv.notify_one();
   return true;
 }
 
-bool LifecycleExecutor::takeNextJobLocked(LifecycleJob *out)
+bool LifecycleExecutor::takeNextJobLocked(State &state, LifecycleJob *out)
 {
-  for (auto &entry : this->slots_)
+  for (auto &entry : state.slots)
   {
     AdapterSlot &slot = entry.second;
     if (slot.inFlight || slot.pending.empty())
     {
       continue;
     }
-    // Drop stale non-Teardown jobs at the front. Teardown always runs.
     while (!slot.pending.empty()
            && slot.pending.front().op != LifecycleOp::Teardown
            && slot.pending.front().generation != slot.generation)
@@ -252,56 +349,55 @@ bool LifecycleExecutor::takeNextJobLocked(LifecycleJob *out)
     slot.inFlight = true;
     slot.inFlightOp = out->op;
     slot.inFlightGeneration = out->generation;
-    ++this->inFlightCount_;
+    ++state.inFlightCount;
     return true;
   }
   return false;
 }
 
-void LifecycleExecutor::completeJob(const std::string &adapterId)
+void LifecycleExecutor::completeJob(State &state, const std::string &adapterId)
 {
   bool notify = false;
   {
-    std::lock_guard<std::mutex> lock(this->mutex_);
-    AdapterSlot &slot = this->slots_[adapterId];
+    std::lock_guard<std::mutex> lock(state.mutex);
+    AdapterSlot &slot = state.slots[adapterId];
     slot.inFlight = false;
-    if (this->inFlightCount_ > 0)
+    if (state.inFlightCount > 0)
     {
-      --this->inFlightCount_;
+      --state.inFlightCount;
     }
-    notify = !slot.pending.empty() || this->stopping_;
+    notify = !slot.pending.empty() || state.stopping;
   }
   if (notify)
   {
-    this->cv_.notify_all();
+    state.cv.notify_all();
   }
 }
 
-void LifecycleExecutor::workerMain()
+void LifecycleExecutor::workerMain(const std::shared_ptr<State> &state)
 {
   for (;;)
   {
     LifecycleJob job;
     {
-      std::unique_lock<std::mutex> lock(this->mutex_);
-      this->cv_.wait(lock, [this]() {
-        if (this->stopping_ && this->inFlightCount_ == 0)
+      std::unique_lock<std::mutex> lock(state->mutex);
+      state->cv.wait(lock, [&]() {
+        if (state->stopping && state->inFlightCount == 0)
         {
-          // Check for any remaining assignable work before exit.
-          for (const auto &entry : this->slots_)
+          for (const auto &entry : state->slots)
           {
             if (!entry.second.inFlight && !entry.second.pending.empty())
             {
               return true;
             }
           }
-          return !this->running_;
+          return !state->running;
         }
-        if (!this->running_ && !this->stopping_)
+        if (!state->running && !state->stopping)
         {
           return true;
         }
-        for (const auto &entry : this->slots_)
+        for (const auto &entry : state->slots)
         {
           if (!entry.second.inFlight && !entry.second.pending.empty())
           {
@@ -311,13 +407,13 @@ void LifecycleExecutor::workerMain()
         return false;
       });
 
-      if (!this->running_ && !this->stopping_)
+      if (!state->running && !state->stopping)
       {
         return;
       }
-      if (!this->takeNextJobLocked(&job))
+      if (!takeNextJobLocked(*state, &job))
       {
-        if (this->stopping_ && this->inFlightCount_ == 0)
+        if (state->stopping && state->inFlightCount == 0)
         {
           return;
         }
@@ -325,16 +421,23 @@ void LifecycleExecutor::workerMain()
       }
     }
 
-    Handler handler;
+    if (job.op == LifecycleOp::Teardown)
     {
-      std::lock_guard<std::mutex> lock(this->mutex_);
-      handler = this->handler_;
+      runTeardown(job);
     }
-    if (handler)
+    else
     {
-      handler(job);
+      Handler handler;
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        handler = state->handler;
+      }
+      if (handler)
+      {
+        handler(job);
+      }
     }
-    this->completeJob(job.adapterId);
+    completeJob(*state, job.adapterId);
   }
 }
 

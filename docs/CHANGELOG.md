@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — P2 shutdown isolation (bounded stop / abandon hung I/O)
+
+- `LifecycleExecutor::stop(grace, keepAlive)`: drop pending Connect/Reconnect/Recovery/Disconnect; preserve Teardown; wait up to `kLifecycleShutdownGrace` (5s); detach remaining workers with shared_ptr keep-alive (no unbounded join)
+- Teardown executes inline in the executor (adapter shared_ptrs only)
+- `AdapterManager::disconnectAllBounded`: parallel per-adapter disconnect; abandon hung peers; retain adapter shared_ptrs
+- `ApplicationService::stop` pins manager/cache/lifecycle for abandoned work; sets shutdown flag so in-flight jobs skip diagnostics after protocol I/O
+- Regression: `icp_shutdown_isolation_test`
+
 ### Fixed — P1 protocol command isolation
 
 - `AdapterManager::executeEquipmentCommand` resolves ownership under `mutex_`, then runs `execute` + optional cache update under **only** the owning adapter's `io_mutex`
