@@ -32,10 +32,10 @@ ICP must be **commercially complete and useful without MES Core**.
 | Native PROFINET IO-Controller | ICP (optional Industrial SKU) | **IMPLEMENTED TO SOFTWARE BOUNDARY** / **HARDWARE VALIDATION PENDING** |
 | `Equipment` / normalized live state | ICP | **IMPLEMENTED** (contract lib) |
 | Adapter lifecycle (`AdapterManager`) | ICP | **IMPLEMENTED** (ICP-1A) |
-| Poll scheduling (`PollScheduler`) | ICP | **IMPLEMENTED** (ICP-1A) |
+| Poll scheduling (`PollScheduler` + `PollExecutor`) | ICP | **IMPLEMENTED** (ICP-1A; P3 parallel poll isolation) |
 | Connection management / reconnect policy | ICP | **PARTIAL** — explicit `connect()` only; **no** app-level auto-reconnect (ICP-1A) |
 | Configuration & equipment mappings | ICP | **IMPLEMENTED** (ICP-1B catalog + JSON store) |
-| Industrial data acquisition | ICP | **IMPLEMENTED** — adapters + PollScheduler |
+| Industrial data acquisition | ICP | **IMPLEMENTED** — adapters + PollScheduler dispatch + PollExecutor |
 | Command execution to field | ICP | **IMPLEMENTED** (via `Equipment::execute`) |
 | Connection health / diagnostics | ICP | **IMPLEMENTED** — `ConnectionState` / cache `stale` + `communicationState` |
 | Industrial event acquisition | ICP | **NOT IMPLEMENTED** (ICP-1D) |
@@ -123,7 +123,7 @@ ICP does **not** embed MES-specific assumptions in adapters or runtime.
 
 | Slice | Deliverable |
 | --- | --- |
-| **ICP-1A** | Runtime: AdapterManager, PollScheduler, LiveStateCache | **IMPLEMENTED** / **TESTED** |
+| **ICP-1A** | Runtime: AdapterManager, PollScheduler, PollExecutor, LiveStateCache | **IMPLEMENTED** / **TESTED** (P3 poll isolation) |
 | **ICP-1B** | Persistent configuration storage | **IMPLEMENTED** / **TESTED** |
 | **ICP-1C** | CIC v1 northbound API | **NOT STARTED** |
 | **ICP-1D** | Command gateway + industrial events | **NOT STARTED** |

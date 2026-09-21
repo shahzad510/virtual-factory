@@ -354,6 +354,20 @@ target_link_libraries(icp_shutdown_isolation_test PRIVATE virtual_factory_icp pt
 add_test(NAME icp_shutdown_isolation_test COMMAND icp_shutdown_isolation_test)
 set_tests_properties(icp_shutdown_isolation_test PROPERTIES TIMEOUT 90)
 
+add_executable(icp_poll_isolation_test
+    tests/icp_poll_isolation_test.cc
+)
+target_include_directories(icp_poll_isolation_test
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/cpp-httplib
+)
+if (_VF_NLOHMANN_FOR_ICP_API)
+  target_include_directories(icp_poll_isolation_test PRIVATE ${_VF_NLOHMANN_FOR_ICP_API})
+endif()
+target_link_libraries(icp_poll_isolation_test PRIVATE virtual_factory_icp pthread)
+add_test(NAME icp_poll_isolation_test COMMAND icp_poll_isolation_test)
+set_tests_properties(icp_poll_isolation_test PROPERTIES TIMEOUT 90)
+
 add_executable(icp_history_test
     tests/icp_history_test.cc
 )

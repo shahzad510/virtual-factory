@@ -19,6 +19,9 @@
 **ICP P1 command isolation:** **IMPLEMENTED** / **TESTED**. `AdapterManager::executeEquipmentCommand` resolves `equipment_owner_`, locks only the owning adapter's `io_mutex`, runs `Equipment::execute` + optional cache refresh under that lock, then releases. No unlock-then-execute race with poll/lifecycle. Cross-adapter commands remain parallel. `icp_command_isolation_test` covers same-adapter serialization and blackhole OPC UA peer independence.
 
 **ICP P2 shutdown isolation:** **IMPLEMENTED** / **TESTED**. `LifecycleExecutor::stop(grace)` drains then detaches hung workers with shared_ptr keep-alive (`kLifecycleShutdownGrace` = 5s). `disconnectAllBounded` disconnects adapters in parallel and abandons hung disconnects. Teardown runs inline in the executor (no ApplicationService). `icp_shutdown_isolation_test` proves bounded stop under blackhole OPC UA and intentionally hung adapters.
+
+**ICP P3 poll isolation:** **IMPLEMENTED** / **TESTED**. Dedicated `PollExecutor` (4 workers) polls adapters in parallel under owner `io_mutex` with per-adapter in-flight/pending coalesce. `PollScheduler` is tick/dispatch + independent ControlPlaneTick only. Enrolled atomic blocks stale cache publication after extract. Poll shutdown uses P2-shaped grace/abandon. `icp_poll_isolation_test` covers hung-peer isolation and bounded stop.
+
 ## 1. Project identity
 
 MES + SCADA + **modular manufacturing platform** (ICP + MES Core). Gazebo Sim 8 is a **simulation plant** used to develop and test the normalized equipment model.

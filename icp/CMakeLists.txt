@@ -19,6 +19,7 @@ endif()
 add_library(virtual_factory_icp STATIC
     src/LiveStateCache.cc
     src/AdapterManager.cc
+    src/PollExecutor.cc
     src/PollScheduler.cc
     src/LifecycleExecutor.cc
     src/AdapterFactory.cc
