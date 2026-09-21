@@ -34,6 +34,7 @@ AdapterManagerResult AdapterManager::addAdapter(
   Entry entry;
   entry.adapter = std::shared_ptr<IndustrialAdapter>(std::move(adapter));
   entry.io_mutex = std::make_shared<std::mutex>();
+  entry.enrolled = std::make_shared<std::atomic<bool>>(true);
   this->adapters_.emplace(id, std::move(entry));
   return {true, "added"};
 }
@@ -50,6 +51,12 @@ AdapterManager::ExtractedAdapter AdapterManager::extractAdapter(
   ExtractedAdapter out;
   out.adapter = std::move(it->second.adapter);
   out.io_mutex = std::move(it->second.io_mutex);
+  // Mark unenrolled before erase so in-flight command paths that already hold
+  // shared_ptr+io_mutex can refuse execute without taking mutex_ (lock order).
+  if (it->second.enrolled)
+  {
+    it->second.enrolled->store(false);
+  }
   this->adapters_.erase(it);
   // Release equipment ownership immediately so a rematerialized peer can claim
   // the same ids without racing the old instance's disconnect.
@@ -244,7 +251,7 @@ Equipment *AdapterManager::equipmentById(const std::string &equipmentId)
     {
       return nullptr;
     }
-    handle = {entry->adapter, entry->io_mutex};
+    handle = {entry->adapter, entry->io_mutex, entry->enrolled};
   }
   if (handle.adapter == nullptr || handle.io_mutex == nullptr)
   {
@@ -252,7 +259,80 @@ Equipment *AdapterManager::equipmentById(const std::string &equipmentId)
   }
   // Only the owning adapter's io_mutex — never a foreign adapter's.
   std::lock_guard<std::mutex> io(*handle.io_mutex);
+  if (handle.enrolled && !handle.enrolled->load())
+  {
+    return nullptr;
+  }
   return handle.adapter->equipmentById(equipmentId);
+}
+
+ManagedEquipmentCommandResult AdapterManager::executeEquipmentCommand(
+    const std::string &equipmentId,
+    const std::string &command,
+    double parameter,
+    const std::function<void(IndustrialAdapter &)> &underLockAfterExecute)
+{
+  ManagedEquipmentCommandResult out;
+
+  Handle handle;
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    const auto it = this->equipment_owner_.find(equipmentId);
+    if (it == this->equipment_owner_.end())
+    {
+      out.message =
+          "equipment '" + equipmentId + "' not found or not connected";
+      return out;
+    }
+    out.adapterId = it->second;
+    Entry *entry = this->findEntry(it->second);
+    if (entry == nullptr || entry->adapter == nullptr
+        || entry->io_mutex == nullptr)
+    {
+      out.message =
+          "equipment '" + equipmentId + "' not found or not connected";
+      return out;
+    }
+    handle = {entry->adapter, entry->io_mutex, entry->enrolled};
+  }
+
+  // Protocol I/O / equipment access under owner io_mutex only. Do not take
+  // mutex_ here — disconnectAdapter locks manager then io (would deadlock).
+  std::lock_guard<std::mutex> io(*handle.io_mutex);
+
+  if (handle.enrolled && !handle.enrolled->load())
+  {
+    out.message =
+        "equipment '" + equipmentId + "' not found or not connected";
+    return out;
+  }
+
+  out.equipmentFound = true;
+  out.adapterId = handle.adapter->id();
+
+  if (handle.adapter->connectionState() != ConnectionState::Connected)
+  {
+    out.message = "adapter '" + handle.adapter->id() + "' is not connected";
+    return out;
+  }
+  out.adapterConnected = true;
+
+  Equipment *equipment = handle.adapter->equipmentById(equipmentId);
+  if (equipment == nullptr)
+  {
+    out.equipmentFound = false;
+    out.message =
+        "equipment '" + equipmentId + "' not found or not connected";
+    return out;
+  }
+
+  out.command = equipment->execute(command, parameter);
+  if (underLockAfterExecute)
+  {
+    underLockAfterExecute(*handle.adapter);
+  }
+  out.message = out.command.message;
+  return out;
 }
 
 std::vector<Equipment *> AdapterManager::allEquipment()
@@ -272,7 +352,9 @@ std::vector<Equipment *> AdapterManager::allEquipment()
       {
         continue;
       }
-      byAdapter.emplace(owned.second, Handle{entry->adapter, entry->io_mutex});
+      byAdapter.emplace(
+          owned.second,
+          Handle{entry->adapter, entry->io_mutex, entry->enrolled});
     }
     owners.reserve(byAdapter.size());
     for (auto &entry : byAdapter)
@@ -435,7 +517,7 @@ AdapterManager::Handle AdapterManager::handleFor(const std::string &adapterId)
   {
     return {};
   }
-  return {entry->adapter, entry->io_mutex};
+  return {entry->adapter, entry->io_mutex, entry->enrolled};
 }
 
 std::vector<AdapterManager::Handle> AdapterManager::snapshotHandles()
@@ -447,7 +529,8 @@ std::vector<AdapterManager::Handle> AdapterManager::snapshotHandles()
   {
     if (entry.second.adapter != nullptr)
     {
-      out.push_back({entry.second.adapter, entry.second.io_mutex});
+      out.push_back(
+          {entry.second.adapter, entry.second.io_mutex, entry.second.enrolled});
     }
   }
   return out;

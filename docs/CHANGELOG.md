@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — P1 protocol command isolation
+
+- `AdapterManager::executeEquipmentCommand` resolves ownership under `mutex_`, then runs `execute` + optional cache update under **only** the owning adapter's `io_mutex`
+- Enrollment flag cleared on `extractAdapter` so commands refuse unenrolled instances without taking `mutex_` while holding `io_mutex`
+- `ApplicationService::executeEquipmentCommand` no longer unlocks then calls `Equipment::execute` (poll/lifecycle race)
+- HTTP command API remains synchronous; cross-adapter parallelism preserved
+- Regression: `icp_command_isolation_test`
+
 ### Fixed — P0 configuration isolation (DELETE/disable/upsert vs protocol I/O)
 
 - `AdapterManager::extractAdapter` removes runtime + clears equipment ownership without waiting on protocol disconnect

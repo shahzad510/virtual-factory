@@ -976,10 +976,23 @@ EquipmentCommandResult ApplicationService::executeEquipmentCommand(
   out.equipmentId = equipmentId;
   out.command = command;
 
-  Equipment *equipment = this->manager_.equipmentById(equipmentId);
-  if (equipment == nullptr)
+  // Ownership + execute under the owning adapter's io_mutex only. Never unlock
+  // then call Equipment::execute() — that races poll/connect/disconnect on the
+  // same protocol client. Never scan foreign adapters.
+  const ManagedEquipmentCommandResult managed =
+      this->manager_.executeEquipmentCommand(
+          equipmentId,
+          command,
+          parameter,
+          [this](IndustrialAdapter &adapter) {
+            this->cache_.updateFromAdapter(adapter);
+          });
+
+  if (!managed.equipmentFound)
   {
-    out.message = "equipment '" + equipmentId + "' not found or not connected";
+    out.message = managed.message.empty()
+                      ? ("equipment '" + equipmentId + "' not found or not connected")
+                      : managed.message;
     ApplicationEvent ev;
     ev.level = "error";
     ev.category = "command";
@@ -1008,39 +1021,20 @@ EquipmentCommandResult ApplicationService::executeEquipmentCommand(
     return out;
   }
 
-  // Ownership via manager index — never walk/lock foreign adapter io_mutexes
-  // (a blackhole OPC UA connect must not stall mock commands).
-  const std::string ownerId = this->manager_.ownerAdapterId(equipmentId);
-  IndustrialAdapter *owner =
-      ownerId.empty() ? nullptr : this->manager_.adapter(ownerId);
-  if (owner == nullptr)
+  if (!managed.adapterConnected)
   {
-    out.message = "no adapter owns equipment '" + equipmentId + "'";
-    ApplicationEvent ev;
-    ev.level = "error";
-    ev.category = "command";
-    ev.eventType = "command_failed";
-    ev.message = out.message;
-    ev.equipmentId = equipmentId;
-    ev.command = command;
-    ev.reason = out.message;
-    this->recordEvent(std::move(ev));
-    return out;
-  }
-
-  if (owner->connectionState() != ConnectionState::Connected)
-  {
-    out.message = "adapter '" + owner->id() + "' is not connected";
+    out.message = managed.message.empty()
+                      ? ("adapter '" + managed.adapterId + "' is not connected")
+                      : managed.message;
     ApplicationEvent ev;
     ev.level = "error";
     ev.category = "command";
     ev.eventType = "command_unavailable";
     ev.message = out.message;
-    ev.adapterId = owner->id();
+    ev.adapterId = managed.adapterId;
     ev.equipmentId = equipmentId;
     ev.command = command;
     ev.reason = "communication lifecycle is not CONNECTED";
-    ev.newState = connectionStateName(owner->connectionState());
     this->recordEvent(std::move(ev));
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
@@ -1058,8 +1052,7 @@ EquipmentCommandResult ApplicationService::executeEquipmentCommand(
     return out;
   }
 
-  const CommandResult executed = equipment->execute(command, parameter);
-  this->cache_.updateFromAdapter(*owner);
+  const CommandResult &executed = managed.command;
   out.ok = executed.accepted;
   out.message = executed.message;
 
@@ -1095,7 +1088,7 @@ EquipmentCommandResult ApplicationService::executeEquipmentCommand(
   ev.category = "command";
   ev.eventType = executed.accepted ? "command_succeeded" : "command_failed";
   ev.message = command + ": " + executed.message;
-  ev.adapterId = owner->id();
+  ev.adapterId = managed.adapterId;
   ev.equipmentId = equipmentId;
   ev.command = command;
   ev.reason = executed.message;
@@ -1106,7 +1099,7 @@ EquipmentCommandResult ApplicationService::executeEquipmentCommand(
   this->recordEvent(std::move(ev));
   this->persistCommandAudit(
       equipmentId,
-      owner->id(),
+      managed.adapterId,
       command,
       execution,
       executed.accepted ? std::string{} : availability,
