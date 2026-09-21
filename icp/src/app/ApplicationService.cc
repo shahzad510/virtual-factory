@@ -854,6 +854,24 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
     return ensured;
   }
 
+  // Repeated Reconnect while one is already in-flight/pending must not bump
+  // generation (which would invalidate the in-flight job) or enqueue another
+  // full protocol-timeout window. Preserve generation semantics for a genuine
+  // new Reconnect after the current one finishes or after Disconnect.
+  if (this->lifecycle_.hasInFlightOrPending(adapterId, LifecycleOp::Reconnect))
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    ++this->diagnosticsFor(adapterId).reconnectCount;
+    ++this->diagnosticsFor(adapterId).connectionAttempts;
+    this->diagnosticsFor(adapterId).autoConnectDesired = true;
+    this->reconnect_in_progress_[adapterId] = true;
+    AdapterManagerResult accepted;
+    accepted.ok = true;
+    accepted.accepted = true;
+    accepted.message = "reconnect accepted";
+    return accepted;
+  }
+
   // Cancel stale recovery for this adapter; reconnect is a fresh intent.
   const std::uint64_t generation = this->lifecycle_.bumpGeneration(adapterId);
   {
@@ -1997,7 +2015,23 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
     clearFlight(job.adapterId);
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
-      this->observeAdapterStateLocked(job.adapterId, "DISCONNECTED");
+      if (stale)
+      {
+        // Stale completion must not overwrite a newer authoritative state
+        // (e.g. FAULTED from enterFault) with a forced DISCONNECTED.
+        IndustrialAdapter *runtime = this->manager_.adapter(job.adapterId);
+        if (runtime != nullptr)
+        {
+          this->observeAdapterStateLocked(
+              job.adapterId, connectionStateName(runtime->connectionState()));
+        }
+      }
+      else
+      {
+        // Current generation but intent cancelled (e.g. Disconnect) — sticky
+        // DISCONNECTED is the desired outcome.
+        this->observeAdapterStateLocked(job.adapterId, "DISCONNECTED");
+      }
     }
     return;
   }

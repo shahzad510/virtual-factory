@@ -300,7 +300,7 @@ int main()
   }
 
   // Repeated Connect while OPC UA lifecycle is blocked must stay fast + accepted
-  // (per-adapter serialization; no concurrent connect for the same adapter).
+  // (per-adapter serialization; Connect coalesced — no extra full timeout windows).
   for (int i = 0; i < 3; ++i)
   {
     const auto tRepeat = std::chrono::steady_clock::now();
@@ -394,8 +394,18 @@ int main()
   }
 
   // Let OPC UA finish its bounded timeout → FAULTED, without stalling siblings.
+  // Coalesced Connect: observation window stays 2500+3000 — no N× timeout queue.
+  const auto tFaultWait = std::chrono::steady_clock::now();
   expect(waitForAdapterState(service, "opcua-bh", "FAULTED", kOpcTimeoutMs + 3000),
          "opcua-bh reaches FAULTED after blackhole timeout");
+  {
+    const auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - tFaultWait)
+                            .count();
+    expect(waitMs < kOpcTimeoutMs + 3000,
+           "FAULTED observation completed within existing window ("
+               + std::to_string(waitMs) + "ms)");
+  }
   expect(waitForAdapterState(service, "mock-bh", "CONNECTED", 1000),
          "mock remains CONNECTED after OPC UA faults");
 
@@ -436,14 +446,15 @@ int main()
            "reconnect response includes accepted:true");
   }
 
-  // Second reconnect while first is in-flight must also return quickly.
+  // Second reconnect while first is in-flight must also return quickly and must
+  // not bump generation / enqueue another full blackhole timeout.
   {
     const auto tRe2 = std::chrono::steady_clock::now();
     auto recon2 = client.Post("/api/v1/adapters/opcua-bh/reconnect");
     const auto recon2Ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::steady_clock::now() - tRe2)
                               .count();
-    expect(recon2 && recon2->status == 200, "second reconnect accepted (serialized)");
+    expect(recon2 && recon2->status == 200, "second reconnect accepted (coalesced)");
     expect(recon2Ms < 500, "second reconnect does not wait for OPC UA timeout");
   }
 
@@ -453,6 +464,16 @@ int main()
 
   expect(waitForAdapterState(service, "opcua-bh", "FAULTED", kOpcTimeoutMs + 3000),
          "reconnect to blackhole eventually FAULTED");
+  {
+    const auto reFaultMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - tRe0)
+                               .count();
+    // One Reconnect blackhole (2500) + observation slack — not two serial
+    // Reconnect timeouts from an extra bumpGeneration.
+    expect(reFaultMs < kOpcTimeoutMs + 3000,
+           "reconnect FAULTED within one coalesced timeout window ("
+               + std::to_string(reFaultMs) + "ms)");
+  }
 
   // Clean shutdown: no hang / crash after draining lifecycle workers.
   service.disconnectAdapter("mock-bh");

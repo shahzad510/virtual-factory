@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — coalesce Connect/Reconnect; stale jobs must not paint DISCONNECTED
+
+- `LifecycleExecutor`: coalesce Connect↔RecoveryConnect and duplicate Reconnect for the same adapter+generation (pending or in-flight); Disconnect never coalesced
+- `ApplicationService::reconnectAdapter`: skip `bumpGeneration` when Reconnect already in-flight/pending
+- Stale lifecycle completion observes live adapter state (keeps FAULTED) instead of forcing DISCONNECTED
+- Strengthened `icp_lifecycle_isolation_test` coalesced blackhole FAULTED windows
+
 ### Fixed — cross-adapter io_mutex isolation (equipment ownership index)
 
 - `AdapterManager` keeps a manager-level `equipmentId → adapterId` index under `mutex_`

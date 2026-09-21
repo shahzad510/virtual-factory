@@ -67,21 +67,33 @@ public:
 
   std::uint64_t generation(const std::string &adapterId) const;
 
-  /// Enqueue a job. Duplicate RecoveryConnect for the same adapter+generation
-  /// is coalesced. Returns false if the executor is stopped.
+  /// Enqueue a job. Duplicate connect-style / Reconnect work for the same
+  /// adapter+generation is coalesced (including against an in-flight job of the
+  /// same kind). Disconnect is never coalesced. Returns false if stopped or the
+  /// job generation is stale.
   bool enqueue(LifecycleJob job);
+
+  /// True when this adapter already has the given op in-flight or pending
+  /// (any generation for in-flight; pending matches current slot generation).
+  /// Used by ApplicationService to avoid bumpGeneration+duplicate Reconnect.
+  bool hasInFlightOrPending(const std::string &adapterId, LifecycleOp op) const;
 
 private:
   struct AdapterSlot
   {
     std::uint64_t generation{0};
     bool inFlight{false};
+    LifecycleOp inFlightOp{LifecycleOp::Connect};
+    std::uint64_t inFlightGeneration{0};
     std::deque<LifecycleJob> pending;
   };
 
   void workerMain();
   bool takeNextJobLocked(LifecycleJob *out);
   void completeJob(const std::string &adapterId);
+  static bool isConnectStyle(LifecycleOp op);
+  /// Caller holds mutex_.
+  bool shouldCoalesceLocked(const AdapterSlot &slot, const LifecycleJob &job) const;
 
   mutable std::mutex mutex_;
   std::condition_variable cv_;
