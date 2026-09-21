@@ -1050,3 +1050,16 @@ See `docs/connectivity-integration-contract.md`. **PLANNED. NOT IMPLEMENTED.**
 **Consequences:** `GET ... kind=alarm_occurrences`, acknowledge POST, GUI Active/Alarm/Event History. Protocol adapters unchanged. RBAC still Milestone 2.
 
 **Alternatives:** Collapse all raises into one permanent row (rejected); delete on clear/ack (rejected); CSV as source of truth (rejected).
+
+## ADR-050 — Dedicated PollExecutor for cross-adapter poll isolation
+
+- **Status:** Accepted
+- **Date:** 2026-09-21
+
+**Context:** A single sequential `PollScheduler` thread called `adapter.poll()` inline. A blocked poll on adapter A prevented polling of B…N, delayed `onPollCycle` (recovery enqueue / observations), and made `PollScheduler::stop()` join unboundedly. P0/P1/P2 isolated configuration, commands, and lifecycle shutdown, but not poll I/O. Protocol timeout hardening alone cannot guarantee process isolation if a poll never returns.
+
+**Decision:** Introduce a dedicated bounded `PollExecutor` (default 4 workers), separate from `LifecycleExecutor`. `PollScheduler` is tick/dispatch only: enqueue due polls, run independent ControlPlaneTick (former `onPollCycle`), never call `poll()` or `connect()`. At most one in-flight poll and one coalesced pending poll per adapter. Protocol serialization remains the per-adapter `io_mutex`. Cache publication after `poll()` requires the adapter still `enrolled` (P0 extract sets `enrolled=false`). Poll shutdown mirrors P2: grace drain then abandon workers with shared `State` + keep-alive; tick thread is joined normally (no protocol I/O on the tick path).
+
+**Consequences:** Cross-adapter poll parallelism; ControlPlaneTick continues while a peer poll hangs; process shutdown remains within `kPollShutdownGrace` (= P2 5s grace) even with hung polls. No protocol-specific scheduler branches. No permanent thread-per-adapter. Lifecycle/command/config semantics unchanged.
+
+**Alternatives:** Permanent worker per adapter (rejected: thread sprawl at scale); reuse `LifecycleExecutor` for polls (rejected: contending FIFO/generation/Teardown with poll); sequential scheduler + timeout hardening only (rejected: does not remove HOL or unbounded stop); naive detach of the old poll thread (rejected: raw lifetime / CV destroy hazards).

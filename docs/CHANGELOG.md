@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — P3 poll isolation (dedicated PollExecutor)
+
+- `PollExecutor`: bounded worker pool (default 4) runs protocol-blind `poll()` with at most one in-flight and one coalesced pending poll per adapter
+- `PollScheduler`: tick/dispatch only — never calls `adapter.poll()` or `connect()`; ControlPlaneTick (`onPollCycle`) runs independently of poll completion
+- Enrolled gate: after P0 `extractAdapter`, in-flight polls must not `updateFromAdapter` when `enrolled==false`
+- Shutdown: stop tick → `PollExecutor::stop(kPollShutdownGrace)` (P2-shaped abandon + shared State) → existing lifecycle/`disconnectAllBounded` path
+- Regression: `icp_poll_isolation_test`
+
 ### Fixed — P2 shutdown isolation (bounded stop / abandon hung I/O)
 
 - `LifecycleExecutor::stop(grace, keepAlive)`: drop pending Connect/Reconnect/Recovery/Disconnect; preserve Teardown; wait up to `kLifecycleShutdownGrace` (5s); detach remaining workers with shared_ptr keep-alive (no unbounded join)
