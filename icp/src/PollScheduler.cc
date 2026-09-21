@@ -9,7 +9,29 @@ PollScheduler::PollScheduler(
     AdapterManager &manager,
     LiveStateCache &cache,
     std::chrono::milliseconds interval)
-    : manager_(manager), cache_(cache), interval_(interval)
+    : interval_(interval)
+{
+  // Test convenience: wrap raw refs in non-owning shared_ptr aliases so the
+  // executor keep-alive graph stays shared_ptr-based. Callers must outlive
+  // this scheduler (same contract as the previous raw-reference API).
+  this->manager_ = std::shared_ptr<AdapterManager>(
+      &manager, [](AdapterManager *) {});
+  this->cache_ = std::shared_ptr<LiveStateCache>(
+      &cache, [](LiveStateCache *) {});
+  this->executor_ = std::make_shared<PollExecutor>(this->manager_, this->cache_);
+  this->owns_executor_ = true;
+}
+
+PollScheduler::PollScheduler(
+    std::shared_ptr<AdapterManager> manager,
+    std::shared_ptr<LiveStateCache> cache,
+    std::shared_ptr<PollExecutor> executor,
+    std::chrono::milliseconds interval)
+    : manager_(std::move(manager)),
+      cache_(std::move(cache)),
+      executor_(std::move(executor)),
+      owns_executor_(false),
+      interval_(interval)
 {
 }
 
@@ -24,6 +46,10 @@ void PollScheduler::start()
   {
     return;
   }
+  if (this->executor_ && !this->executor_->running())
+  {
+    this->executor_->start(kDefaultPollWorkerCount);
+  }
   this->thread_ = std::thread([this] { this->threadMain(); });
 }
 
@@ -31,10 +57,13 @@ void PollScheduler::stop()
 {
   if (!this->running_.exchange(false))
   {
-    // Still join if a prior start left a joinable thread that already exited.
     if (this->thread_.joinable())
     {
       this->thread_.join();
+    }
+    if (this->owns_executor_ && this->executor_)
+    {
+      this->executor_->stop();
     }
     return;
   }
@@ -43,6 +72,13 @@ void PollScheduler::stop()
   {
     this->thread_.join();
   }
+  // Tick thread never runs protocol I/O — join is bounded by wait_for wake.
+  // Owned executor (unit-test path) stops here; ApplicationService stops the
+  // shared PollExecutor explicitly after the tick joins (P3 shutdown order).
+  if (this->owns_executor_ && this->executor_)
+  {
+    this->executor_->stop();
+  }
 }
 
 bool PollScheduler::running() const
@@ -50,11 +86,56 @@ bool PollScheduler::running() const
   return this->running_.load();
 }
 
-void PollScheduler::pollOnce()
+void PollScheduler::dispatchDue()
 {
-  this->manager_.forEachAdapterNonBlocking(
-      [this](IndustrialAdapter &adapter) { this->pollAdapterLocked(adapter); });
+  if (!this->manager_ || !this->cache_ || !this->executor_)
+  {
+    return;
+  }
+  if (!this->executor_->running())
+  {
+    this->executor_->start(kDefaultPollWorkerCount);
+  }
 
+  const std::vector<std::string> ids = this->manager_->snapshotAdapterIds();
+  for (const std::string &id : ids)
+  {
+    AdapterManager::IoHandle handle = this->manager_->resolveIoHandle(id);
+    if (handle.adapter == nullptr || handle.io_mutex == nullptr)
+    {
+      continue;
+    }
+    if (handle.enrolled && !handle.enrolled->load())
+    {
+      continue;
+    }
+
+    ConnectionState state = ConnectionState::Disconnected;
+    bool sawState = false;
+    {
+      std::unique_lock<std::mutex> io(*handle.io_mutex, std::try_to_lock);
+      if (io.owns_lock())
+      {
+        state = handle.adapter->connectionState();
+        sawState = true;
+      }
+    }
+
+    if (sawState && state == ConnectionState::Disconnected)
+    {
+      // Cache-only cleanup — no protocol I/O, no held io_mutex.
+      this->cache_->removeAdapterEquipment(id);
+      continue;
+    }
+
+    // Connected / Faulted / lock busy (lifecycle or peer poll): enqueue.
+    // PollExecutor coalesces and serializes on io_mutex.
+    (void)this->executor_->enqueue(id);
+  }
+}
+
+void PollScheduler::runControlPlaneTick()
+{
   std::function<void()> hook;
   {
     std::lock_guard<std::mutex> lock(this->hook_mutex_);
@@ -64,6 +145,17 @@ void PollScheduler::pollOnce()
   {
     hook();
   }
+}
+
+void PollScheduler::pollOnce()
+{
+  this->dispatchDue();
+  if (this->executor_)
+  {
+    // Synchronous helper for unit tests — not used by the production tick.
+    (void)this->executor_->waitUntilIdle(std::chrono::seconds(30));
+  }
+  this->runControlPlaneTick();
 }
 
 void PollScheduler::setInterval(std::chrono::milliseconds interval)
@@ -85,11 +177,23 @@ void PollScheduler::setAfterPollHook(std::function<void()> hook)
   this->after_poll_hook_ = std::move(hook);
 }
 
+PollExecutor &PollScheduler::executor()
+{
+  return *this->executor_;
+}
+
+const PollExecutor &PollScheduler::executor() const
+{
+  return *this->executor_;
+}
+
 void PollScheduler::threadMain()
 {
   while (this->running_.load())
   {
-    this->pollOnce();
+    // Production tick: dispatch + control plane. Never wait for poll I/O.
+    this->dispatchDue();
+    this->runControlPlaneTick();
 
     std::chrono::milliseconds wait = this->interval();
     std::unique_lock<std::mutex> lock(this->wake_mutex_);
@@ -97,33 +201,6 @@ void PollScheduler::threadMain()
       return !this->running_.load();
     });
   }
-}
-
-void PollScheduler::pollAdapterLocked(IndustrialAdapter &adapter)
-{
-  const ConnectionState state = adapter.connectionState();
-  if (state == ConnectionState::Disconnected)
-  {
-    this->cache_.removeAdapterEquipment(adapter.id());
-    return;
-  }
-
-  if (state == ConnectionState::Connected)
-  {
-    // Bounded by each adapter's own poll() contract (e.g. MQTT pollTimeoutMs).
-    adapter.poll();
-    this->cache_.updateFromAdapter(adapter);
-    return;
-  }
-
-  // Faulted: keep last-known equipment; refresh process fields if still listed;
-  // mark communication Faulted / stale. Do not invent machineFault.
-  if (!adapter.equipment().empty())
-  {
-    this->cache_.updateFromAdapter(adapter);
-  }
-  this->cache_.markAdapterCommunication(
-      adapter.id(), ConnectionState::Faulted, adapter.lastError());
 }
 
 }  // namespace icp

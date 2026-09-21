@@ -315,11 +315,19 @@ void ApplicationService::start()
     // non-fatal: ICP and protocols continue; history reports degraded.
     this->ensureHistoryWriter();
     this->history_writer_->start();
-    // Lifecycle workers own blocking connect/disconnect I/O. Poll only enqueues.
+    // Lifecycle workers own blocking connect/disconnect I/O.
+    // PollExecutor owns parallel poll() I/O; PollScheduler only ticks.
     this->shutdown_flag_->store(false);
     this->lifecycle_->start(4);
+    this->poll_executor_ =
+        std::make_shared<PollExecutor>(this->manager_, this->cache_);
+    this->poll_executor_->start(kDefaultPollWorkerCount);
     this->scheduler_ = std::make_unique<PollScheduler>(
-        *this->manager_, *this->cache_, std::chrono::milliseconds(250));
+        this->manager_,
+        this->cache_,
+        this->poll_executor_,
+        std::chrono::milliseconds(250));
+    // ControlPlaneTick: independent of poll completion (P3).
     this->scheduler_->setAfterPollHook([this]() { this->onPollCycle(); });
     this->scheduler_->start();
     this->running_ = true;
@@ -330,6 +338,7 @@ void ApplicationService::start()
 void ApplicationService::stop()
 {
   std::unique_ptr<PollScheduler> scheduler;
+  std::shared_ptr<PollExecutor> poll_executor;
   bool was_running = false;
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
@@ -339,22 +348,31 @@ void ApplicationService::stop()
       was_running = true;
       this->running_ = false;
       scheduler = std::move(this->scheduler_);
+      poll_executor = this->poll_executor_;
+      this->poll_executor_.reset();
     }
     else if (!this->history_writer_)
     {
       return;
     }
   }
+  // Tick thread never performs protocol I/O — join is interval-bounded.
   if (scheduler)
   {
     scheduler->stop();
   }
 
-  // Pin manager/cache/lifecycle for any abandoned workers (protocol-neutral).
+  // Pin graph for abandoned poll + lifecycle workers (smallest safe set).
+  // - manager/cache: poll jobs resolve handles and publish telemetry
+  // - poll_executor: abandoned poll State may still complete coalesce paths
+  // - lifecycle: P2 abandoned connect/disconnect/Teardown
+  // - shutdown_flag: in-flight lifecycle skips AS diagnostics after stop
+  // - adapters: filled by disconnectAllBounded for hung disconnect I/O
   struct ShutdownPin
   {
     std::shared_ptr<AdapterManager> manager;
     std::shared_ptr<LiveStateCache> cache;
+    std::shared_ptr<PollExecutor> poll_executor;
     std::shared_ptr<LifecycleExecutor> lifecycle;
     std::shared_ptr<std::atomic<bool>> shutdown_flag;
     std::vector<std::shared_ptr<IndustrialAdapter>> adapters;
@@ -362,8 +380,15 @@ void ApplicationService::stop()
   auto pin = std::make_shared<ShutdownPin>();
   pin->manager = this->manager_;
   pin->cache = this->cache_;
+  pin->poll_executor = poll_executor;
   pin->lifecycle = this->lifecycle_;
   pin->shutdown_flag = this->shutdown_flag_;
+
+  // Bounded poll drain/abandon before lifecycle (P3 then P2).
+  if (poll_executor)
+  {
+    poll_executor->stop(kPollShutdownGrace, pin);
+  }
 
   // Bounded lifecycle drain; detach hung workers with pin keep-alive.
   this->lifecycle_->stop(kLifecycleShutdownGrace, pin);
@@ -373,7 +398,10 @@ void ApplicationService::stop()
     // Parallel per-adapter disconnect — one hung peer must not block others.
     (void)this->manager_->disconnectAllBounded(
         kLifecycleShutdownGrace, &pin->adapters);
-    if (this->lifecycle_->hasAbandonedWorkers() || !pin->adapters.empty())
+    const bool abandoned =
+        (poll_executor && poll_executor->hasAbandonedWorkers())
+        || this->lifecycle_->hasAbandonedWorkers() || !pin->adapters.empty();
+    if (abandoned)
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       this->shutdown_keep_alives_.push_back(pin);
@@ -2195,9 +2223,11 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
 
 void ApplicationService::onPollCycle()
 {
+  // ControlPlaneTick (P3): runs on the PollScheduler tick thread after dispatch
+  // and does NOT wait for poll jobs to complete. Must not call poll()/connect().
   std::vector<std::string> due;
   {
-    std::lock_guard<std::mutex> lock(this->mutex_);
+  std::lock_guard<std::mutex> lock(this->mutex_);
     if (!this->running_)
     {
       return;

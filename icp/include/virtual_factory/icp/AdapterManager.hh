@@ -148,9 +148,20 @@ public:
   void forEachAdapter(const std::function<void(IndustrialAdapter &)> &fn);
 
   /// Like forEachAdapter, but skips adapters whose I/O mutex is held (e.g. by
-  /// lifecycle connect). Used by PollScheduler so sibling polling continues.
+  /// lifecycle connect). Used when a caller must observe without waiting.
   void forEachAdapterNonBlocking(
       const std::function<void(IndustrialAdapter &)> &fn);
+
+  /// Shared ownership handle for poll/lifecycle I/O (empty if missing).
+  /// Caller must drop any manager mutex before protocol work and check
+  /// enrolled before publishing cache updates (P0/P3).
+  struct IoHandle
+  {
+    std::shared_ptr<IndustrialAdapter> adapter;
+    std::shared_ptr<std::mutex> io_mutex;
+    std::shared_ptr<std::atomic<bool>> enrolled;
+  };
+  IoHandle resolveIoHandle(const std::string &adapterId);
 
 private:
   struct Entry

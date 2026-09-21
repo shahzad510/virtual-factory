@@ -16,6 +16,7 @@
 #include <virtual_factory/icp/AdapterManager.hh>
 #include <virtual_factory/icp/LifecycleExecutor.hh>
 #include <virtual_factory/icp/LiveStateCache.hh>
+#include <virtual_factory/icp/PollExecutor.hh>
 #include <virtual_factory/icp/PollScheduler.hh>
 #include <virtual_factory/icp/config/ConfigurationCatalog.hh>
 #include <virtual_factory/icp/config/ConfigurationModel.hh>
@@ -388,6 +389,8 @@ private:
       const std::string &previousState,
       const std::string &newState,
       std::int64_t durationMs) const;
+  /// ControlPlaneTick: observations / history / recovery enqueue. Independent of
+  /// poll completion (P3). Must not call poll() or connect().
   void onPollCycle();
   void executeLifecycleJob(const LifecycleJob &job);
   void applyConnectOutcome(
@@ -440,6 +443,7 @@ private:
   /// ApplicationService diagnostics after shutdown without touching `this`.
   std::shared_ptr<std::atomic<bool>> shutdown_flag_{
       std::make_shared<std::atomic<bool>>(false)};
+  std::shared_ptr<PollExecutor> poll_executor_;
   std::unique_ptr<PollScheduler> scheduler_;
   bool running_{false};
   /// Intentional process-lifetime pins for abandoned shutdown I/O.
