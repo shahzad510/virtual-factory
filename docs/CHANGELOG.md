@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — Reconnect must not discard an in-flight Connect/RecoveryConnect
+
+- `reconnectAdapter` no longer bumps generation while Connect, RecoveryConnect, or Reconnect is already in-flight/pending
+- A successful connect that is still desired (`autoConnectDesired`) is applied via `applyConnectOutcome` instead of being disconnected as stale
+- Disconnect / disable / extract still cancel in-flight connect (clear desired + bump generation)
+- GUI Connect/Reconnect flash "request accepted" rather than protocol success
+- Regression: `icp_lifecycle_recovery_test`
+
 ### Fixed — P3 poll isolation (dedicated PollExecutor)
 
 - `PollExecutor`: bounded worker pool (default 4) runs protocol-blind `poll()` with at most one in-flight and one coalesced pending poll per adapter

@@ -103,7 +103,8 @@ public:
 
   /// True when this adapter already has the given op in-flight or pending
   /// (any generation for in-flight; pending matches current slot generation).
-  /// Used by ApplicationService to avoid bumpGeneration+duplicate Reconnect.
+  /// Used by ApplicationService to avoid bumpGeneration on redundant Reconnect
+  /// while Connect, RecoveryConnect, or Reconnect is already running.
   bool hasInFlightOrPending(const std::string &adapterId, LifecycleOp op) const;
 
 private:

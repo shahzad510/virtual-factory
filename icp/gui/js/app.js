@@ -3629,6 +3629,10 @@
         const res = await fn(id);
         if (!res.ok || (res.data && res.data.ok === false)) {
           flash((res.data && res.data.message) || action + " failed", "error");
+        } else if (action === "connect") {
+          flash("Connect request accepted", "ok");
+        } else if (action === "reconnect") {
+          flash("Reconnect request accepted", "ok");
         } else {
           flash(action + " succeeded", "ok");
         }

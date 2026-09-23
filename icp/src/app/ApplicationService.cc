@@ -964,11 +964,16 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
     return ensured;
   }
 
-  // Repeated Reconnect while one is already in-flight/pending must not bump
-  // generation (which would invalidate the in-flight job) or enqueue another
-  // full protocol-timeout window. Preserve generation semantics for a genuine
-  // new Reconnect after the current one finishes or after Disconnect.
-  if (this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Reconnect))
+  // Redundant Reconnect must not bump generation while Connect, RecoveryConnect,
+  // or Reconnect is already in-flight/pending. A bump would make the in-flight
+  // connect-style job stale; if UA_Client_connect then succeeded,
+  // executeLifecycleJob would disconnect it. Genuine cancellation is Disconnect /
+  // disable / extract (those bump generation and clear autoConnectDesired).
+  // Preserve a genuine Reconnect after the current connect-style work finishes.
+  if (this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Reconnect)
+      || this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Connect)
+      || this->lifecycle_->hasInFlightOrPending(
+             adapterId, LifecycleOp::RecoveryConnect))
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     ++this->diagnosticsFor(adapterId).reconnectCount;
@@ -2143,12 +2148,44 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
     std::lock_guard<std::mutex> lock(this->mutex_);
     stillDesired = this->diagnosticsFor(job.adapterId).autoConnectDesired;
   }
+
+  IndustrialAdapter *runtimeAfter = manager->adapter(job.adapterId);
+  const bool keepSuccessfulConnect =
+      connected.ok && stillDesired && runtimeAfter != nullptr
+      && runtimeAfter->connectionState() == ConnectionState::Connected;
+
+  if (keepSuccessfulConnect)
+  {
+    // Still-desired generation mismatch (redundant Reconnect bump) must not
+    // tear down a completed connect. Disconnect/disable clear autoConnectDesired.
+    const bool emitFailure =
+        job.op == LifecycleOp::Connect || job.op == LifecycleOp::Reconnect;
+    this->applyConnectOutcome(
+        job.adapterId, connected, emitFailure,
+        job.op == LifecycleOp::Reconnect);
+    return;
+  }
+
   if (stale || !stillDesired)
   {
-    if (connected.ok)
+    if (connected.ok && !stillDesired)
     {
       (void)manager->disconnectAdapter(job.adapterId);
       cache->removeAdapterEquipment(job.adapterId);
+    }
+    if (!connected.ok)
+    {
+      const bool emitFailure = stillDesired
+          && (job.op == LifecycleOp::Connect || job.op == LifecycleOp::Reconnect);
+      this->applyConnectOutcome(
+          job.adapterId, connected, emitFailure,
+          job.op == LifecycleOp::Reconnect);
+      if (!stillDesired && !shutting->load())
+      {
+        std::lock_guard<std::mutex> lock(this->mutex_);
+        this->observeAdapterStateLocked(job.adapterId, "DISCONNECTED");
+      }
+      return;
     }
     clearFlight(job.adapterId);
     {
