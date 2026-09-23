@@ -644,6 +644,13 @@ AdapterManager::Handle AdapterManager::handleFor(const std::string &adapterId)
   return {entry->adapter, entry->io_mutex, entry->enrolled};
 }
 
+AdapterManager::IoHandle AdapterManager::resolveIoHandle(
+    const std::string &adapterId)
+{
+  const Handle handle = this->handleFor(adapterId);
+  return {handle.adapter, handle.io_mutex, handle.enrolled};
+}
+
 std::vector<AdapterManager::Handle> AdapterManager::snapshotHandles()
 {
   std::lock_guard<std::mutex> lock(this->mutex_);

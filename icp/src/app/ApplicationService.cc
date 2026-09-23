@@ -315,11 +315,19 @@ void ApplicationService::start()
     // non-fatal: ICP and protocols continue; history reports degraded.
     this->ensureHistoryWriter();
     this->history_writer_->start();
-    // Lifecycle workers own blocking connect/disconnect I/O. Poll only enqueues.
+    // Lifecycle workers own blocking connect/disconnect I/O.
+    // PollExecutor owns parallel poll() I/O; PollScheduler only ticks.
     this->shutdown_flag_->store(false);
     this->lifecycle_->start(4);
+    this->poll_executor_ =
+        std::make_shared<PollExecutor>(this->manager_, this->cache_);
+    this->poll_executor_->start(kDefaultPollWorkerCount);
     this->scheduler_ = std::make_unique<PollScheduler>(
-        *this->manager_, *this->cache_, std::chrono::milliseconds(250));
+        this->manager_,
+        this->cache_,
+        this->poll_executor_,
+        std::chrono::milliseconds(250));
+    // ControlPlaneTick: independent of poll completion (P3).
     this->scheduler_->setAfterPollHook([this]() { this->onPollCycle(); });
     this->scheduler_->start();
     this->running_ = true;
@@ -330,6 +338,7 @@ void ApplicationService::start()
 void ApplicationService::stop()
 {
   std::unique_ptr<PollScheduler> scheduler;
+  std::shared_ptr<PollExecutor> poll_executor;
   bool was_running = false;
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
@@ -339,22 +348,31 @@ void ApplicationService::stop()
       was_running = true;
       this->running_ = false;
       scheduler = std::move(this->scheduler_);
+      poll_executor = this->poll_executor_;
+      this->poll_executor_.reset();
     }
     else if (!this->history_writer_)
     {
       return;
     }
   }
+  // Tick thread never performs protocol I/O — join is interval-bounded.
   if (scheduler)
   {
     scheduler->stop();
   }
 
-  // Pin manager/cache/lifecycle for any abandoned workers (protocol-neutral).
+  // Pin graph for abandoned poll + lifecycle workers (smallest safe set).
+  // - manager/cache: poll jobs resolve handles and publish telemetry
+  // - poll_executor: abandoned poll State may still complete coalesce paths
+  // - lifecycle: P2 abandoned connect/disconnect/Teardown
+  // - shutdown_flag: in-flight lifecycle skips AS diagnostics after stop
+  // - adapters: filled by disconnectAllBounded for hung disconnect I/O
   struct ShutdownPin
   {
     std::shared_ptr<AdapterManager> manager;
     std::shared_ptr<LiveStateCache> cache;
+    std::shared_ptr<PollExecutor> poll_executor;
     std::shared_ptr<LifecycleExecutor> lifecycle;
     std::shared_ptr<std::atomic<bool>> shutdown_flag;
     std::vector<std::shared_ptr<IndustrialAdapter>> adapters;
@@ -362,8 +380,15 @@ void ApplicationService::stop()
   auto pin = std::make_shared<ShutdownPin>();
   pin->manager = this->manager_;
   pin->cache = this->cache_;
+  pin->poll_executor = poll_executor;
   pin->lifecycle = this->lifecycle_;
   pin->shutdown_flag = this->shutdown_flag_;
+
+  // Bounded poll drain/abandon before lifecycle (P3 then P2).
+  if (poll_executor)
+  {
+    poll_executor->stop(kPollShutdownGrace, pin);
+  }
 
   // Bounded lifecycle drain; detach hung workers with pin keep-alive.
   this->lifecycle_->stop(kLifecycleShutdownGrace, pin);
@@ -373,7 +398,10 @@ void ApplicationService::stop()
     // Parallel per-adapter disconnect — one hung peer must not block others.
     (void)this->manager_->disconnectAllBounded(
         kLifecycleShutdownGrace, &pin->adapters);
-    if (this->lifecycle_->hasAbandonedWorkers() || !pin->adapters.empty())
+    const bool abandoned =
+        (poll_executor && poll_executor->hasAbandonedWorkers())
+        || this->lifecycle_->hasAbandonedWorkers() || !pin->adapters.empty();
+    if (abandoned)
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       this->shutdown_keep_alives_.push_back(pin);
@@ -936,11 +964,16 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
     return ensured;
   }
 
-  // Repeated Reconnect while one is already in-flight/pending must not bump
-  // generation (which would invalidate the in-flight job) or enqueue another
-  // full protocol-timeout window. Preserve generation semantics for a genuine
-  // new Reconnect after the current one finishes or after Disconnect.
-  if (this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Reconnect))
+  // Redundant Reconnect must not bump generation while Connect, RecoveryConnect,
+  // or Reconnect is already in-flight/pending. A bump would make the in-flight
+  // connect-style job stale; if UA_Client_connect then succeeded,
+  // executeLifecycleJob would disconnect it. Genuine cancellation is Disconnect /
+  // disable / extract (those bump generation and clear autoConnectDesired).
+  // Preserve a genuine Reconnect after the current connect-style work finishes.
+  if (this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Reconnect)
+      || this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Connect)
+      || this->lifecycle_->hasInFlightOrPending(
+             adapterId, LifecycleOp::RecoveryConnect))
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     ++this->diagnosticsFor(adapterId).reconnectCount;
@@ -2115,12 +2148,44 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
     std::lock_guard<std::mutex> lock(this->mutex_);
     stillDesired = this->diagnosticsFor(job.adapterId).autoConnectDesired;
   }
+
+  IndustrialAdapter *runtimeAfter = manager->adapter(job.adapterId);
+  const bool keepSuccessfulConnect =
+      connected.ok && stillDesired && runtimeAfter != nullptr
+      && runtimeAfter->connectionState() == ConnectionState::Connected;
+
+  if (keepSuccessfulConnect)
+  {
+    // Still-desired generation mismatch (redundant Reconnect bump) must not
+    // tear down a completed connect. Disconnect/disable clear autoConnectDesired.
+    const bool emitFailure =
+        job.op == LifecycleOp::Connect || job.op == LifecycleOp::Reconnect;
+    this->applyConnectOutcome(
+        job.adapterId, connected, emitFailure,
+        job.op == LifecycleOp::Reconnect);
+    return;
+  }
+
   if (stale || !stillDesired)
   {
-    if (connected.ok)
+    if (connected.ok && !stillDesired)
     {
       (void)manager->disconnectAdapter(job.adapterId);
       cache->removeAdapterEquipment(job.adapterId);
+    }
+    if (!connected.ok)
+    {
+      const bool emitFailure = stillDesired
+          && (job.op == LifecycleOp::Connect || job.op == LifecycleOp::Reconnect);
+      this->applyConnectOutcome(
+          job.adapterId, connected, emitFailure,
+          job.op == LifecycleOp::Reconnect);
+      if (!stillDesired && !shutting->load())
+      {
+        std::lock_guard<std::mutex> lock(this->mutex_);
+        this->observeAdapterStateLocked(job.adapterId, "DISCONNECTED");
+      }
+      return;
     }
     clearFlight(job.adapterId);
     {
@@ -2195,9 +2260,11 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
 
 void ApplicationService::onPollCycle()
 {
+  // ControlPlaneTick (P3): runs on the PollScheduler tick thread after dispatch
+  // and does NOT wait for poll jobs to complete. Must not call poll()/connect().
   std::vector<std::string> due;
   {
-    std::lock_guard<std::mutex> lock(this->mutex_);
+  std::lock_guard<std::mutex> lock(this->mutex_);
     if (!this->running_)
     {
       return;
