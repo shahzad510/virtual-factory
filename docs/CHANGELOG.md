@@ -16,6 +16,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - GUI Connect/Reconnect flash "request accepted" rather than protocol success
 - Regression: `icp_lifecycle_recovery_test`
 
+### Fixed — operator Connect/Reconnect follow-up after in-flight connect failure
+
+- Operator Connect/Reconnect while Connect/RecoveryConnect is in-flight still does not start a parallel `connect()` or bump generation
+- A pending operator intent is recorded; if the in-flight attempt fails, one follow-up `Connect` is queued behind it (`enqueueFollowUp`) and runs without waiting for automatic backoff
+- In-flight success still keeps the connection and clears the pending operator request
+- Automatic RecoveryConnect backoff is unchanged when no operator request is pending
+- Enabled rematerialize (`ensureRuntimeAdapter`) clears `pending_operator_connect_` so a replacement runtime never inherits the previous instance's operator follow-up
+- Regression: `icp_lifecycle_recovery_test` cases A–G
+
 ### Fixed — P3 poll isolation (dedicated PollExecutor)
 
 - `PollExecutor`: bounded worker pool (default 4) runs protocol-blind `poll()` with at most one in-flight and one coalesced pending poll per adapter

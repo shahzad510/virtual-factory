@@ -101,6 +101,12 @@ public:
   /// is stale.
   bool enqueue(LifecycleJob job);
 
+  /// Queue a job behind the current in-flight work for this adapter. Does not
+  /// coalesce with the in-flight job (so a follow-up Connect after a failing
+  /// RecoveryConnect actually runs). Still coalesces with an existing pending
+  /// job of the same kind+generation. Same generation/stop rules as enqueue().
+  bool enqueueFollowUp(LifecycleJob job);
+
   /// True when this adapter already has the given op in-flight or pending
   /// (any generation for in-flight; pending matches current slot generation).
   /// Used by ApplicationService to avoid bumpGeneration on redundant Reconnect
@@ -132,7 +138,8 @@ private:
   static void completeJob(State &state, const std::string &adapterId);
   static bool isConnectStyle(LifecycleOp op);
   static void clearInvalidatablePendingLocked(AdapterSlot &slot);
-  bool shouldCoalesceLocked(const AdapterSlot &slot, const LifecycleJob &job) const;
+  bool shouldCoalesceLocked(
+      const AdapterSlot &slot, const LifecycleJob &job, bool includeInFlight) const;
   static void runTeardown(const LifecycleJob &job);
 
   std::shared_ptr<State> state_;

@@ -645,6 +645,7 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
       diag.autoReconnectInFlight = false;
       diag.nextAutoReconnectAt = {};
       this->reconnect_in_progress_.erase(id);
+      this->pending_operator_connect_.erase(id);
     }
     AdapterManager::ExtractedAdapter extracted = this->manager_->extractAdapter(id);
     this->cache_->removeAdapterEquipment(id);
@@ -719,6 +720,7 @@ ConfigResult ApplicationService::removeAdapterConfig(const std::string &adapterI
     diag.autoReconnectInFlight = false;
     diag.nextAutoReconnectAt = {};
     this->reconnect_in_progress_.erase(adapterId);
+    this->pending_operator_connect_.erase(adapterId);
   }
 
   bool teardown_scheduled = false;
@@ -881,6 +883,12 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
     return ensured;
   }
 
+  if (this->hasConnectStyleLifecycleWork(adapterId))
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    this->pending_operator_connect_[adapterId] = true;
+  }
+
   LifecycleJob job;
   job.adapterId = adapterId;
   job.op = LifecycleOp::Connect;
@@ -919,6 +927,7 @@ AdapterManagerResult ApplicationService::disconnectAdapter(
     diag.autoReconnectInFlight = false;
     diag.nextAutoReconnectAt = {};
     this->reconnect_in_progress_.erase(adapterId);
+    this->pending_operator_connect_.erase(adapterId);
   }
 
   LifecycleJob job;
@@ -980,6 +989,7 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
     ++this->diagnosticsFor(adapterId).connectionAttempts;
     this->diagnosticsFor(adapterId).autoConnectDesired = true;
     this->reconnect_in_progress_[adapterId] = true;
+    this->pending_operator_connect_[adapterId] = true;
     AdapterManagerResult accepted;
     accepted.ok = true;
     accepted.accepted = true;
@@ -1380,6 +1390,53 @@ AdapterManager &ApplicationService::manager()
 LiveStateCache &ApplicationService::cache()
 {
   return *this->cache_;
+}
+
+LifecycleExecutor &ApplicationService::lifecycle()
+{
+  return *this->lifecycle_;
+}
+
+bool ApplicationService::hasConnectStyleLifecycleWork(const std::string &adapterId) const
+{
+  return this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Connect)
+      || this->lifecycle_->hasInFlightOrPending(
+             adapterId, LifecycleOp::RecoveryConnect)
+      || this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Reconnect);
+}
+
+void ApplicationService::maybeEnqueueOperatorFollowUp(const std::string &adapterId)
+{
+  if (this->shutdown_flag_ && this->shutdown_flag_->load())
+  {
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    const auto pending = this->pending_operator_connect_.find(adapterId);
+    if (pending == this->pending_operator_connect_.end() || !pending->second)
+    {
+      return;
+    }
+    if (!this->diagnosticsFor(adapterId).autoConnectDesired)
+    {
+      this->pending_operator_connect_.erase(pending);
+      return;
+    }
+    this->pending_operator_connect_.erase(pending);
+    this->diagnosticsFor(adapterId).autoReconnectInFlight = true;
+  }
+
+  LifecycleJob job;
+  job.adapterId = adapterId;
+  job.op = LifecycleOp::Connect;
+  job.generation = this->lifecycle_->generation(adapterId);
+  if (!this->lifecycle_->enqueueFollowUp(std::move(job)))
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    this->diagnosticsFor(adapterId).autoReconnectInFlight = false;
+  }
 }
 
 void ApplicationService::recordEvent(
@@ -1931,6 +1988,7 @@ void ApplicationService::applyConnectOutcome(
     diag.autoReconnectInFlight = false;
     diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
     diag.nextAutoReconnectAt = {};
+    this->pending_operator_connect_.erase(adapterId);
     this->observeAdapterStateLocked(adapterId, "CONNECTED");
     for (const EquipmentSnapshot &snap : this->cache_->equipment())
     {
@@ -2046,6 +2104,7 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
     std::lock_guard<std::mutex> lock(this->mutex_);
     this->diagnosticsFor(adapterId).autoReconnectInFlight = false;
     this->reconnect_in_progress_.erase(adapterId);
+    this->pending_operator_connect_.erase(adapterId);
   };
 
   // Teardown is handled inline by LifecycleExecutor (lifetime-safe).
@@ -2185,6 +2244,10 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
         std::lock_guard<std::mutex> lock(this->mutex_);
         this->observeAdapterStateLocked(job.adapterId, "DISCONNECTED");
       }
+      else if (stillDesired)
+      {
+        this->maybeEnqueueOperatorFollowUp(job.adapterId);
+      }
       return;
     }
     clearFlight(job.adapterId);
@@ -2216,6 +2279,10 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
   const bool reconnectStyle = job.op == LifecycleOp::Reconnect;
   this->applyConnectOutcome(
       job.adapterId, connected, emitFailure, reconnectStyle);
+  if (!connected.ok)
+  {
+    this->maybeEnqueueOperatorFollowUp(job.adapterId);
+  }
 
   // Explicit Reconnect must leave a recovery marker even if poll coalesced the
   // DISCONNECTED→CONNECTED transition before applyConnectOutcome ran.
@@ -3021,6 +3088,10 @@ AdapterManagerResult ApplicationService::ensureRuntimeAdapter(
     // Invalidate stale Connect/Recovery against this id, then extract without
     // waiting on protocol I/O so HTTP/config workers stay responsive.
     (void)this->lifecycle_->bumpGeneration(record.adapterId);
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      this->pending_operator_connect_.erase(record.adapterId);
+    }
     extracted = this->manager_->extractAdapter(record.adapterId);
     this->cache_->removeAdapterEquipment(record.adapterId);
   }

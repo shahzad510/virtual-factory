@@ -237,7 +237,7 @@ bool LifecycleExecutor::isConnectStyle(LifecycleOp op)
 }
 
 bool LifecycleExecutor::shouldCoalesceLocked(
-    const AdapterSlot &slot, const LifecycleJob &job) const
+    const AdapterSlot &slot, const LifecycleJob &job, bool includeInFlight) const
 {
   if (job.op == LifecycleOp::Disconnect || job.op == LifecycleOp::Teardown)
   {
@@ -260,7 +260,8 @@ bool LifecycleExecutor::shouldCoalesceLocked(
     return existingOp == job.op;
   };
 
-  if (slot.inFlight && matches(slot.inFlightOp, slot.inFlightGeneration))
+  if (includeInFlight && slot.inFlight
+      && matches(slot.inFlightOp, slot.inFlightGeneration))
   {
     return true;
   }
@@ -315,7 +316,34 @@ bool LifecycleExecutor::enqueue(LifecycleJob job)
     {
       return false;
     }
-    if (this->shouldCoalesceLocked(slot, job))
+    if (this->shouldCoalesceLocked(slot, job, true))
+    {
+      return true;
+    }
+    slot.pending.push_back(std::move(job));
+  }
+  this->state_->cv.notify_one();
+  return true;
+}
+
+bool LifecycleExecutor::enqueueFollowUp(LifecycleJob job)
+{
+  if (job.adapterId.empty())
+  {
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(this->state_->mutex);
+    if (!this->state_->running || this->state_->stopping)
+    {
+      return false;
+    }
+    AdapterSlot &slot = this->state_->slots[job.adapterId];
+    if (job.op != LifecycleOp::Teardown && job.generation != slot.generation)
+    {
+      return false;
+    }
+    if (this->shouldCoalesceLocked(slot, job, false))
     {
       return true;
     }

@@ -346,6 +346,7 @@ public:
   const ConfigurationCatalog &catalog() const;
   AdapterManager &manager();
   LiveStateCache &cache();
+  LifecycleExecutor &lifecycle();
 
   void recordEvent(
       const std::string &level,
@@ -399,6 +400,8 @@ private:
       bool emitFailureEvent,
       bool reconnectStyleFailure);
   void scheduleAutoReconnectLocked(const std::string &adapterId) const;
+  bool hasConnectStyleLifecycleWork(const std::string &adapterId) const;
+  void maybeEnqueueOperatorFollowUp(const std::string &adapterId);
   /// Create missing enabled runtime adapters without connecting. Arms ICP-owned
   /// background connect so peer-down at startup cannot block HTTP/control plane.
   void materializeEnabledAdaptersForRecovery();
@@ -457,6 +460,12 @@ private:
   mutable std::unordered_map<std::string, CommandDiagnostic> command_runtime_;
   /// Adapters currently inside reconnectAdapter() (for recovery event category).
   mutable std::unordered_map<std::string, bool> reconnect_in_progress_;
+  /// Operator Connect/Reconnect issued while a connect-style job is already
+  /// in-flight/pending. Coalesced to one flag. On in-flight success the flag
+  /// is cleared; on failure one follow-up Connect is enqueued (same generation,
+  /// no automatic-recovery backoff). Rematerialize/extract must clear this so
+  /// a replacement runtime never inherits the previous instance's intent.
+  mutable std::unordered_map<std::string, bool> pending_operator_connect_;
   /// Open alarm identities → current occurrence (process-lifetime; no poll dupes).
   mutable std::unordered_map<std::string, OpenAlarmTracking> open_alarms_;
   /// Last persisted equipment operational history state per equipment id.
