@@ -8,8 +8,11 @@
 /// RecoveryConnect must reconcile the automatic-recovery latch so later
 /// RecoveryConnect can run. Hung poll() isolation rematerializes a new
 /// runtime after 2s so RecoveryConnect can proceed without cancelling the
-/// old poll. An obstructed automatic RecoveryConnect that holds io_mutex is
-/// isolated the same way (replacement runtime; old connect() is not cancelled).
+/// old poll. An obstructed automatic RecoveryConnect that holds io_mutex past
+/// the adapter timeoutMs plus slack is isolated the same way (replacement
+/// runtime; old connect() is not cancelled). A timeout-bound RecoveryConnect
+/// that returns {ok=false, ioBusy=false} must stay on the same runtime and
+/// become FAULTED via applyConnectOutcome.
 
 #include "opcua_test_server.hh"
 
@@ -1245,7 +1248,9 @@ int main()
     ::unlink(cfg.c_str());
     ::unlink(hist.c_str());
     ApplicationService service(cfg, hist);
-    expect(service.upsertAdapterConfig(makeMock("hang-n")).ok, "N upsert");
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-n");
+    hangCfg.connection.timeoutMs = 500;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "N upsert");
     expect(service.saveConfiguration().ok, "N save");
     // Materialize before start so autoConnectDesired is armed without HTTP
     // Connect, then swap in the gated runtime before RecoveryConnect runs.
@@ -1341,6 +1346,92 @@ int main()
            "N OLD error did not reappear on NEW runtime");
     expect(sessionOf(service, "hang-n").successfulConnections >= 1,
            "N OLD completion did not clear NEW success counters");
+
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // O) Timeout-bound RecoveryConnect (peer down, connect() returns) must
+  //    remain on the same runtime and reach FAULTED via applyConnectOutcome.
+  //    Must not rematerialize at the hung-poll 2s mark.
+  // ---------------------------------------------------------------------
+  {
+    const std::uint16_t port = reserveLoopbackPort();
+    expect(port != 0, "O reserve port");
+    const std::string endpoint =
+        "opc.tcp://127.0.0.1:" + std::to_string(port);
+    const std::string cfg = tempPath("o-cfg.json");
+    const std::string hist = tempPath("o-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+
+    ApplicationService service(cfg, hist);
+    service.start();
+    expect(service.upsertAdapterConfig(makeOpcUa("opcua-o", endpoint, 500)).ok,
+           "O upsert");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "O save/load arms recovery");
+
+    virtual_factory::IndustrialAdapter *original =
+        service.manager().adapter("opcua-o");
+    expect(original != nullptr, "O runtime present after materialize");
+
+    expect(waitFor(
+               [&]() {
+                 auto v = service.adapter("opcua-o");
+                 return v && v->connectionState == "FAULTED"
+                     && sessionOf(service, "opcua-o").failedConnections >= 1
+                     && !v->lastError.empty();
+               },
+               std::chrono::milliseconds(4000)),
+           "O timeout-bound RecoveryConnect reaches FAULTED on first attempt");
+    expect(service.manager().adapter("opcua-o") == original,
+           "O first FAULTED kept the same runtime (not rematerialized)");
+    expect(service.manager().adapterCount() == 1, "O adapter count remains 1");
+    expect(waitFor(
+               [&]() { return lifecycleIdle(service, "opcua-o"); },
+               std::chrono::milliseconds(2000)),
+           "O lifecycle idle after timeout-bound failure");
+
+    const auto afterFirst = std::chrono::steady_clock::now();
+    const auto fail1 = sessionOf(service, "opcua-o").failedConnections;
+    bool rematerialized = false;
+    while (std::chrono::steady_clock::now() - afterFirst
+           < std::chrono::milliseconds(3500))
+    {
+      if (service.manager().adapter("opcua-o") != original)
+      {
+        rematerialized = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    expect(!rematerialized,
+           "O same runtime across hung-poll 2s window (timeout-bound connect)");
+    expect(service.manager().adapter("opcua-o") == original,
+           "O runtime identity unchanged after 2s poll-isolation window");
+    auto still = service.adapter("opcua-o");
+    expect(still && still->connectionState == "FAULTED",
+           "O remains FAULTED (not silent DISCONNECTED) after 2s");
+    expect(still && !still->lastError.empty(), "O FAULTED lastError retained");
+
+    expect(waitFor(
+               [&]() {
+                 return sessionOf(service, "opcua-o").failedConnections > fail1
+                     && service.manager().adapter("opcua-o") == original;
+               },
+               std::chrono::milliseconds(8000)),
+           "O second timeout-bound RecoveryConnect failed on the same runtime");
+    expect(lifecycleIdle(service, "opcua-o")
+               || sessionOf(service, "opcua-o").failedConnections > fail1,
+           "O second attempt counted as a real protocol failure");
+    auto afterSecond = service.adapter("opcua-o");
+    expect(afterSecond && afterSecond->connectionState == "FAULTED",
+           "O second failure is FAULTED via applyConnectOutcome");
+    expect(service.manager().adapterCount() == 1,
+           "O still one enrolled runtime after two timeout-bound failures");
 
     service.stop();
     ::unlink(cfg.c_str());

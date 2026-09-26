@@ -399,13 +399,18 @@ private:
   /// old protocol call.
   void isolateObstructedRuntime(const std::string &adapterId);
   /// Hung poll, or automatic RecoveryConnect in-flight while already FAULTED.
-  /// Operator Connect/Reconnect/Disconnect and a slow first connect from
-  /// Disconnected are never isolation-eligible.
+  /// Operator Connect/Reconnect/Disconnect (including coalesced operator
+  /// Connect recorded as pending_operator_connect_), and a slow first connect
+  /// from Disconnected, are never isolation-eligible.
   bool isRecoveryIsolationCandidate(
       const std::string &adapterId,
       bool autoConnectDesired,
       ConnectionState connectionState,
       const std::shared_ptr<PollExecutor> &pollExecutor) const;
+  /// Hung poll: kRecoveryIsolationBusyMs (2s). Hung RecoveryConnect that owns
+  /// io_mutex: adapter timeoutMs (default 2000) + kHungConnectIsolationSlack.
+  std::chrono::milliseconds recoveryIsolationBusyLimit(
+      const std::string &adapterId) const;
   void executeLifecycleJob(const LifecycleJob &job);
   void applyConnectOutcome(
       const std::string &adapterId,
@@ -479,11 +484,17 @@ private:
   /// no automatic-recovery backoff). Rematerialize/extract must clear this so
   /// a replacement runtime never inherits the previous instance's intent.
   mutable std::unordered_map<std::string, bool> pending_operator_connect_;
-  /// First observation of FAULTED + in-flight poll + io_mutex busy for
-  /// same-adapter recovery isolation (ControlPlaneTick).
+  /// First observation of io_mutex busy for same-adapter recovery isolation
+  /// (ControlPlaneTick). Hung poll uses kRecoveryIsolationBusyMs; hung
+  /// RecoveryConnect uses timeoutMs + kHungConnectIsolationSlack.
   mutable std::unordered_map<std::string, std::chrono::steady_clock::time_point>
       recovery_isolation_busy_since_;
   static constexpr std::chrono::milliseconds kRecoveryIsolationBusyMs{2000};
+  /// Extra wait beyond protocol timeoutMs before treating an in-flight
+  /// RecoveryConnect as hung. Timeout-bound connect() must be allowed to
+  /// return and reach applyConnectOutcome().
+  static constexpr std::chrono::milliseconds kHungConnectIsolationSlack{500};
+  static constexpr int kDefaultConnectTimeoutMs{2000};
   /// Open alarm identities → current occurrence (process-lifetime; no poll dupes).
   mutable std::unordered_map<std::string, OpenAlarmTracking> open_alarms_;
   /// Last persisted equipment operational history state per equipment id.

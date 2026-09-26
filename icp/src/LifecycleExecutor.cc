@@ -304,6 +304,19 @@ bool LifecycleExecutor::hasInFlightOrPending(
   return false;
 }
 
+bool LifecycleExecutor::hasInFlight(
+    const std::string &adapterId, LifecycleOp op) const
+{
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  const auto it = this->state_->slots.find(adapterId);
+  if (it == this->state_->slots.end())
+  {
+    return false;
+  }
+  const AdapterSlot &slot = it->second;
+  return slot.inFlight && slot.inFlightOp == op;
+}
+
 bool LifecycleExecutor::enqueue(LifecycleJob job)
 {
   if (job.adapterId.empty())

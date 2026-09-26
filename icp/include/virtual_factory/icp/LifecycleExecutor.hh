@@ -113,6 +113,11 @@ public:
   /// while Connect, RecoveryConnect, or Reconnect is already running.
   bool hasInFlightOrPending(const std::string &adapterId, LifecycleOp op) const;
 
+  /// True when this adapter currently has the given op running (not merely
+  /// pending). Used to distinguish a RecoveryConnect that owns io_mutex from
+  /// a queued RecoveryConnect / hung poll.
+  bool hasInFlight(const std::string &adapterId, LifecycleOp op) const;
+
 private:
   struct AdapterSlot
   {

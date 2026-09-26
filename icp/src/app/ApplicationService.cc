@@ -2397,8 +2397,8 @@ void ApplicationService::onPollCycle()
         this->recovery_isolation_busy_since_.erase(record.adapterId);
       }
       // Do not enqueue another RecoveryConnect while connect-style work already
-      // owns the latch — but still consider isolation above (obstructed
-      // RecoveryConnect must not skip the 2s detector).
+      // owns the latch — but still consider isolation above (obstructed poll
+      // or a RecoveryConnect hung past timeoutMs+slack must not skip detection).
       if (connectStyleBusy
           && (diag.autoReconnectInFlight
               || (this->reconnect_in_progress_.count(record.adapterId) != 0
@@ -2443,7 +2443,7 @@ void ApplicationService::onPollCycle()
         {
           since = isolationNow;
         }
-        if (isolationNow - since >= kRecoveryIsolationBusyMs)
+        if (isolationNow - since >= this->recoveryIsolationBusyLimit(adapterId))
         {
           this->recovery_isolation_busy_since_.erase(adapterId);
           persist = true;
@@ -3170,6 +3170,14 @@ bool ApplicationService::isRecoveryIsolationCandidate(
   {
     return false;
   }
+  // Coalesced operator Connect/Reconnect is still operator work even when the
+  // executor's in-flight op remains RecoveryConnect.
+  const auto pendingOperator = this->pending_operator_connect_.find(adapterId);
+  if (pendingOperator != this->pending_operator_connect_.end()
+      && pendingOperator->second)
+  {
+    return false;
+  }
   // Operator Connect/Reconnect and Disconnect are legitimate occupancy of
   // io_mutex. Do not isolate a slow operator Connect.
   if (this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Disconnect)
@@ -3181,6 +3189,8 @@ bool ApplicationService::isRecoveryIsolationCandidate(
   // Obstructed automatic RecoveryConnect: isolate only a retry that started
   // from FAULTED. A first connect from Disconnected may legally hold io_mutex
   // for timeoutMs (e.g. blackhole) and must not be rematerialized at 2s.
+  // A FAULTED retry that owns io_mutex is still timeout-bound; isolation uses
+  // timeoutMs+slack (see recoveryIsolationBusyLimit), not the 2s poll window.
   if (this->lifecycle_->hasInFlightOrPending(
           adapterId, LifecycleOp::RecoveryConnect))
   {
@@ -3188,6 +3198,27 @@ bool ApplicationService::isRecoveryIsolationCandidate(
   }
   // Hung poll: poll in-flight, no connect-style operator/recovery job.
   return pollExecutor && pollExecutor->hasInFlight(adapterId);
+}
+
+std::chrono::milliseconds ApplicationService::recoveryIsolationBusyLimit(
+    const std::string &adapterId) const
+{
+  // A RecoveryConnect that has acquired io_mutex is a real protocol attempt.
+  // Do not rematerialize at the hung-poll 2s mark — wait until the configured
+  // connect timeout plus slack so timeout-bound failures reach applyConnectOutcome.
+  if (this->lifecycle_->hasInFlight(adapterId, LifecycleOp::RecoveryConnect))
+  {
+    int timeoutMs = kDefaultConnectTimeoutMs;
+    if (const AdapterConfigRecord *record = this->catalog_.adapter(adapterId))
+    {
+      if (record->connection.timeoutMs > 0)
+      {
+        timeoutMs = record->connection.timeoutMs;
+      }
+    }
+    return std::chrono::milliseconds(timeoutMs) + kHungConnectIsolationSlack;
+  }
+  return kRecoveryIsolationBusyMs;
 }
 
 void ApplicationService::isolateObstructedRuntime(const std::string &adapterId)
