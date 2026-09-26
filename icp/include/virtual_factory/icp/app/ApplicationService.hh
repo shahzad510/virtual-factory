@@ -393,10 +393,19 @@ private:
   /// ControlPlaneTick: observations / history / recovery enqueue. Independent of
   /// poll completion (P3). Must not call poll() or connect().
   void onPollCycle();
-  /// Same-adapter recovery isolation: extract a runtime whose hung poll() is
-  /// holding io_mutex so RecoveryConnect cannot proceed. Preserves operator
-  /// intent; does not cancel or join the old poll.
-  void isolateObstructedPollRuntime(const std::string &adapterId);
+  /// Same-adapter recovery isolation: extract a runtime whose hung poll() or
+  /// obstructed automatic RecoveryConnect is holding io_mutex so a replacement
+  /// can RecoveryConnect. Preserves operator intent; does not cancel/join the
+  /// old protocol call.
+  void isolateObstructedRuntime(const std::string &adapterId);
+  /// Hung poll, or automatic RecoveryConnect in-flight while already FAULTED.
+  /// Operator Connect/Reconnect/Disconnect and a slow first connect from
+  /// Disconnected are never isolation-eligible.
+  bool isRecoveryIsolationCandidate(
+      const std::string &adapterId,
+      bool autoConnectDesired,
+      ConnectionState connectionState,
+      const std::shared_ptr<PollExecutor> &pollExecutor) const;
   void executeLifecycleJob(const LifecycleJob &job);
   void applyConnectOutcome(
       const std::string &adapterId,

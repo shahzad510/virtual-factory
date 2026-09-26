@@ -8,7 +8,8 @@
 /// RecoveryConnect must reconcile the automatic-recovery latch so later
 /// RecoveryConnect can run. Hung poll() isolation rematerializes a new
 /// runtime after 2s so RecoveryConnect can proceed without cancelling the
-/// old poll.
+/// old poll. An obstructed automatic RecoveryConnect that holds io_mutex is
+/// isolated the same way (replacement runtime; old connect() is not cancelled).
 
 #include "opcua_test_server.hh"
 
@@ -125,6 +126,13 @@ public:
   std::string lastError() const override { return this->lastError_; }
 
   void setPeerAvailable(bool available) { this->peerAvailable_.store(available); }
+  /// When true, the first connect() (Disconnected) fails immediately if the
+  /// peer is down; only a retry from FAULTED waits on the gate. Matches
+  /// production: first RecoveryConnect returns, second hangs in connect().
+  void setHangOnlyWhenFaulted(bool enabled)
+  {
+    this->hangOnlyWhenFaulted_.store(enabled);
+  }
 
   bool connect() override
   {
@@ -135,7 +143,10 @@ public:
       this->entered_ = true;
     }
     this->enteredCv_.notify_all();
-    if (this->gate_)
+    const bool shouldHang = this->gate_
+        && (!this->hangOnlyWhenFaulted_.load()
+            || this->state_ == virtual_factory::ConnectionState::Faulted);
+    if (shouldHang)
     {
       this->gate_->wait();
     }
@@ -201,6 +212,7 @@ private:
       virtual_factory::ConnectionState::Disconnected};
   std::string lastError_;
   std::atomic<bool> peerAvailable_{false};
+  std::atomic<bool> hangOnlyWhenFaulted_{false};
   std::atomic<int> connectEntered_{0};
   std::atomic<int> connectCompleted_{0};
   std::atomic<int> connectFailed_{0};
@@ -1219,6 +1231,118 @@ int main()
     expect(raw->connectEntered() == 1, "M disable did not connect old session");
     service.stop();
     gate->open();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // N) Hung RecoveryConnect → peer up while connect() blocked → isolation
+  //    → NEW CONNECTED; OLD connect() stays blocked (production gap vs E).
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("n-cfg.json");
+    const std::string hist = tempPath("n-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    expect(service.upsertAdapterConfig(makeMock("hang-n")).ok, "N upsert");
+    expect(service.saveConfiguration().ok, "N save");
+    // Materialize before start so autoConnectDesired is armed without HTTP
+    // Connect, then swap in the gated runtime before RecoveryConnect runs.
+    expect(service.loadConfiguration().ok, "N load arms autoConnectDesired");
+    {
+      auto extracted = service.manager().extractAdapter("hang-n");
+      (void)extracted;
+    }
+    auto gate = std::make_shared<HangGate>();
+    auto hang = std::make_unique<GatedConnectAdapter>("hang-n", gate);
+    hang->setHangOnlyWhenFaulted(true);
+    hang->setPeerAvailable(false);
+    GatedConnectAdapter *raw = hang.get();
+    expect(service.manager().addAdapter(std::move(hang)).ok, "N add gated runtime");
+    service.start();
+
+    expect(waitFor(
+               [&]() {
+                 return sessionOf(service, "hang-n").failedConnections >= 1
+                     && sessionOf(service, "hang-n").connectionAttempts == 0
+                     && raw->connectFailed() >= 1;
+               },
+               std::chrono::milliseconds(4000)),
+           "N first RecoveryConnect failed without HTTP Connect");
+    expect(sessionOf(service, "hang-n").autoConnectDesired,
+           "N autoConnectDesired armed by materialize");
+    expect(waitFor(
+               [&]() { return raw->connectEntered() >= 2; },
+               std::chrono::milliseconds(8000)),
+           "N second RecoveryConnect entered connect() and is blocked");
+    expect(raw->connectCompleted() == 0, "N OLD connect() still blocked");
+    expect(sessionOf(service, "hang-n").connectionAttempts == 0,
+           "N connectionAttempts stay 0 (no operator Connect)");
+    expect(sessionOf(service, "hang-n").failedConnections == 1,
+           "N failedConnections counts only the completed first attempt");
+    expect(sessionOf(service, "hang-n").reconnectCount >= 2,
+           "N reconnectCount shows RecoveryConnect was scheduled twice");
+
+    const virtual_factory::icp::AdapterManager::IoHandle oldHandle =
+        service.manager().resolveIoHandle("hang-n");
+    expect(oldHandle.adapter.get() == raw, "N enrolled runtime is gated adapter");
+    expect(oldHandle.io_mutex != nullptr, "N OLD io_mutex present");
+
+    // Peer becomes available while OLD connect() remains blocked. Do not
+    // wait for lifecycle idle and do not open the gate.
+    raw->setPeerAvailable(true);
+
+    expect(waitFor(
+               [&]() {
+                 virtual_factory::IndustrialAdapter *runtime =
+                     service.manager().adapter("hang-n");
+                 auto v = service.adapter("hang-n");
+                 return runtime != nullptr && runtime != raw && v
+                     && v->connectionState == "CONNECTED"
+                     && raw->connectCompleted() == 0
+                     && raw->connectEntered() >= 2;
+               },
+               std::chrono::milliseconds(8000)),
+           "N isolated replacement CONNECTED while OLD connect() blocked");
+    expect(service.manager().adapterCount() == 1,
+           "N one enrolled runtime after isolation");
+    virtual_factory::IndustrialAdapter *replacement =
+        service.manager().adapter("hang-n");
+    expect(replacement != nullptr && replacement != raw,
+           "N NEW runtime is a different object");
+    const virtual_factory::icp::AdapterManager::IoHandle newHandle =
+        service.manager().resolveIoHandle("hang-n");
+    expect(newHandle.io_mutex != nullptr
+               && newHandle.io_mutex != oldHandle.io_mutex,
+           "N NEW runtime has a fresh io_mutex");
+    expect(oldHandle.enrolled && !oldHandle.enrolled->load(),
+           "N OLD runtime unenrolled");
+    expect(raw->connectCompleted() == 0 && raw->connectEntered() >= 2,
+           "N OLD connect() still blocked after NEW CONNECTED");
+    expect(sessionOf(service, "hang-n").connectionAttempts == 0,
+           "N still no operator Connect after isolation");
+    expect(sessionOf(service, "hang-n").successfulConnections >= 1,
+           "N NEW RecoveryConnect succeeded");
+
+    gate->open();
+    expect(waitFor(
+               [&]() { return raw->connectFailed() >= 1 || raw->connectCompleted() >= 1; },
+               std::chrono::milliseconds(2000)),
+           "N OLD connect() returned after gate open");
+    expect(service.manager().adapter("hang-n") == replacement,
+           "N OLD completion did not replace NEW runtime");
+    expect(service.manager().adapterCount() == 1,
+           "N adapter count remains 1 after OLD connect returns");
+    auto after = service.adapter("hang-n");
+    expect(after && after->connectionState == "CONNECTED",
+           "N NEW remains CONNECTED after OLD connect returns");
+    expect(after && after->lastError.find("peer unavailable") == std::string::npos,
+           "N OLD error did not reappear on NEW runtime");
+    expect(sessionOf(service, "hang-n").successfulConnections >= 1,
+           "N OLD completion did not clear NEW success counters");
+
+    service.stop();
     ::unlink(cfg.c_str());
     ::unlink(hist.c_str());
   }

@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — isolate obstructed automatic RecoveryConnect holding io_mutex
+
+- ControlPlaneTick isolation now treats an in-flight automatic `RecoveryConnect` on an already-FAULTED adapter that holds `io_mutex` for `kRecoveryIsolationBusyMs` (2s) as isolation-eligible. Operator Connect/Reconnect/Disconnect and a slow first connect from Disconnected still forbid isolation.
+- A stale in-flight RecoveryConnect after generation bump no longer occupies the replacement runtime's LifecycleExecutor FIFO (current-generation jobs may start; stale completion cannot clear the new occupant).
+- Hung-poll isolation (I–M), Slice A latch reconcile, unique Teardown FIFO, and automatic backoff for completed attempts are unchanged.
+- Regression: `icp_lifecycle_recovery_test` case N (peer up while RecoveryConnect `connect()` stays blocked)
+
 ### Fixed — same-adapter recovery isolation when hung poll holds io_mutex
 
 - `AdapterManager::connectAdapter` fail-fast: `try_lock` on per-adapter `io_mutex`; returns `ioBusy` instead of occupying the LifecycleExecutor FIFO

@@ -135,7 +135,11 @@ private:
 
   static void workerMain(const std::shared_ptr<State> &state);
   static bool takeNextJobLocked(State &state, LifecycleJob *out);
-  static void completeJob(State &state, const std::string &adapterId);
+  static void completeJob(State &state, const LifecycleJob &job);
+  /// True when the current generation already has a running job. A stale
+  /// in-flight job (generation bumped while connect() is blocked) must not
+  /// occupy the replacement runtime's FIFO.
+  static bool currentGenerationBusy(const AdapterSlot &slot);
   static bool isConnectStyle(LifecycleOp op);
   static void clearInvalidatablePendingLocked(AdapterSlot &slot);
   bool shouldCoalesceLocked(

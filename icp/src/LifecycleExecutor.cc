@@ -213,11 +213,16 @@ void LifecycleExecutor::clearInvalidatablePendingLocked(AdapterSlot &slot)
 
 std::uint64_t LifecycleExecutor::bumpGeneration(const std::string &adapterId)
 {
-  std::lock_guard<std::mutex> lock(this->state_->mutex);
-  AdapterSlot &slot = this->state_->slots[adapterId];
-  ++slot.generation;
-  clearInvalidatablePendingLocked(slot);
-  return slot.generation;
+  {
+    std::lock_guard<std::mutex> lock(this->state_->mutex);
+    AdapterSlot &slot = this->state_->slots[adapterId];
+    ++slot.generation;
+    clearInvalidatablePendingLocked(slot);
+  }
+  // Wake workers: a stale in-flight job must not keep the current generation
+  // from starting (obstructed RecoveryConnect isolation).
+  this->state_->cv.notify_all();
+  return this->generation(adapterId);
 }
 
 std::uint64_t LifecycleExecutor::generation(const std::string &adapterId) const
@@ -353,12 +358,17 @@ bool LifecycleExecutor::enqueueFollowUp(LifecycleJob job)
   return true;
 }
 
+bool LifecycleExecutor::currentGenerationBusy(const AdapterSlot &slot)
+{
+  return slot.inFlight && slot.inFlightGeneration == slot.generation;
+}
+
 bool LifecycleExecutor::takeNextJobLocked(State &state, LifecycleJob *out)
 {
   for (auto &entry : state.slots)
   {
     AdapterSlot &slot = entry.second;
-    if (slot.inFlight || slot.pending.empty())
+    if (currentGenerationBusy(slot) || slot.pending.empty())
     {
       continue;
     }
@@ -383,13 +393,19 @@ bool LifecycleExecutor::takeNextJobLocked(State &state, LifecycleJob *out)
   return false;
 }
 
-void LifecycleExecutor::completeJob(State &state, const std::string &adapterId)
+void LifecycleExecutor::completeJob(State &state, const LifecycleJob &job)
 {
   bool notify = false;
   {
     std::lock_guard<std::mutex> lock(state.mutex);
-    AdapterSlot &slot = state.slots[adapterId];
-    slot.inFlight = false;
+    AdapterSlot &slot = state.slots[job.adapterId];
+    // A stale in-flight RecoveryConnect may still be running after isolation
+    // replaced inFlightGeneration with the new generation's job. Only the
+    // tracked occupant may clear the flag.
+    if (slot.inFlight && slot.inFlightGeneration == job.generation)
+    {
+      slot.inFlight = false;
+    }
     if (state.inFlightCount > 0)
     {
       --state.inFlightCount;
@@ -414,7 +430,8 @@ void LifecycleExecutor::workerMain(const std::shared_ptr<State> &state)
         {
           for (const auto &entry : state->slots)
           {
-            if (!entry.second.inFlight && !entry.second.pending.empty())
+            if (!currentGenerationBusy(entry.second)
+                && !entry.second.pending.empty())
             {
               return true;
             }
@@ -427,7 +444,8 @@ void LifecycleExecutor::workerMain(const std::shared_ptr<State> &state)
         }
         for (const auto &entry : state->slots)
         {
-          if (!entry.second.inFlight && !entry.second.pending.empty())
+          if (!currentGenerationBusy(entry.second)
+              && !entry.second.pending.empty())
           {
             return true;
           }
@@ -465,7 +483,7 @@ void LifecycleExecutor::workerMain(const std::shared_ptr<State> &state)
         handler(job);
       }
     }
-    completeJob(*state, job.adapterId);
+    completeJob(*state, job);
   }
 }
 

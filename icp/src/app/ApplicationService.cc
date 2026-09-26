@@ -2375,30 +2375,36 @@ void ApplicationService::onPollCycle()
       // backoff and nextAutoReconnectAt. Do not clear a latch that still
       // matches in-flight/pending Connect, RecoveryConnect, or Reconnect
       // (operator follow-up and hung connect() stay owned by that job).
+      const bool connectStyleBusy =
+          this->hasConnectStyleLifecycleWork(record.adapterId);
       if (diag.autoReconnectInFlight
           || (this->reconnect_in_progress_.count(record.adapterId) != 0
               && this->reconnect_in_progress_.at(record.adapterId)))
       {
-        if (this->hasConnectStyleLifecycleWork(record.adapterId))
+        if (!connectStyleBusy)
         {
-          continue;
+          diag.autoReconnectInFlight = false;
+          this->reconnect_in_progress_.erase(record.adapterId);
         }
-        diag.autoReconnectInFlight = false;
-        this->reconnect_in_progress_.erase(record.adapterId);
       }
-      const bool lifecycleBusy =
-          this->hasConnectStyleLifecycleWork(record.adapterId)
-          || this->lifecycle_->hasInFlightOrPending(
-                 record.adapterId, LifecycleOp::Disconnect);
-      if (diag.autoConnectDesired && !lifecycleBusy && pollExecutor
-          && pollExecutor->hasInFlight(record.adapterId))
+      if (this->isRecoveryIsolationCandidate(
+              record.adapterId, diag.autoConnectDesired, state, pollExecutor))
       {
         isolationCandidates.push_back(record.adapterId);
       }
-      else if (!diag.autoConnectDesired || pollExecutor == nullptr
-               || !pollExecutor->hasInFlight(record.adapterId))
+      else
       {
         this->recovery_isolation_busy_since_.erase(record.adapterId);
+      }
+      // Do not enqueue another RecoveryConnect while connect-style work already
+      // owns the latch — but still consider isolation above (obstructed
+      // RecoveryConnect must not skip the 2s detector).
+      if (connectStyleBusy
+          && (diag.autoReconnectInFlight
+              || (this->reconnect_in_progress_.count(record.adapterId) != 0
+                  && this->reconnect_in_progress_.at(record.adapterId))))
+      {
+        continue;
       }
       if (diag.nextAutoReconnectAt.time_since_epoch().count() == 0)
       {
@@ -2454,7 +2460,7 @@ void ApplicationService::onPollCycle()
       }
       if (!shutting)
       {
-        this->isolateObstructedPollRuntime(adapterId);
+        this->isolateObstructedRuntime(adapterId);
         isolated.push_back(adapterId);
       }
     }
@@ -3154,7 +3160,37 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
   return report;
 }
 
-void ApplicationService::isolateObstructedPollRuntime(const std::string &adapterId)
+bool ApplicationService::isRecoveryIsolationCandidate(
+    const std::string &adapterId,
+    bool autoConnectDesired,
+    ConnectionState connectionState,
+    const std::shared_ptr<PollExecutor> &pollExecutor) const
+{
+  if (!autoConnectDesired)
+  {
+    return false;
+  }
+  // Operator Connect/Reconnect and Disconnect are legitimate occupancy of
+  // io_mutex. Do not isolate a slow operator Connect.
+  if (this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Disconnect)
+      || this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Connect)
+      || this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Reconnect))
+  {
+    return false;
+  }
+  // Obstructed automatic RecoveryConnect: isolate only a retry that started
+  // from FAULTED. A first connect from Disconnected may legally hold io_mutex
+  // for timeoutMs (e.g. blackhole) and must not be rematerialized at 2s.
+  if (this->lifecycle_->hasInFlightOrPending(
+          adapterId, LifecycleOp::RecoveryConnect))
+  {
+    return connectionState == ConnectionState::Faulted;
+  }
+  // Hung poll: poll in-flight, no connect-style operator/recovery job.
+  return pollExecutor && pollExecutor->hasInFlight(adapterId);
+}
+
+void ApplicationService::isolateObstructedRuntime(const std::string &adapterId)
 {
   if (this->shutdown_flag_ && this->shutdown_flag_->load())
   {
