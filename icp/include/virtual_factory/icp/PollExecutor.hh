@@ -60,6 +60,10 @@ public:
   bool running() const;
   bool hasAbandonedWorkers() const;
 
+  /// True when this adapter has a poll job in-flight (running or acquired).
+  /// Non-blocking; does not wait on io_mutex or poll completion.
+  bool hasInFlight(const std::string &adapterId) const;
+
   /// Test helper: wait until no in-flight and no pending polls.
   bool waitUntilIdle(std::chrono::milliseconds timeout);
 

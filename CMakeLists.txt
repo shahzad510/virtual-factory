@@ -326,7 +326,7 @@ if (_VF_NLOHMANN_FOR_ICP_API)
 endif()
 target_link_libraries(icp_lifecycle_recovery_test PRIVATE virtual_factory_icp pthread)
 add_test(NAME icp_lifecycle_recovery_test COMMAND icp_lifecycle_recovery_test)
-set_tests_properties(icp_lifecycle_recovery_test PROPERTIES TIMEOUT 60)
+set_tests_properties(icp_lifecycle_recovery_test PROPERTIES TIMEOUT 120)
 
 add_executable(icp_configuration_isolation_test
     tests/icp_configuration_isolation_test.cc

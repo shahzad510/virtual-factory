@@ -99,7 +99,15 @@ AdapterManagerResult AdapterManager::connectAdapter(const std::string &adapterId
 
   std::vector<std::string> candidateIds;
   {
-    std::lock_guard<std::mutex> io(*handle.io_mutex);
+    std::unique_lock<std::mutex> io(*handle.io_mutex, std::try_to_lock);
+    if (!io.owns_lock())
+    {
+      AdapterManagerResult busy;
+      busy.ok = false;
+      busy.ioBusy = true;
+      busy.message = "adapter I/O busy";
+      return busy;
+    }
     if (handle.adapter->connectionState() == ConnectionState::Connected)
     {
       for (Equipment *equipment : handle.adapter->equipment())

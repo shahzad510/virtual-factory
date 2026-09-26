@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — same-adapter recovery isolation when hung poll holds io_mutex
+
+- `AdapterManager::connectAdapter` fail-fast: `try_lock` on per-adapter `io_mutex`; returns `ioBusy` instead of occupying the LifecycleExecutor FIFO
+- `PollExecutor::hasInFlight(adapterId)` observes an in-flight poll without waiting
+- ControlPlaneTick detects obstructed poll (FAULTED / auto-recovery eligible, poll in-flight, `io_mutex` busy, `kRecoveryIsolationBusyMs` = 2000) then create-first extract/rematerialize, Teardown(old), and `RecoveryConnect` for the new generation
+- Isolation does not start after `shutdown_flag_` / `running_ == false`
+- Old poll is not cancelled or joined; enrolled gate still blocks stale cache publication
+- Stale lifecycle completion does not overwrite replacement state/diagnostics/cache
+- Operator Connect/Reconnect follow-up, Slice A latch reconcile, and config rematerialize pending-clear are unchanged
+- Extracted `Teardown` uses a distinct LifecycleExecutor FIFO slot so a hung old `poll()` cannot block `RecoveryConnect` on the replacement runtime
+- Regression: `icp_lifecycle_recovery_test` cases I–M
+
+### Fixed — automatic recovery latch after generation-dropped RecoveryConnect
+
+- `onPollCycle` clears `autoReconnectInFlight` / `reconnect_in_progress_` when LifecycleExecutor has no connect-style work, so a generation bump that discards a pending `RecoveryConnect` cannot leave a phantom latch
+- Enabled rematerialize (`ensureRuntimeAdapter`) clears the same recovery latches (keeps `autoConnectDesired` and backoff)
+- Automatic backoff and operator Connect/Reconnect follow-up are unchanged
+- Regression: `icp_lifecycle_recovery_test` case H
+
 ### Fixed — Reconnect must not discard an in-flight Connect/RecoveryConnect
 
 - `reconnectAdapter` no longer bumps generation while Connect, RecoveryConnect, or Reconnect is already in-flight/pending
@@ -15,6 +34,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Disconnect / disable / extract still cancel in-flight connect (clear desired + bump generation)
 - GUI Connect/Reconnect flash "request accepted" rather than protocol success
 - Regression: `icp_lifecycle_recovery_test`
+
+### Fixed — operator Connect/Reconnect follow-up after in-flight connect failure
+
+- Operator Connect/Reconnect while Connect/RecoveryConnect is in-flight still does not start a parallel `connect()` or bump generation
+- A pending operator intent is recorded; if the in-flight attempt fails, one follow-up `Connect` is queued behind it (`enqueueFollowUp`) and runs without waiting for automatic backoff
+- In-flight success still keeps the connection and clears the pending operator request
+- Automatic RecoveryConnect backoff is unchanged when no operator request is pending
+- Enabled rematerialize (`ensureRuntimeAdapter`) clears `pending_operator_connect_` so a replacement runtime never inherits the previous instance's operator follow-up
+- Regression: `icp_lifecycle_recovery_test` cases A–G
 
 ### Fixed — P3 poll isolation (dedicated PollExecutor)
 
