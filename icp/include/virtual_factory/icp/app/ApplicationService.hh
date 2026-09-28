@@ -396,12 +396,15 @@ private:
   /// Same-adapter recovery isolation: extract a runtime whose hung poll() or
   /// obstructed automatic RecoveryConnect is holding io_mutex so a replacement
   /// can RecoveryConnect. Preserves operator intent; does not cancel/join the
-  /// old protocol call.
-  void isolateObstructedRuntime(const std::string &adapterId);
-  /// Hung poll, or automatic RecoveryConnect in-flight while already FAULTED.
-  /// Operator Connect/Reconnect/Disconnect (including coalesced operator
-  /// Connect recorded as pending_operator_connect_), and a slow first connect
-  /// from Disconnected, are never isolation-eligible.
+  /// old protocol call. elapsedBusy is the observed io_mutex occupancy used
+  /// in the isolation diagnostic (timeoutMs + slack for hung RecoveryConnect).
+  void isolateObstructedRuntime(
+      const std::string &adapterId, std::chrono::milliseconds elapsedBusy);
+  /// Hung poll, or in-flight automatic RecoveryConnect (FAULTED or
+  /// DISCONNECTED) past timeoutMs+slack. Operator Connect/Reconnect/Disconnect
+  /// (including coalesced operator Connect recorded as pending_operator_connect_)
+  /// are never isolation-eligible. A timeout-bound connect() that returns is
+  /// not a hung connect.
   bool isRecoveryIsolationCandidate(
       const std::string &adapterId,
       bool autoConnectDesired,
@@ -486,13 +489,14 @@ private:
   mutable std::unordered_map<std::string, bool> pending_operator_connect_;
   /// First observation of io_mutex busy for same-adapter recovery isolation
   /// (ControlPlaneTick). Hung poll uses kRecoveryIsolationBusyMs; hung
-  /// RecoveryConnect uses timeoutMs + kHungConnectIsolationSlack.
+  /// RecoveryConnect (FAULTED or DISCONNECTED) uses timeoutMs + slack.
   mutable std::unordered_map<std::string, std::chrono::steady_clock::time_point>
       recovery_isolation_busy_since_;
   static constexpr std::chrono::milliseconds kRecoveryIsolationBusyMs{2000};
   /// Extra wait beyond protocol timeoutMs before treating an in-flight
-  /// RecoveryConnect as hung. Timeout-bound connect() must be allowed to
-  /// return and reach applyConnectOutcome().
+  /// automatic RecoveryConnect as hung (FAULTED or still DISCONNECTED).
+  /// Timeout-bound connect() must be allowed to return and reach
+  /// applyConnectOutcome() on the same runtime.
   static constexpr std::chrono::milliseconds kHungConnectIsolationSlack{500};
   static constexpr int kDefaultConnectTimeoutMs{2000};
   /// Open alarm identities → current occurrence (process-lifetime; no poll dupes).

@@ -2398,7 +2398,9 @@ void ApplicationService::onPollCycle()
       }
       // Do not enqueue another RecoveryConnect while connect-style work already
       // owns the latch — but still consider isolation above (obstructed poll
-      // or a RecoveryConnect hung past timeoutMs+slack must not skip detection).
+      // or a RecoveryConnect hung past timeoutMs+slack — including a first
+      // DISCONNECTED RecoveryConnect that never returned — must not skip
+      // detection).
       if (connectStyleBusy
           && (diag.autoReconnectInFlight
               || (this->reconnect_in_progress_.count(record.adapterId) != 0
@@ -2430,6 +2432,7 @@ void ApplicationService::onPollCycle()
       ioBusy = !io.owns_lock();
     }
     bool persist = false;
+    std::chrono::milliseconds elapsedBusy{0};
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       if (!this->running_ || !ioBusy)
@@ -2445,6 +2448,8 @@ void ApplicationService::onPollCycle()
         }
         if (isolationNow - since >= this->recoveryIsolationBusyLimit(adapterId))
         {
+          elapsedBusy = std::chrono::duration_cast<std::chrono::milliseconds>(
+              isolationNow - since);
           this->recovery_isolation_busy_since_.erase(adapterId);
           persist = true;
         }
@@ -2460,7 +2465,7 @@ void ApplicationService::onPollCycle()
       }
       if (!shutting)
       {
-        this->isolateObstructedRuntime(adapterId);
+        this->isolateObstructedRuntime(adapterId, elapsedBusy);
         isolated.push_back(adapterId);
       }
     }
@@ -3186,15 +3191,16 @@ bool ApplicationService::isRecoveryIsolationCandidate(
   {
     return false;
   }
-  // Obstructed automatic RecoveryConnect: isolate only a retry that started
-  // from FAULTED. A first connect from Disconnected may legally hold io_mutex
-  // for timeoutMs (e.g. blackhole) and must not be rematerialized at 2s.
-  // A FAULTED retry that owns io_mutex is still timeout-bound; isolation uses
-  // timeoutMs+slack (see recoveryIsolationBusyLimit), not the 2s poll window.
-  if (this->lifecycle_->hasInFlightOrPending(
-          adapterId, LifecycleOp::RecoveryConnect))
+  // In-flight automatic RecoveryConnect that still owns io_mutex: isolate
+  // after timeoutMs+slack whether the live state is FAULTED or still
+  // DISCONNECTED. A first RecoveryConnect that never returns never reaches
+  // applyConnectOutcome; treating only FAULTED as eligible
+  // leaves autoReconnectInFlight true forever. Pending-only RecoveryConnect
+  // is not a hung connect (hung poll uses the 2s window below).
+  if (this->lifecycle_->hasInFlight(adapterId, LifecycleOp::RecoveryConnect))
   {
-    return connectionState == ConnectionState::Faulted;
+    return connectionState == ConnectionState::Faulted
+        || connectionState == ConnectionState::Disconnected;
   }
   // Hung poll: poll in-flight, no connect-style operator/recovery job.
   return pollExecutor && pollExecutor->hasInFlight(adapterId);
@@ -3221,7 +3227,8 @@ std::chrono::milliseconds ApplicationService::recoveryIsolationBusyLimit(
   return kRecoveryIsolationBusyMs;
 }
 
-void ApplicationService::isolateObstructedRuntime(const std::string &adapterId)
+void ApplicationService::isolateObstructedRuntime(
+    const std::string &adapterId, std::chrono::milliseconds elapsedBusy)
 {
   if (this->shutdown_flag_ && this->shutdown_flag_->load())
   {
@@ -3232,6 +3239,15 @@ void ApplicationService::isolateObstructedRuntime(const std::string &adapterId)
   if (record == nullptr || !record->enabled)
   {
     return;
+  }
+
+  const bool hungRecoveryConnect = this->lifecycle_->hasInFlight(
+      adapterId, LifecycleOp::RecoveryConnect);
+  const std::uint64_t stuckGeneration = this->lifecycle_->generation(adapterId);
+  int timeoutMs = kDefaultConnectTimeoutMs;
+  if (record->connection.timeoutMs > 0)
+  {
+    timeoutMs = record->connection.timeoutMs;
   }
 
   bool desired = false;
@@ -3287,6 +3303,25 @@ void ApplicationService::isolateObstructedRuntime(const std::string &adapterId)
   if (!added.ok)
   {
     return;
+  }
+
+  if (hungRecoveryConnect)
+  {
+    ApplicationEvent ev;
+    ev.level = "warning";
+    ev.category = "recovery";
+    ev.eventType = "recovery_runtime_isolated";
+    ev.adapterId = adapterId;
+    ev.protocol = record->protocol;
+    ev.reason = "hung automatic recovery connection";
+    ev.durationMs = elapsedBusy.count();
+    ev.message =
+        "Automatic recovery connection exceeded its configured timeout and "
+        "the runtime was isolated/replaced (timeoutMs="
+        + std::to_string(timeoutMs) + ", elapsedMs="
+        + std::to_string(elapsedBusy.count()) + ", generation="
+        + std::to_string(stuckGeneration) + ").";
+    this->recordEvent(std::move(ev));
   }
 
   bool stillDesired = false;

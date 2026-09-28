@@ -12,7 +12,11 @@
 /// the adapter timeoutMs plus slack is isolated the same way (replacement
 /// runtime; old connect() is not cancelled). A timeout-bound RecoveryConnect
 /// that returns {ok=false, ioBusy=false} must stay on the same runtime and
-/// become FAULTED via applyConnectOutcome.
+/// become FAULTED via applyConnectOutcome. A first automatic RecoveryConnect
+/// that remains in-flight while still DISCONNECTED past timeoutMs+slack is
+/// isolated the same way so automatic recovery can continue without HTTP
+/// Connect. Operator Connect/Reconnect is not isolated merely because it is
+/// slow.
 
 #include "opcua_test_server.hh"
 
@@ -1432,6 +1436,309 @@ int main()
            "O second failure is FAULTED via applyConnectOutcome");
     expect(service.manager().adapterCount() == 1,
            "O still one enrolled runtime after two timeout-bound failures");
+
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // P) First automatic RecoveryConnect starts while DISCONNECTED, remains
+  //    in-flight past timeoutMs+slack, never becomes FAULTED via
+  //    applyConnectOutcome, is isolated, and the replacement RecoveryConnect
+  //    reaches CONNECTED without HTTP Connect/Reconnect. OLD connect() stays
+  //    blocked. Cross-adapter peer remains independent.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("p-cfg.json");
+    const std::string hist = tempPath("p-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-p");
+    hangCfg.connection.timeoutMs = 500;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "P upsert hung adapter");
+    expect(service.upsertAdapterConfig(makeMock("hang-p-other")).ok,
+           "P upsert independent adapter");
+    expect(service.saveConfiguration().ok, "P save");
+    expect(service.loadConfiguration().ok, "P load arms autoConnectDesired");
+    {
+      auto extracted = service.manager().extractAdapter("hang-p");
+      (void)extracted;
+    }
+    auto gate = std::make_shared<HangGate>();
+    auto hang = std::make_unique<GatedConnectAdapter>("hang-p", gate);
+    hang->setPeerAvailable(false);
+    GatedConnectAdapter *raw = hang.get();
+    expect(service.manager().addAdapter(std::move(hang)).ok, "P add gated runtime");
+    virtual_factory::IndustrialAdapter *otherBeforeStart =
+        service.manager().adapter("hang-p-other");
+    expect(otherBeforeStart != nullptr, "P independent runtime present");
+    service.start();
+
+    expect(raw->waitConnectEntered(std::chrono::milliseconds(4000)),
+           "P first RecoveryConnect entered connect() while DISCONNECTED");
+    expect(raw->connectEntered() == 1, "P exactly one in-flight connect()");
+    expect(raw->connectFailed() == 0 && raw->connectCompleted() == 0,
+           "P OLD connect() has not returned");
+    {
+      auto v = service.adapter("hang-p");
+      expect(v && v->connectionState == "DISCONNECTED",
+             "P live state remains DISCONNECTED (applyConnectOutcome not reached)");
+    }
+    expect(sessionOf(service, "hang-p").failedConnections == 0,
+           "P failedConnections stays 0 while RecoveryConnect is hung");
+    expect(sessionOf(service, "hang-p").connectionAttempts == 0,
+           "P no operator Connect on first-DISCONNECTED hang");
+    expect(sessionOf(service, "hang-p").autoConnectDesired,
+           "P autoConnectDesired armed by materialize");
+    expect(sessionOf(service, "hang-p").reconnectCount >= 1,
+           "P RecoveryConnect was scheduled");
+    expect(waitFor(
+               [&]() {
+                 auto v = service.adapter("hang-p-other");
+                 return v && v->connectionState == "CONNECTED";
+               },
+               std::chrono::milliseconds(4000)),
+           "P independent adapter CONNECTED while hang-p is stuck");
+
+    const virtual_factory::icp::AdapterManager::IoHandle oldHandle =
+        service.manager().resolveIoHandle("hang-p");
+    expect(oldHandle.adapter.get() == raw, "P enrolled runtime is gated adapter");
+    expect(oldHandle.io_mutex != nullptr, "P OLD io_mutex present");
+    virtual_factory::IndustrialAdapter *otherDuringHang =
+        service.manager().adapter("hang-p-other");
+    expect(otherDuringHang == otherBeforeStart,
+           "P independent adapter was not rematerialized during hang");
+
+    raw->setPeerAvailable(true);
+
+    expect(waitFor(
+               [&]() {
+                 virtual_factory::IndustrialAdapter *runtime =
+                     service.manager().adapter("hang-p");
+                 auto v = service.adapter("hang-p");
+                 return runtime != nullptr && runtime != raw && v
+                     && v->connectionState == "CONNECTED"
+                     && raw->connectCompleted() == 0
+                     && raw->connectEntered() == 1
+                     && raw->connectFailed() == 0;
+               },
+               std::chrono::milliseconds(8000)),
+           "P isolated replacement CONNECTED while OLD DISCONNECTED connect() blocked");
+    expect(service.manager().adapterCount() == 2,
+           "P two enrolled runtimes after isolation (hang-p + independent)");
+    virtual_factory::IndustrialAdapter *replacement =
+        service.manager().adapter("hang-p");
+    expect(replacement != nullptr && replacement != raw,
+           "P NEW runtime is a different object");
+    const virtual_factory::icp::AdapterManager::IoHandle newHandle =
+        service.manager().resolveIoHandle("hang-p");
+    expect(newHandle.io_mutex != nullptr
+               && newHandle.io_mutex != oldHandle.io_mutex,
+           "P NEW runtime has a fresh io_mutex");
+    expect(oldHandle.enrolled && !oldHandle.enrolled->load(),
+           "P OLD runtime unenrolled");
+    expect(sessionOf(service, "hang-p").connectionAttempts == 0,
+           "P still no operator Connect after isolation");
+    expect(sessionOf(service, "hang-p").successfulConnections >= 1,
+           "P NEW RecoveryConnect incremented successfulConnections");
+    expect(sessionOf(service, "hang-p").failedConnections == 0,
+           "P hung DISCONNECTED connect was not classified as a returned failure");
+    expect(service.manager().adapter("hang-p-other") == otherDuringHang,
+           "P independent adapter identity unchanged after isolation");
+    {
+      auto other = service.adapter("hang-p-other");
+      expect(other && other->connectionState == "CONNECTED",
+             "P independent adapter remains CONNECTED");
+    }
+
+    bool sawIsolationEvent = false;
+    for (const auto &ev : service.events(100))
+    {
+      if (ev.adapterId == "hang-p"
+          && ev.eventType == "recovery_runtime_isolated")
+      {
+        sawIsolationEvent = true;
+        expect(ev.reason == "hung automatic recovery connection",
+               "P isolation reason is hung automatic recovery connection");
+        expect(ev.durationMs >= 1000,
+               "P isolation waited at least timeoutMs+slack");
+        expect(ev.message.find("isolated/replaced") != std::string::npos,
+               "P isolation message describes runtime replacement");
+        expect(ev.message.find("timeoutMs=500") != std::string::npos,
+               "P isolation message includes configured timeout");
+      }
+    }
+    expect(sawIsolationEvent, "P recorded hung automatic recovery isolation event");
+
+    const auto successBeforeOldReturn =
+        sessionOf(service, "hang-p").successfulConnections;
+    gate->open();
+    expect(waitFor(
+               [&]() {
+                 return raw->connectFailed() >= 1 || raw->connectCompleted() >= 1;
+               },
+               std::chrono::milliseconds(2000)),
+           "P OLD connect() returned after gate open");
+    expect(service.manager().adapter("hang-p") == replacement,
+           "P OLD completion did not replace NEW runtime");
+    expect(service.manager().adapterCount() == 2,
+           "P adapter count remains 2 after OLD connect returns");
+    auto after = service.adapter("hang-p");
+    expect(after && after->connectionState == "CONNECTED",
+           "P NEW remains CONNECTED after OLD connect returns");
+    expect(sessionOf(service, "hang-p").successfulConnections
+               >= successBeforeOldReturn,
+           "P OLD completion did not clear NEW success counters");
+    expect(sessionOf(service, "hang-p").failedConnections == 0,
+           "P OLD completion did not mark NEW FAULTED");
+    expect(sessionOf(service, "hang-p").connectionAttempts == 0,
+           "P OLD completion did not count an operator Connect");
+
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // P2) Isolation with OLD RecoveryConnect still stuck must not prevent
+  //     bounded shutdown. Open the gate only after stop() returns.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("p2-cfg.json");
+    const std::string hist = tempPath("p2-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-p2");
+    hangCfg.connection.timeoutMs = 500;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "P2 upsert");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "P2 save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-p2");
+      (void)extracted;
+    }
+    auto gate = std::make_shared<HangGate>();
+    auto hang = std::make_unique<GatedConnectAdapter>("hang-p2", gate);
+    hang->setPeerAvailable(false);
+    GatedConnectAdapter *raw = hang.get();
+    expect(service.manager().addAdapter(std::move(hang)).ok, "P2 add gated");
+    service.start();
+    expect(raw->waitConnectEntered(std::chrono::milliseconds(4000)),
+           "P2 first RecoveryConnect entered");
+    raw->setPeerAvailable(true);
+    expect(waitFor(
+               [&]() {
+                 virtual_factory::IndustrialAdapter *runtime =
+                     service.manager().adapter("hang-p2");
+                 auto v = service.adapter("hang-p2");
+                 return runtime != nullptr && runtime != raw && v
+                     && v->connectionState == "CONNECTED"
+                     && raw->connectEntered() == 1
+                     && raw->connectCompleted() == 0;
+               },
+               std::chrono::milliseconds(8000)),
+           "P2 NEW CONNECTED while OLD connect() still blocked");
+    expect(raw->connectFailed() == 0 && raw->connectCompleted() == 0,
+           "P2 OLD still in-flight at shutdown");
+    const auto stopStarted = std::chrono::steady_clock::now();
+    service.stop();
+    const auto stopMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - stopStarted);
+    expect(stopMs < std::chrono::milliseconds(12000),
+           "P2 stop returned while isolated OLD connect() remained stuck");
+    gate->open();
+    expect(waitFor(
+               [&]() {
+                 return raw->connectFailed() >= 1 || raw->connectCompleted() >= 1;
+               },
+               std::chrono::milliseconds(2000)),
+           "P2 OLD connect() returned after stop + gate open");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // Q) Operator Connect that remains in-flight past timeoutMs+slack must
+  //    NOT be isolated. Same runtime becomes CONNECTED when connect()
+  //    returns; no recovery_runtime_isolated event.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("q-cfg.json");
+    const std::string hist = tempPath("q-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    service.start();
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-q");
+    hangCfg.connection.timeoutMs = 500;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "Q upsert");
+
+    auto gate = std::make_shared<HangGate>();
+    GatedConnectAdapter *raw = addGated(service, "hang-q", gate);
+    raw->setPeerAvailable(true);
+
+    auto started = service.connectAdapter("hang-q");
+    expect(started.ok && started.accepted, "Q operator Connect accepted");
+    expect(raw->waitConnectEntered(std::chrono::milliseconds(2000)),
+           "Q operator Connect entered connect()");
+    virtual_factory::IndustrialAdapter *original =
+        service.manager().adapter("hang-q");
+    expect(original == raw, "Q enrolled runtime is gated adapter");
+
+    const auto t0 = std::chrono::steady_clock::now();
+    bool rematerialized = false;
+    while (std::chrono::steady_clock::now() - t0
+           < std::chrono::milliseconds(2500))
+    {
+      if (service.manager().adapter("hang-q") != original)
+      {
+        rematerialized = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    expect(!rematerialized,
+           "Q operator Connect was not isolated past timeoutMs+slack");
+    expect(service.manager().adapter("hang-q") == original,
+           "Q same runtime after timeoutMs+slack window");
+    expect(service.manager().adapterCount() == 1, "Q one enrolled runtime");
+    expect(raw->connectEntered() == 1, "Q no replacement RecoveryConnect");
+    expect(raw->connectCompleted() == 0 && raw->connectFailed() == 0,
+           "Q operator connect() still in-flight");
+    {
+      auto v = service.adapter("hang-q");
+      expect(v && v->connectionState == "DISCONNECTED",
+             "Q still DISCONNECTED while operator Connect is in-flight");
+    }
+    bool sawIsolationEvent = false;
+    for (const auto &ev : service.events(100))
+    {
+      if (ev.adapterId == "hang-q"
+          && ev.eventType == "recovery_runtime_isolated")
+      {
+        sawIsolationEvent = true;
+      }
+    }
+    expect(!sawIsolationEvent, "Q did not emit hung-recovery isolation event");
+
+    raw->setPeerAvailable(true);
+    gate->open();
+    expect(waitFor(
+               [&]() {
+                 auto v = service.adapter("hang-q");
+                 return v && v->connectionState == "CONNECTED"
+                     && service.manager().adapter("hang-q") == original;
+               },
+               std::chrono::milliseconds(2000)),
+           "Q same runtime CONNECTED after operator Connect returns");
+    expect(raw->connectCompleted() == 1, "Q operator connect() succeeded");
+    expect(sessionOf(service, "hang-q").connectionAttempts >= 1,
+           "Q connectionAttempts counted the operator Connect");
+    expect(sessionOf(service, "hang-q").successfulConnections >= 1,
+           "Q successfulConnections incremented on the original runtime");
 
     service.stop();
     ::unlink(cfg.c_str());

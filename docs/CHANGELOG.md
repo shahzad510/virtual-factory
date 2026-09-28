@@ -8,10 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — isolate first-DISCONNECTED hung automatic RecoveryConnect
+
+- ControlPlaneTick isolation now treats a genuinely in-flight automatic `RecoveryConnect` that still holds `io_mutex` past `timeoutMs` plus `kHungConnectIsolationSlack` as isolation-eligible when live state is **DISCONNECTED** as well as FAULTED. A first RecoveryConnect that never returns never reaches `applyConnectOutcome()` / `enterFault()`, so FAULTED-only isolation left `autoReconnectInFlight` latched and blocked every later recovery tick.
+- Isolation threshold for hung RecoveryConnect remains configured `timeoutMs` + existing safety slack (not the hung-poll 2s window). A timeout-bound `connect()` that returns `{ok=false, ioBusy=false}` still becomes FAULTED on the **same** runtime and uses normal backoff.
+- Operator Connect/Reconnect (including coalesced operator Connect in `pending_operator_connect_`) is not isolated merely because it is slow.
+- Mechanism is protocol-neutral: generic in-flight RecoveryConnect + configured timeout. No OPC UA / `UA_Client_connect` special case.
+- Isolation still uses the existing rematerialize path (replacement runtime, generation bump, unique Teardown FIFO, new-generation RecoveryConnect). Diagnostic event `recovery_runtime_isolated` records adapter, timeout, elapsed duration, and reason `hung automatic recovery connection`.
+- Regression: `icp_lifecycle_recovery_test` case P (first DISCONNECTED hung RecoveryConnect isolated; NEW CONNECTED without HTTP Connect) and case Q (operator Connect is not isolated)
+
 ### Fixed — isolate obstructed automatic RecoveryConnect holding io_mutex
 
 - ControlPlaneTick isolation treats an in-flight automatic `RecoveryConnect` on an already-FAULTED adapter as isolation-eligible only after the adapter's `timeoutMs` (default 2000) plus `kHungConnectIsolationSlack` (500ms). A timeout-bound `connect()` that returns `{ok=false, ioBusy=false}` is not rematerialized at the hung-poll 2s mark; it reaches `applyConnectOutcome()` on the same runtime.
-- Hung-poll isolation remains `kRecoveryIsolationBusyMs` (2s). Operator Connect/Reconnect/Disconnect, coalesced operator Connect recorded in `pending_operator_connect_`, and a slow first connect from Disconnected still forbid isolation.
+- Hung-poll isolation remains `kRecoveryIsolationBusyMs` (2s). Operator Connect/Reconnect/Disconnect and coalesced operator Connect recorded in `pending_operator_connect_` still forbid isolation. A timeout-bound first connect that returns is not rematerialized at 2s; a first RecoveryConnect that remains in-flight past timeoutMs+slack is isolated (see above).
 - A stale in-flight RecoveryConnect after generation bump no longer occupies the replacement runtime's LifecycleExecutor FIFO (current-generation jobs may start; stale completion cannot clear the new occupant).
 - Slice A latch reconcile, unique Teardown FIFO, and automatic backoff for completed attempts are unchanged.
 - Regression: `icp_lifecycle_recovery_test` case N (peer up while RecoveryConnect `connect()` stays blocked) and case O (timeout-bound RecoveryConnect stays on the same runtime and becomes FAULTED)
