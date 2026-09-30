@@ -42,6 +42,8 @@ PHYSICAL FACTORY
 
 **Phase 6 / ICP today:** ICP **adapter foundation** COMPLETE. **ICP-1A** runtime **IMPLEMENTED** / **TESTED**. **ICP-1B** persistent configuration **IMPLEMENTED** / **TESTED**. **ICP standalone GUI / Application API IMPLEMENTED** / **TESTED** (isolated branch; `docs/icp-gui-architecture.md`). **ICP-1C CIC NOT STARTED.** **ICP Designer NOT STARTED.** **MES Core NOT STARTED.**
 
+**Recovery V2 Phase 2:** `RecoveryService` owns automatic-recovery **state + timer** (no retry queue). `ProbeExecutor` / `ProbeSession` own bounded automatic-recovery `connect()` I/O. `LifecycleExecutor` remains for explicit Connect / Disconnect / Teardown and unmigrated transitional `RecoveryConnect`. Logical cancellation ≠ physical SDK cancellation. A hung protocol call is quarantined (joinable, caps 8/2) so it cannot permanently consume recovery capacity. Operator Disconnect/Reconnect hang handling and CONNECTED-only poll are **not** redesigned in this slice. `RecoveryConnect` is not removed.
+
 Legacy layer view (still valid inside ICP):
 
 ```text

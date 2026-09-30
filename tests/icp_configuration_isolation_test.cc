@@ -162,6 +162,13 @@ bool waitForRecoveryInFlight(
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
   while (std::chrono::steady_clock::now() < deadline)
   {
+    if (service.probes().hasLogicalProbe(adapterId)
+        || service.probes().hasPhysicalFor(adapterId)
+        || service.lifecycle().hasInFlightOrPending(
+               adapterId, virtual_factory::icp::LifecycleOp::RecoveryConnect))
+    {
+      return true;
+    }
     const auto report = service.diagnosticsReport();
     for (const auto &row : report.adapters)
     {

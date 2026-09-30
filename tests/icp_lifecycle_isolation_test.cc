@@ -148,6 +148,13 @@ bool waitForRecoveryInFlight(
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
   while (std::chrono::steady_clock::now() < deadline)
   {
+    if (service.probes().hasLogicalProbe(adapterId)
+        || service.probes().hasPhysicalFor(adapterId)
+        || service.lifecycle().hasInFlightOrPending(
+               adapterId, virtual_factory::icp::LifecycleOp::RecoveryConnect))
+    {
+      return true;
+    }
     const auto report = service.diagnosticsReport();
     for (const auto &row : report.adapters)
     {
@@ -155,7 +162,8 @@ bool waitForRecoveryInFlight(
       {
         continue;
       }
-      // onPollCycle bumps reconnectCount when enqueueing RecoveryConnect.
+      // submitDueProbe bumps reconnectCount when handing a due probe to
+      // ProbeExecutor (transitional RecoveryConnect may still increment it).
       // State still DISCONNECTED (or not yet FAULTED) means connect I/O has not
       // finished — the adapter io_mutex is held or about to be held by the worker.
       if (row.session.reconnectCount >= 1
