@@ -174,6 +174,28 @@ AdapterManagerResult AdapterManager::connectAdapter(const std::string &adapterId
   return {true, "connected"};
 }
 
+AdapterManagerResult AdapterManager::commitConnectIfCurrent(
+    const std::string &adapterId,
+    const IndustrialAdapter *expected,
+    const std::vector<std::string> &equipmentIds)
+{
+  if (expected == nullptr)
+  {
+    return {false, "adapter not current: " + adapterId};
+  }
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  Entry *entry = this->findEntry(adapterId);
+  if (entry == nullptr || entry->adapter.get() != expected)
+  {
+    return {false, "adapter not current: " + adapterId};
+  }
+  if (entry->enrolled && !entry->enrolled->load())
+  {
+    return {false, "adapter not enrolled: " + adapterId};
+  }
+  return this->claimEquipmentOwnershipLocked(adapterId, equipmentIds);
+}
+
 AdapterManagerResult AdapterManager::disconnectAdapter(
     const std::string &adapterId)
 {

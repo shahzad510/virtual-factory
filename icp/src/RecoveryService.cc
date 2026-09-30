@@ -1,5 +1,6 @@
 #include <virtual_factory/icp/RecoveryService.hh>
 
+#include <algorithm>
 #include <utility>
 
 namespace virtual_factory
@@ -226,6 +227,35 @@ void RecoveryService::noteSuccess(const std::string &adapterId)
   this->notifyConnected(adapterId);
 }
 
+bool RecoveryService::noteSuccess(
+    const std::string &adapterId,
+    std::uint64_t probeId,
+    std::uint64_t runtimeEpoch)
+{
+  if (adapterId.empty() || probeId == 0)
+  {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  auto it = this->controls_.find(adapterId);
+  if (it == this->controls_.end() || !it->second.control.desired)
+  {
+    return false;
+  }
+  ControlEntry &entry = it->second;
+  if (entry.control.runtimeEpoch != runtimeEpoch
+      || entry.control.activeProbeId != probeId)
+  {
+    return false;
+  }
+  entry.control.state = RecoveryState::Connected;
+  this->clearScheduleLocked(entry);
+  this->resetBackoffLocked(entry);
+  entry.control.consecutiveFailures = 0;
+  this->notifyThreadLocked();
+  return true;
+}
+
 void RecoveryService::noteFailure(const std::string &adapterId)
 {
   if (adapterId.empty())
@@ -243,6 +273,42 @@ void RecoveryService::noteFailure(const std::string &adapterId)
   entry.control.backoffMs = doubledBackoff(entry.control.backoffMs);
   this->enterWaitLocked(entry, this->nowLocked() + entry.control.backoffMs);
   this->notifyThreadLocked();
+}
+
+bool RecoveryService::noteFailure(
+    const std::string &adapterId,
+    std::uint64_t probeId,
+    std::uint64_t runtimeEpoch)
+{
+  if (adapterId.empty() || probeId == 0)
+  {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  auto it = this->controls_.find(adapterId);
+  if (it == this->controls_.end() || !it->second.control.desired)
+  {
+    return false;
+  }
+  ControlEntry &entry = it->second;
+  if (entry.control.runtimeEpoch != runtimeEpoch
+      || entry.control.activeProbeId != probeId)
+  {
+    return false;
+  }
+  ++entry.control.consecutiveFailures;
+  entry.control.backoffMs = doubledBackoff(entry.control.backoffMs);
+  this->enterWaitLocked(entry, this->nowLocked() + entry.control.backoffMs);
+  this->notifyThreadLocked();
+  return true;
+}
+
+bool RecoveryService::noteTimeout(
+    const std::string &adapterId,
+    std::uint64_t probeId,
+    std::uint64_t runtimeEpoch)
+{
+  return this->noteFailure(adapterId, probeId, runtimeEpoch);
 }
 
 void RecoveryService::notifyConnected(const std::string &adapterId)
@@ -488,6 +554,15 @@ std::vector<RecoveryDueEvent> RecoveryService::collectDueLocked(
     event.recoverySequence = control.recoverySequence;
     due.push_back(event);
   }
+  std::sort(
+      due.begin(), due.end(),
+      [](const RecoveryDueEvent &a, const RecoveryDueEvent &b) {
+        if (a.recoverySequence != b.recoverySequence)
+        {
+          return a.recoverySequence < b.recoverySequence;
+        }
+        return a.adapterId < b.adapterId;
+      });
   return due;
 }
 

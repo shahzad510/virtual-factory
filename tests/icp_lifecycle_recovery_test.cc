@@ -369,7 +369,9 @@ bool lifecycleIdle(
              id, virtual_factory::icp::LifecycleOp::RecoveryConnect)
       && !life.hasInFlightOrPending(id, virtual_factory::icp::LifecycleOp::Reconnect)
       && !life.hasInFlightOrPending(
-             id, virtual_factory::icp::LifecycleOp::Disconnect);
+             id, virtual_factory::icp::LifecycleOp::Disconnect)
+      && !service.probes().hasLogicalProbe(id)
+      && !service.probes().hasPhysicalFor(id);
 }
 
 virtual_factory::icp::AdapterSessionDiagnostics sessionOf(
@@ -503,6 +505,10 @@ int currentConnectStyleCount(
     ++n;
   }
   if (life.hasInFlightOrPending(id, virtual_factory::icp::LifecycleOp::Reconnect))
+  {
+    ++n;
+  }
+  if (service.probes().hasLogicalProbe(id))
   {
     ++n;
   }
@@ -994,10 +1000,9 @@ int main()
   }
 
   // ---------------------------------------------------------------------
-  // H) Generation bump drops a pending RecoveryConnect; the phantom latch
-  //    is reconciled; automatic recovery proceeds without HTTP Connect.
-  //    Four gated Connect jobs occupy the lifecycle pool so the target
-  //    RecoveryConnect stays pending (not in-flight) until the bump.
+  // H) Occupied LifecycleExecutor workers must not block automatic recovery.
+  //    ProbeExecutor owns automatic connect(); bumpGeneration on lifecycle
+  //    does not drop the logical probe.
   // ---------------------------------------------------------------------
   {
     const std::string cfg = tempPath("h-cfg.json");
@@ -1058,35 +1063,16 @@ int main()
     expect(waitFor(
                [&]() {
                  return sessionOf(service, "hang-h").reconnectCount > recBefore
-                     && service.lifecycle().hasInFlightOrPending(
-                            "hang-h", LifecycleOp::RecoveryConnect);
+                     || service.probes().hasLogicalProbe("hang-h")
+                     || target->connectEntered() > enteredBefore;
                },
                std::chrono::milliseconds(8000)),
-           "H RecoveryConnect queued while workers occupied");
-    expect(target->connectEntered() == enteredBefore,
-           "H pending RecoveryConnect has not entered connect()");
-    expect(sessionOf(service, "hang-h").autoReconnectInFlight,
-           "H latch set when RecoveryConnect was enqueued");
-
-    (void)service.lifecycle().bumpGeneration("hang-h");
+           "H automatic probe proceeds despite occupied lifecycle workers");
     expect(!service.lifecycle().hasInFlightOrPending(
                "hang-h", LifecycleOp::RecoveryConnect),
-           "H bumpGeneration dropped pending RecoveryConnect");
+           "H automatic recovery does not consume RecoveryConnect");
 
-    expect(waitFor(
-               [&]() {
-                 const bool leBusy =
-                     service.lifecycle().hasInFlightOrPending(
-                         "hang-h", LifecycleOp::RecoveryConnect)
-                     || service.lifecycle().hasInFlightOrPending(
-                            "hang-h", LifecycleOp::Connect)
-                     || service.lifecycle().hasInFlightOrPending(
-                            "hang-h", LifecycleOp::Reconnect);
-                 return !sessionOf(service, "hang-h").autoReconnectInFlight
-                     || leBusy;
-               },
-               std::chrono::milliseconds(2000)),
-           "H latch reconciled or a new connect-style job was scheduled");
+    (void)service.lifecycle().bumpGeneration("hang-h");
 
     target->setPeerAvailable(true);
     for (auto &b : blockers)
@@ -1100,11 +1086,11 @@ int main()
                  return v && v->connectionState == "CONNECTED";
                },
                std::chrono::milliseconds(12000)),
-           "H automatic RecoveryConnect reaches CONNECTED after latch reconcile");
+           "H automatic probe reaches CONNECTED while lifecycle was occupied");
     expect(sessionOf(service, "hang-h").successfulConnections >= 1,
            "H successfulConnections incremented by automatic recovery");
     expect(sessionOf(service, "hang-h").connectionAttempts == attemptsBefore,
-           "H no HTTP Connect/Reconnect after generation drop");
+           "H no HTTP Connect/Reconnect after lifecycle occupancy");
     expect(target->connectCompleted() >= 1, "H target connect() succeeded");
 
     service.stop();
@@ -1917,8 +1903,12 @@ int main()
            "H1 Gen1 hung replacement entered after first isolation");
     expect(service.lifecycle().liveWorkerCount() == 4,
            "H1 live workers == 4 after first abandon");
+    expect(service.probes().liveWorkerCount() == 4,
+           "H1 probe live workers == 4 after first hang");
     expect(service.lifecycle().abandonedWorkerCount() <= 8,
            "H1 abandonedCount <= 8 after first abandon");
+    expect(service.probes().quarantinedWorkerCount() <= 8,
+           "H1 probe quarantine <= 8 after first hang");
 
     expect(waitFor(
                [&]() {
@@ -2141,6 +2131,12 @@ int main()
            "H4 per-adapter abandoned never exceeds 2");
     expect(service.lifecycle().liveWorkerCount() == 4,
            "H4 no extra joinable workers beyond 4");
+    expect(service.probes().quarantinedWorkerCount() <= 8,
+           "H4 probe quarantine never exceeds 8");
+    expect(service.probes().quarantinedWorkerCount("hang-h4") <= 2,
+           "H4 per-adapter probe quarantine never exceeds 2");
+    expect(service.probes().liveWorkerCount() == 4,
+           "H4 probe live workers stay at 4");
     expect(statusResponsive(service), "H4 status remains responsive");
     for (auto &g : gates)
     {
@@ -2451,12 +2447,11 @@ int main()
            "race Reconnect isolation paused after bump");
     const std::uint64_t genAtPause = service.lifecycle().generation("hang-race");
     expect(genAtPause == 1, "race Reconnect isolation bumped once to gen 1");
-    expect(service.lifecycle().hasInFlightAnyGeneration(
-               "hang-race", LifecycleOp::RecoveryConnect),
-           "race Reconnect stale RecoveryConnect still tracked");
+    expect(service.probes().hasPhysicalFor("hang-race"),
+           "race Reconnect stale physical probe still tracked");
     expect(!service.lifecycle().hasInFlightOrPending(
                "hang-race", LifecycleOp::RecoveryConnect),
-           "race Reconnect stale RecoveryConnect is not current-generation");
+           "race Reconnect automatic recovery is not on LifecycleExecutor");
 
     auto recon = service.reconnectAdapter("hang-race");
     expect(recon.ok && recon.accepted, "race Reconnect accepted during pause");
@@ -2473,11 +2468,13 @@ int main()
 
     expect(waitFor(
                [&]() {
-                 return service.lifecycle().abandonedWorkerCount("hang-race") == 1
+                 return service.probes().quarantinedWorkerCount("hang-race") >= 1
+                     || service.probes().quarantinedWorkerCount() >= 1
+                     || service.lifecycle().abandonedWorkerCount("hang-race") == 1
                      || service.lifecycle().abandonedWorkerCount() == 1;
                },
                std::chrono::milliseconds(3000)),
-           "race Reconnect stale Gen0 reclaimed");
+           "race Reconnect stale Gen0 probe quarantined or lifecycle reclaimed");
     expect(service.lifecycle().generation("hang-race") == genAtPause,
            "race Reconnect generation stayed at isolation bump");
     expect(currentConnectStyleCount(service, "hang-race") <= 1,

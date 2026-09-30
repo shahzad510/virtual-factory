@@ -118,6 +118,44 @@ OpcUaNodeRef mapOpcUaAddress(
 
 }  // namespace
 
+struct ApplicationProbeSink final : ProbeCompletionSink
+{
+  ApplicationProbeSink(
+      ApplicationService *app, std::shared_ptr<std::atomic<bool>> shutdown)
+      : app_(app), shutdown_(std::move(shutdown))
+  {
+  }
+
+  void detach()
+  {
+    std::lock_guard<std::mutex> lock(this->mu_);
+    this->app_ = nullptr;
+  }
+
+  void onProbeCompleted(const ProbeCompletion &completion) override
+  {
+    if (this->shutdown_ && this->shutdown_->load())
+    {
+      return;
+    }
+    ApplicationService *app = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(this->mu_);
+      app = this->app_;
+    }
+    if (app == nullptr)
+    {
+      return;
+    }
+    app->handleProbeCompletion(completion);
+  }
+
+private:
+  std::mutex mu_;
+  ApplicationService *app_{nullptr};
+  std::shared_ptr<std::atomic<bool>> shutdown_;
+};
+
 ApplicationService::ApplicationService(
     std::string configurationPath, std::string historyDatabasePath)
     : configuration_path_(std::move(configurationPath))
@@ -127,6 +165,9 @@ ApplicationService::ApplicationService(
               : std::move(historyDatabasePath))
     , service_started_at_(std::chrono::system_clock::now())
 {
+  this->probe_sink_ = std::make_shared<ApplicationProbeSink>(
+      this, this->shutdown_flag_);
+  this->probes_->setSink(this->probe_sink_);
   this->lifecycle_->setHandler(
       [this](const LifecycleJob &job) { this->executeLifecycleJob(job); });
 }
@@ -311,28 +352,26 @@ void ApplicationService::start()
     {
       return;
     }
-    // Open local historian without waiting on remote services. Failure is
-    // non-fatal: ICP and protocols continue; history reports degraded.
     this->ensureHistoryWriter();
     this->history_writer_->start();
-    // Lifecycle workers own blocking connect/disconnect I/O.
-    // PollExecutor owns parallel poll() I/O; PollScheduler only ticks.
     this->shutdown_flag_->store(false);
-    this->lifecycle_->start(4);
-    this->recovery_->start();
-    this->poll_executor_ =
-        std::make_shared<PollExecutor>(this->manager_, this->cache_);
-    this->poll_executor_->start(kDefaultPollWorkerCount);
-    this->scheduler_ = std::make_unique<PollScheduler>(
-        this->manager_,
-        this->cache_,
-        this->poll_executor_,
-        std::chrono::milliseconds(250));
-    // ControlPlaneTick: independent of poll completion (P3).
-    this->scheduler_->setAfterPollHook([this]() { this->onPollCycle(); });
-    this->scheduler_->start();
     this->running_ = true;
   }
+  this->lifecycle_->start(4);
+  this->probes_->start(kDefaultProbeWorkerCount);
+  this->recovery_->setDueObserver(
+      [this](const RecoveryDueEvent &event) { this->submitDueProbe(event); });
+  this->poll_executor_ =
+      std::make_shared<PollExecutor>(this->manager_, this->cache_);
+  this->poll_executor_->start(kDefaultPollWorkerCount);
+  this->scheduler_ = std::make_unique<PollScheduler>(
+      this->manager_,
+      this->cache_,
+      this->poll_executor_,
+      std::chrono::milliseconds(250));
+  this->scheduler_->setAfterPollHook([this]() { this->onPollCycle(); });
+  this->scheduler_->start();
+  this->recovery_->start();
   this->recordEvent("info", "runtime", "ICP application service started");
 }
 
@@ -364,13 +403,15 @@ void ApplicationService::stop()
   }
 
   // Recovery control thread performs no protocol I/O; join is wait_until-bounded.
+  this->recovery_->setDueObserver(nullptr);
   this->recovery_->stop();
 
-  // Pin graph for abandoned poll + lifecycle workers (smallest safe set).
+  // Pin graph for abandoned poll + lifecycle + probe workers.
   // - manager/cache: poll jobs resolve handles and publish telemetry
   // - poll_executor: abandoned poll State may still complete coalesce paths
   // - lifecycle: P2 abandoned connect/disconnect/Teardown
-  // - shutdown_flag: in-flight lifecycle skips AS diagnostics after stop
+  // - probes / probe_sink: Phase 2 abandoned recovery connect()
+  // - shutdown_flag: in-flight work skips AS diagnostics after stop
   // - adapters: filled by disconnectAllBounded for hung disconnect I/O
   struct ShutdownPin
   {
@@ -378,6 +419,8 @@ void ApplicationService::stop()
     std::shared_ptr<LiveStateCache> cache;
     std::shared_ptr<PollExecutor> poll_executor;
     std::shared_ptr<LifecycleExecutor> lifecycle;
+    std::shared_ptr<ProbeExecutor> probes;
+    std::shared_ptr<ProbeCompletionSink> probe_sink;
     std::shared_ptr<std::atomic<bool>> shutdown_flag;
     std::vector<std::shared_ptr<IndustrialAdapter>> adapters;
   };
@@ -386,7 +429,20 @@ void ApplicationService::stop()
   pin->cache = this->cache_;
   pin->poll_executor = poll_executor;
   pin->lifecycle = this->lifecycle_;
+  pin->probes = this->probes_;
+  pin->probe_sink = this->probe_sink_;
   pin->shutdown_flag = this->shutdown_flag_;
+
+  if (this->probes_)
+  {
+    this->probes_->cancelAll();
+    this->probes_->stop(kProbeShutdownGrace, pin);
+  }
+  if (auto *sink =
+          dynamic_cast<ApplicationProbeSink *>(this->probe_sink_.get()))
+  {
+    sink->detach();
+  }
 
   // Bounded poll drain/abandon before lifecycle (P3 then P2).
   if (poll_executor)
@@ -404,7 +460,9 @@ void ApplicationService::stop()
         kLifecycleShutdownGrace, &pin->adapters);
     const bool abandoned =
         (poll_executor && poll_executor->hasAbandonedWorkers())
-        || this->lifecycle_->hasAbandonedWorkers() || !pin->adapters.empty();
+        || this->lifecycle_->hasAbandonedWorkers()
+        || (this->probes_ && this->probes_->hasAbandonedWorkers())
+        || !pin->adapters.empty();
     if (abandoned)
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
@@ -636,6 +694,10 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
     // async Teardown. HTTP must not block on io_mutex / disconnect.
     (void)this->lifecycle_->bumpGeneration(id);
     this->recovery_->disable(id);
+    if (this->probes_)
+    {
+      this->probes_->cancel(id);
+    }
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       this->syncRecoveryDiagnosticsLocked(id);
@@ -708,6 +770,10 @@ ConfigResult ApplicationService::removeAdapterConfig(const std::string &adapterI
   // runtime without waiting on io_mutex; Teardown disconnects asynchronously.
   (void)this->lifecycle_->bumpGeneration(adapterId);
   this->recovery_->remove(adapterId);
+  if (this->probes_)
+  {
+    this->probes_->cancel(adapterId);
+  }
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     this->syncRecoveryDiagnosticsLocked(adapterId);
@@ -922,6 +988,10 @@ AdapterManagerResult ApplicationService::disconnectAdapter(
   // Invalidate queued recovery/connect before enqueueing Disconnect.
   const std::uint64_t generation = this->lifecycle_->bumpGeneration(adapterId);
   this->recovery_->disable(adapterId);
+  if (this->probes_)
+  {
+    this->probes_->cancel(adapterId);
+  }
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     this->syncRecoveryDiagnosticsLocked(adapterId);
@@ -1393,6 +1463,16 @@ LifecycleExecutor &ApplicationService::lifecycle()
   return *this->lifecycle_;
 }
 
+ProbeExecutor &ApplicationService::probes()
+{
+  return *this->probes_;
+}
+
+const ProbeExecutor &ApplicationService::probes() const
+{
+  return *this->probes_;
+}
+
 RecoveryService &ApplicationService::recovery()
 {
   return *this->recovery_;
@@ -1452,7 +1532,10 @@ bool ApplicationService::hasConnectStyleLifecycleWork(const std::string &adapter
   return this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Connect)
       || this->lifecycle_->hasInFlightOrPending(
              adapterId, LifecycleOp::RecoveryConnect)
-      || this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Reconnect);
+      || this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Reconnect)
+      || (this->probes_
+          && (this->probes_->hasLogicalProbe(adapterId)
+              || this->probes_->hasPhysicalFor(adapterId)));
 }
 
 bool ApplicationService::hasConnectStyleWorkAnyGeneration(
@@ -1463,7 +1546,10 @@ bool ApplicationService::hasConnectStyleWorkAnyGeneration(
       || this->lifecycle_->hasInFlightOrPendingAnyGeneration(
              adapterId, LifecycleOp::RecoveryConnect)
       || this->lifecycle_->hasInFlightOrPendingAnyGeneration(
-             adapterId, LifecycleOp::Reconnect);
+             adapterId, LifecycleOp::Reconnect)
+      || (this->probes_
+          && (this->probes_->hasLogicalProbe(adapterId)
+              || this->probes_->hasPhysicalFor(adapterId)));
 }
 
 void ApplicationService::maybeEnqueueOperatorFollowUp(const std::string &adapterId)
@@ -2400,10 +2486,197 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
   }
 }
 
+std::chrono::milliseconds ApplicationService::probeTimeoutFor(
+    const std::string &adapterId) const
+{
+  int timeoutMs = kDefaultConnectTimeoutMs;
+  if (const AdapterConfigRecord *record = this->catalog_.adapter(adapterId))
+  {
+    if (record->connection.timeoutMs > 0)
+    {
+      timeoutMs = record->connection.timeoutMs;
+    }
+  }
+  return std::chrono::milliseconds(timeoutMs) + kHungConnectIsolationSlack;
+}
+
+void ApplicationService::submitDueProbe(const RecoveryDueEvent &event)
+{
+  if (event.adapterId.empty() || event.probeId == 0)
+  {
+    return;
+  }
+  if (this->shutdown_flag_ && this->shutdown_flag_->load())
+  {
+    return;
+  }
+  if (!this->probes_ || !this->probes_->running())
+  {
+    this->recovery_->releaseLogicalProbe(event.adapterId);
+    return;
+  }
+  if (this->probes_->hasLogicalProbe(event.adapterId, event.probeId))
+  {
+    return;
+  }
+  if (this->lifecycle_->hasInFlightOrPendingAnyGeneration(
+          event.adapterId, LifecycleOp::Connect)
+      || this->lifecycle_->hasInFlightOrPendingAnyGeneration(
+             event.adapterId, LifecycleOp::Reconnect)
+      || this->lifecycle_->hasInFlightOrPendingAnyGeneration(
+             event.adapterId, LifecycleOp::Disconnect))
+  {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    const auto pending = this->pending_operator_connect_.find(event.adapterId);
+    if (pending != this->pending_operator_connect_.end() && pending->second)
+    {
+      return;
+    }
+  }
+
+  AdapterManager::IoHandle handle = this->manager_->resolveIoHandle(event.adapterId);
+  if (handle.adapter == nullptr || handle.io_mutex == nullptr)
+  {
+    this->recovery_->deferRetry(event.adapterId);
+    return;
+  }
+
+  ProbeRequest request;
+  request.adapterId = event.adapterId;
+  request.probeId = event.probeId;
+  request.runtimeEpoch = event.runtimeEpoch;
+  request.recoverySequence = event.recoverySequence;
+  request.adapter = handle.adapter;
+  request.ioMutex = handle.io_mutex;
+  request.enrolled = handle.enrolled;
+  request.timeout = this->probeTimeoutFor(event.adapterId);
+  if (!this->probes_->submit(std::move(request)))
+  {
+    this->recovery_->deferRetry(event.adapterId);
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    ++this->diagnosticsFor(event.adapterId).autoReconnectAttempts;
+    ++this->diagnosticsFor(event.adapterId).reconnectCount;
+    this->syncRecoveryDiagnosticsLocked(event.adapterId);
+  }
+}
+
+void ApplicationService::handleProbeCompletion(const ProbeCompletion &completion)
+{
+  if (this->shutdown_flag_ && this->shutdown_flag_->load())
+  {
+    return;
+  }
+  if (completion.adapterId.empty())
+  {
+    return;
+  }
+
+  if (completion.outcome == ProbeOutcome::Timeout)
+  {
+    const RecoveryControlSnapshot snap =
+        this->recovery_->snapshot(completion.adapterId);
+    IndustrialAdapter *current = this->manager_->adapter(completion.adapterId);
+    const bool currentRuntime =
+        completion.adapter && current == completion.adapter.get();
+    if (snap.desired
+        && (currentRuntime
+            || (snap.runtimeEpoch == completion.runtimeEpoch
+                && snap.activeProbeId == completion.probeId)))
+    {
+      if (!this->isolateObstructedRuntime(
+              completion.adapterId, this->probeTimeoutFor(completion.adapterId)))
+      {
+        (void)this->recovery_->noteTimeout(
+            completion.adapterId, completion.probeId, completion.runtimeEpoch);
+      }
+    }
+    return;
+  }
+
+  if (completion.outcome == ProbeOutcome::Cancelled
+      || completion.outcome == ProbeOutcome::Stale)
+  {
+    return;
+  }
+
+  if (completion.outcome == ProbeOutcome::IoBusy)
+  {
+    this->recovery_->deferRetry(completion.adapterId);
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      this->syncRecoveryDiagnosticsLocked(completion.adapterId);
+    }
+    return;
+  }
+
+  AdapterManagerResult connected;
+  connected.ok = completion.ok;
+  connected.message = completion.message;
+  if (completion.ok)
+  {
+    AdapterManagerResult claimed = this->manager_->commitConnectIfCurrent(
+        completion.adapterId, completion.adapter.get(), completion.equipmentIds);
+    if (!claimed.ok)
+    {
+      return;
+    }
+    connected.message = claimed.message;
+  }
+
+  const RecoveryControlSnapshot snap =
+      this->recovery_->snapshot(completion.adapterId);
+  if (snap.runtimeEpoch != completion.runtimeEpoch
+      || snap.activeProbeId != completion.probeId)
+  {
+    return;
+  }
+  if (!snap.desired)
+  {
+    return;
+  }
+
+  const AdapterConfigRecord *record = this->catalog_.adapter(completion.adapterId);
+  if (record == nullptr || !record->enabled)
+  {
+    return;
+  }
+
+  IndustrialAdapter *current = this->manager_->adapter(completion.adapterId);
+  if (completion.adapter && current != completion.adapter.get())
+  {
+    return;
+  }
+
+  this->applyConnectOutcome(completion.adapterId, connected, false, true);
+  if (!completion.ok)
+  {
+    this->maybeEnqueueOperatorFollowUp(completion.adapterId);
+  }
+}
+
 void ApplicationService::onPollCycle()
 {
   // ControlPlaneTick (P3): runs on the PollScheduler tick thread after dispatch
   // and does NOT wait for poll jobs to complete. Must not call poll()/connect().
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    if (!this->running_)
+    {
+      return;
+    }
+  }
+
+  // Drive due timers WITHOUT holding ApplicationService::mutex_. tick()
+  // invokes dueObserver → submitDueProbe, which takes mutex_ briefly.
+  // Holding mutex_ here deadlocks the poll thread (non-recursive mutex).
+  (void)this->recovery_->tick();
+
   std::vector<std::string> due;
   std::vector<std::string> isolationCandidates;
   std::shared_ptr<PollExecutor> pollExecutor;
@@ -2417,9 +2690,9 @@ void ApplicationService::onPollCycle()
     this->refreshAllAdapterObservationsLocked();
     this->syncAlarmAndEquipmentHistoryLocked();
 
-    // RecoveryService owns retry timers. This tick only observes connection
-    // state, isolation, and the TRANSITIONAL RecoveryConnect handoff.
-    (void)this->recovery_->tick();
+    // RecoveryService owns retry timers. This tick observes connection
+    // state and isolation. Automatic recovery I/O is submitted to
+    // ProbeExecutor (dueObserver / probing handoff), not LifecycleExecutor.
 
     for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
     {
@@ -2456,9 +2729,10 @@ void ApplicationService::onPollCycle()
         continue;
       }
       // Generation bump drops pending RecoveryConnect without running the
-      // handler. PROBING is retained on RecoveryControl; the handoff below
-      // enqueues a replacement RecoveryConnect. Do not clear a latch that
-      // still matches in-flight/pending Connect, RecoveryConnect, or Reconnect.
+      // handler. PROBING is retained on RecoveryControl; submitDueProbe
+      // re-hands the logical probe to ProbeExecutor. Do not clear a latch that
+      // still matches in-flight/pending Connect, RecoveryConnect, Reconnect,
+      // or an active logical probe.
       const bool connectStyleBusy =
           this->hasConnectStyleLifecycleWork(record.adapterId);
       const bool probing =
@@ -2568,41 +2842,22 @@ void ApplicationService::onPollCycle()
       continue;
     }
     bool skipDue = false;
+    RecoveryDueEvent event;
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       const auto pending = this->pending_operator_connect_.find(adapterId);
       skipDue = pending != this->pending_operator_connect_.end() && pending->second;
+      const RecoveryControlSnapshot snap = this->recovery_->snapshot(adapterId);
+      event.adapterId = adapterId;
+      event.probeId = snap.activeProbeId;
+      event.runtimeEpoch = snap.runtimeEpoch;
+      event.recoverySequence = snap.recoverySequence;
     }
-    if (skipDue)
+    if (skipDue || event.probeId == 0)
     {
       continue;
     }
-    // Reserve the last idle live worker for control-plane / operator work.
-    // When idle==0 the job stays pending (case H). When idle>=2 it can run
-    // and still leave a reserve. idle==1 would consume the reserve.
-    if (this->lifecycle_->idleLiveWorkerCount() == 1
-        && !this->hasConnectStyleLifecycleWork(adapterId))
-    {
-      continue;
-    }
-    // Enqueue only — never call blocking connect() on the poll thread.
-    // TRANSITIONAL: RecoveryService already marked PROBING; this is the
-    // legacy I/O handoff until ProbeExecutor exists.
-    {
-      std::lock_guard<std::mutex> lock(this->mutex_);
-      ++this->diagnosticsFor(adapterId).autoReconnectAttempts;
-      ++this->diagnosticsFor(adapterId).reconnectCount;
-    }
-
-    LifecycleJob job;
-    job.adapterId = adapterId;
-    job.op = LifecycleOp::RecoveryConnect;
-    job.generation = this->lifecycle_->generation(adapterId);
-    if (!this->lifecycle_->enqueue(std::move(job)))
-    {
-      std::lock_guard<std::mutex> lock(this->mutex_);
-      this->syncRecoveryDiagnosticsLocked(adapterId);
-    }
+    this->submitDueProbe(event);
   }
 }
 
@@ -3288,12 +3543,16 @@ bool ApplicationService::isRecoveryIsolationCandidate(
   {
     return false;
   }
-  // In-flight automatic RecoveryConnect that still owns io_mutex: isolate
-  // after timeoutMs+slack whether the live state is FAULTED or still
-  // DISCONNECTED. A first RecoveryConnect that never returns never reaches
-  // applyConnectOutcome; treating only FAULTED as eligible
-  // leaves autoReconnectInFlight true forever. Pending-only RecoveryConnect
-  // is not a hung connect (hung poll uses the 2s window below).
+  // In-flight automatic probe (or leftover RecoveryConnect) that still owns
+  // io_mutex: isolate after timeoutMs+slack whether live state is FAULTED or
+  // still DISCONNECTED.
+  IndustrialAdapter *current = this->manager_->adapter(adapterId);
+  if (this->probes_
+      && this->probes_->hasPhysicalOn(adapterId, current))
+  {
+    return connectionState == ConnectionState::Faulted
+        || connectionState == ConnectionState::Disconnected;
+  }
   if (this->lifecycle_->hasInFlight(adapterId, LifecycleOp::RecoveryConnect))
   {
     return connectionState == ConnectionState::Faulted
@@ -3306,10 +3565,11 @@ bool ApplicationService::isRecoveryIsolationCandidate(
 std::chrono::milliseconds ApplicationService::recoveryIsolationBusyLimit(
     const std::string &adapterId) const
 {
-  // A RecoveryConnect that has acquired io_mutex is a real protocol attempt.
-  // Do not rematerialize at the hung-poll 2s mark — wait until the configured
-  // connect timeout plus slack so timeout-bound failures reach applyConnectOutcome.
-  if (this->lifecycle_->hasInFlight(adapterId, LifecycleOp::RecoveryConnect))
+  IndustrialAdapter *current = this->manager_->adapter(adapterId);
+  const bool hungProbe = (this->probes_
+                          && this->probes_->hasPhysicalOn(adapterId, current))
+      || this->lifecycle_->hasInFlight(adapterId, LifecycleOp::RecoveryConnect);
+  if (hungProbe)
   {
     int timeoutMs = kDefaultConnectTimeoutMs;
     if (const AdapterConfigRecord *record = this->catalog_.adapter(adapterId))
@@ -3338,6 +3598,9 @@ bool ApplicationService::isolateObstructedRuntime(
     return false;
   }
 
+  IndustrialAdapter *current = this->manager_->adapter(adapterId);
+  const bool hungProbe =
+      this->probes_ && this->probes_->hasPhysicalOn(adapterId, current);
   const bool hungRecoveryConnect = this->lifecycle_->hasInFlight(
       adapterId, LifecycleOp::RecoveryConnect);
   const std::uint64_t stuckGeneration = this->lifecycle_->generation(adapterId);
@@ -3362,7 +3625,8 @@ bool ApplicationService::isolateObstructedRuntime(
 
   const bool canAbandon = hungRecoveryConnect
       && this->lifecycle_->canAbandonStaleInFlight(adapterId, stuckGeneration);
-  if (!canAbandon && !this->lifecycle_->canAdmitBlockingIsolation())
+  if (hungRecoveryConnect && !canAbandon
+      && !this->lifecycle_->canAdmitBlockingIsolation())
   {
     return false;
   }
@@ -3381,6 +3645,10 @@ bool ApplicationService::isolateObstructedRuntime(
 
   (void)this->lifecycle_->bumpGeneration(adapterId);
   this->recovery_->rematerialize(adapterId);
+  if (this->probes_)
+  {
+    this->probes_->cancel(adapterId);
+  }
   this->invokeIsolationTestHook(IsolationHookPoint::AfterGenerationBump);
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
@@ -3435,7 +3703,7 @@ bool ApplicationService::isolateObstructedRuntime(
       operatorPending || currentConnect || currentReconnect;
 
   auto emitIsolationEvent = [&]() {
-    if (!hungRecoveryConnect)
+    if (!hungRecoveryConnect && !hungProbe)
     {
       return;
     }
@@ -3494,18 +3762,32 @@ bool ApplicationService::isolateObstructedRuntime(
   (void)this->recovery_->tick();
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
-    ++this->diagnosticsFor(adapterId).autoReconnectAttempts;
-    ++this->diagnosticsFor(adapterId).reconnectCount;
     this->syncRecoveryDiagnosticsLocked(adapterId);
   }
-  LifecycleJob job;
-  job.adapterId = adapterId;
-  job.op = LifecycleOp::RecoveryConnect;
-  job.generation = this->lifecycle_->generation(adapterId);
-  if (!this->lifecycle_->enqueue(std::move(job)))
+  const RecoveryControlSnapshot snap = this->recovery_->snapshot(adapterId);
+  if (snap.state == RecoveryState::Probing && snap.activeProbeId != 0)
   {
-    std::lock_guard<std::mutex> lock(this->mutex_);
-    this->syncRecoveryDiagnosticsLocked(adapterId);
+    RecoveryDueEvent event;
+    event.adapterId = adapterId;
+    event.probeId = snap.activeProbeId;
+    event.runtimeEpoch = snap.runtimeEpoch;
+    event.recoverySequence = snap.recoverySequence;
+    this->submitDueProbe(event);
+  }
+  else
+  {
+    this->recovery_->armDesired(adapterId, true);
+    (void)this->recovery_->tick();
+    const RecoveryControlSnapshot again = this->recovery_->snapshot(adapterId);
+    if (again.state == RecoveryState::Probing && again.activeProbeId != 0)
+    {
+      RecoveryDueEvent event;
+      event.adapterId = adapterId;
+      event.probeId = again.activeProbeId;
+      event.runtimeEpoch = again.runtimeEpoch;
+      event.recoverySequence = again.recoverySequence;
+      this->submitDueProbe(event);
+    }
   }
   return true;
 }
@@ -3536,6 +3818,10 @@ AdapterManagerResult ApplicationService::ensureRuntimeAdapter(
     // waiting on protocol I/O so HTTP/config workers stay responsive.
     (void)this->lifecycle_->bumpGeneration(record.adapterId);
     this->recovery_->rematerialize(record.adapterId);
+    if (this->probes_)
+    {
+      this->probes_->cancel(record.adapterId);
+    }
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       this->pending_operator_connect_.erase(record.adapterId);

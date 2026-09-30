@@ -90,6 +90,16 @@ public:
   AdapterManagerResult connectAdapter(const std::string &adapterId);
   AdapterManagerResult disconnectAdapter(const std::string &adapterId);
 
+  /// Claim equipment ownership after a probe connect() that already ran on
+  /// `expected`. Does not call connect() or disconnect(). Returns not-ok
+  /// without disconnecting when the enrolled pointer does not match (extracted
+  /// / rematerialized / removed). Teardown owns disconnect of extracted
+  /// instances.
+  AdapterManagerResult commitConnectIfCurrent(
+      const std::string &adapterId,
+      const IndustrialAdapter *expected,
+      const std::vector<std::string> &equipmentIds);
+
   /// Disconnect every enrolled adapter serially (unit-test helper). Prefer
   /// disconnectAllBounded on application shutdown paths.
   void disconnectAll();

@@ -8,11 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Recovery V2 Phase 2: bounded recovery probe executor
+
+- `ProbeExecutor` / `ProbeSession` execute automatic-recovery `IndustrialAdapter::connect()` on a dedicated bounded pool (default 4 workers, min 1, max 32). `RecoveryService` remains the sole retry-timing owner. HTTP, `PollScheduler`, and the RecoveryService control thread do not perform recovery protocol I/O.
+- At most one logical probe per adapter. No retry-job queue: occupancy is one pending/logical slot per adapter (bounded by adapter count, not by outage duration).
+- Logical cancellation ≠ physical cancellation. Timeout marks the session cancelled and invalidates probe identity; the SDK call may finish later. Stale completions never claim equipment, overwrite connection/diagnostics, or mutate a newer `runtimeEpoch`.
+- Hung workers are **quarantined** joinable (not detached at runtime) and replaced 1-for-1 (spawn-before-replace). Caps: `kMaxQuarantinedProbeWorkers = 8`, `kMaxQuarantinedProbesPerAdapter = 2` (fairness, not an admission stop for other adapters). Detach remains the P2 shutdown-grace keep-alive path only.
+- `AdapterManager::commitConnectIfCurrent` publishes ownership after a probe `connect()` only when the enrolled pointer still matches. Extracted adapters are disconnected by Teardown, never by a concurrent `disconnect()` during `connect()`.
+- **TRANSITIONAL:** `LifecycleOp::RecoveryConnect` is not removed. Operator Disconnect/Reconnect is not redesigned. PollExecutor is not CONNECTED-only. Protocol-specific cancellation, process isolation, and circuit-breaker UI are Phase 3+.
+- Tests: `icp_probe_executor_test` (A–N, gated test adapter, 50/100-adapter bounds, 24h fake clock). Existing ICP lifecycle/recovery suite remains the operational gate.
+
 ### Added — Recovery V2 Phase 1: timer-driven recovery control
 
 - `RecoveryService` / `RecoveryControl` is the authoritative automatic-recovery owner: `desired`, `DISABLED|CONNECTED|RECOVERY_WAIT|PROBING`, `nextAttemptAt`, backoff (existing 1s doubled to 10s cap), consecutive failures, recovery sequence, `runtimeEpoch`. One control per adapter; **no** `RecoveryConnect` retry queue.
-- Control thread / `tick()` never calls `adapter->connect()`, `poll()`, or waits on `io_mutex`. Due attempts emit a logical `RecoveryDueEvent` (`recovery_probe_due` boundary). `ApplicationService` still hands due adapters to the TRANSITIONAL `LifecycleExecutor` `RecoveryConnect` path.
-- `ProbeExecutor`, `ProbeSession`, quarantine, worker replacement, and logical probe timeout are **NOT IMPLEMENTED**. Long-outage hung SDK `connect()` is **not** solved in this slice.
+- Control thread / `tick()` never calls `adapter->connect()`, `poll()`, or waits on `io_mutex`. Due attempts emit a logical `RecoveryDueEvent`. ApplicationService submits due probes to `ProbeExecutor` (Phase 2); `LifecycleExecutor` `RecoveryConnect` remains TRANSITIONAL for unmigrated paths.
 - Disable / remove drop the schedule so a stale timer cannot resurrect recovery. Rematerialize bumps `runtimeEpoch`.
 - Tests: `icp_recovery_control_test` (fake clock, 100 adapters, 24h outage bound). Existing ICP recovery/lifecycle tests remain the operational gate.
 

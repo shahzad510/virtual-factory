@@ -100,15 +100,15 @@ struct RecoveryDueEvent
   std::uint64_t recoverySequence{0};
 };
 
-/// ICP Recovery V2 Phase 1: state + timer ownership for automatic recovery.
+/// ICP Recovery V2: state + timer ownership for automatic recovery.
 ///
 /// - One RecoveryControl per adapterId (map, not a growing retry queue).
 /// - Automatic retry is nextAttemptAt, not queued RecoveryConnect jobs.
 /// - Control thread never performs protocol I/O or waits on io_mutex.
-/// - ProbeExecutor / ProbeSession / quarantine are NOT implemented here.
-/// - LifecycleExecutor RecoveryConnect remains the TRANSITIONAL I/O path
-///   consumed by ApplicationService from dueProbes(); this service does not
-///   enqueue those jobs itself.
+/// - ProbeExecutor owns bounded recovery I/O (Phase 2). This service only
+///   emits RecoveryDueEvent and records identity-checked outcomes.
+/// - LifecycleExecutor RecoveryConnect remains available for explicit
+///   Connect / Disconnect / Teardown and unmigrated transitional paths.
 class RecoveryService
 {
 public:
@@ -150,9 +150,29 @@ public:
   /// ProbeExecutor (future) / transitional I/O reports success.
   void noteSuccess(const std::string &adapterId);
 
+  /// Identity-checked success. Ignored when probeId/epoch do not match the
+  /// current RecoveryControl (stale Gen0 must not mutate Gen1).
+  bool noteSuccess(
+      const std::string &adapterId,
+      std::uint64_t probeId,
+      std::uint64_t runtimeEpoch);
+
   /// ProbeExecutor (future) / transitional I/O reports failure: increment
   /// consecutiveFailures, double backoff (cap 10s), RECOVERY_WAIT.
   void noteFailure(const std::string &adapterId);
+
+  /// Identity-checked failure. Stale probeId/epoch is ignored.
+  bool noteFailure(
+      const std::string &adapterId,
+      std::uint64_t probeId,
+      std::uint64_t runtimeEpoch);
+
+  /// Logical probe timeout for the current identity: treat as a failed
+  /// attempt (backoff doubles) and return to RECOVERY_WAIT. Stale ids ignored.
+  bool noteTimeout(
+      const std::string &adapterId,
+      std::uint64_t probeId,
+      std::uint64_t runtimeEpoch);
 
   /// Runtime became CONNECTED (poll/lifecycle observation). Idempotent.
   void notifyConnected(const std::string &adapterId);
