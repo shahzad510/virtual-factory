@@ -451,7 +451,16 @@ void ApplicationService::stop()
   }
 
   // Bounded lifecycle drain; detach hung workers with pin keep-alive.
-  this->lifecycle_->stop(kLifecycleShutdownGrace, pin);
+  // Parked Teardown of an extracted adapter cannot finish while a quarantined
+  // probe still holds that io_mutex. Waiting a second full grace after
+  // ProbeExecutor already abandoned those workers would serialize two 5s
+  // waits and break bounded-shutdown tests.
+  std::chrono::milliseconds lifecycleGrace = kLifecycleShutdownGrace;
+  if (this->probes_ && this->probes_->hasAbandonedWorkers())
+  {
+    lifecycleGrace = std::chrono::milliseconds{0};
+  }
+  this->lifecycle_->stop(lifecycleGrace, pin);
 
   if (was_running)
   {
@@ -3644,7 +3653,6 @@ bool ApplicationService::isolateObstructedRuntime(
   }
 
   (void)this->lifecycle_->bumpGeneration(adapterId);
-  this->recovery_->rematerialize(adapterId);
   if (this->probes_)
   {
     this->probes_->cancel(adapterId);
@@ -3673,6 +3681,10 @@ bool ApplicationService::isolateObstructedRuntime(
   {
     return false;
   }
+
+  // Replacement is enrolled. Bump epoch / emit a new logical due only now so
+  // RecoveryService cannot attach a probe to the extracted runtime.
+  this->recovery_->rematerialize(adapterId);
 
   this->invokeIsolationTestHook(IsolationHookPoint::BeforeCommit);
 
@@ -3817,7 +3829,6 @@ AdapterManagerResult ApplicationService::ensureRuntimeAdapter(
     // Invalidate stale Connect/Recovery against this id, then extract without
     // waiting on protocol I/O so HTTP/config workers stay responsive.
     (void)this->lifecycle_->bumpGeneration(record.adapterId);
-    this->recovery_->rematerialize(record.adapterId);
     if (this->probes_)
     {
       this->probes_->cancel(record.adapterId);
@@ -3848,6 +3859,7 @@ AdapterManagerResult ApplicationService::ensureRuntimeAdapter(
     this->scheduleAdapterTeardown(record.adapterId, std::move(extracted));
     added.accepted = true;
     added.message = "runtime rematerialized; teardown accepted";
+    this->recovery_->rematerialize(record.adapterId);
   }
   return added;
 }

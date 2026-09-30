@@ -218,6 +218,7 @@ void RecoveryService::rematerialize(const std::string &adapterId)
   }
   // New runtime: previous logical probe identity is invalid. Immediate wait
   // so the replacement can be recovered without inheriting the old probeId.
+  // ApplicationService must not call this until the replacement is enrolled.
   this->enterWaitLocked(entry, this->nowLocked());
   this->notifyThreadLocked();
 }

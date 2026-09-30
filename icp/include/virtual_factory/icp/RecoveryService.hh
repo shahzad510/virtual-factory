@@ -145,6 +145,9 @@ public:
 
   /// New runtime generation. Cancels an active logical probe. Keeps desired
   /// and backoff. Old runtimeEpoch values must not schedule the new runtime.
+  /// Callers that extract the live adapter must rematerialize only after the
+  /// replacement is enrolled, or a due probe can attach to the extracted
+  /// runtime.
   void rematerialize(const std::string &adapterId);
 
   /// ProbeExecutor (future) / transitional I/O reports success.
