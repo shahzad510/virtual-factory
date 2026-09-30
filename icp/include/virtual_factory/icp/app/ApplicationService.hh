@@ -19,6 +19,7 @@
 #include <virtual_factory/icp/LiveStateCache.hh>
 #include <virtual_factory/icp/PollExecutor.hh>
 #include <virtual_factory/icp/PollScheduler.hh>
+#include <virtual_factory/icp/RecoveryService.hh>
 #include <virtual_factory/icp/config/ConfigurationCatalog.hh>
 #include <virtual_factory/icp/config/ConfigurationModel.hh>
 #include <virtual_factory/icp/history/AsyncHistoryWriter.hh>
@@ -170,6 +171,9 @@ struct AdapterSessionDiagnostics
   std::string lastFaultNodeId;
 
   /// ICP-owned auto-reconnect scheduling (steady clock; not persisted).
+  /// TRANSITIONAL mirrors of RecoveryService::RecoveryControl. RecoveryService
+  /// is the authoritative owner; these fields are refreshed from it for GUI
+  /// / existing tests. Do not treat them as a second retry timer.
   std::chrono::steady_clock::time_point nextAutoReconnectAt{};
   std::chrono::milliseconds autoReconnectBackoffMs{1000};
   std::size_t autoReconnectAttempts{0};
@@ -178,6 +182,11 @@ struct AdapterSessionDiagnostics
   /// adapter. Armed on configuration materialize and explicit Connect; cleared
   /// on explicit Disconnect so operator disconnect stays sticky for this process.
   bool autoConnectDesired{false};
+  /// Recovery V2 Phase 1 diagnostics (authoritative values live on RecoveryControl).
+  std::string recoveryState{"DISABLED"};
+  std::size_t consecutiveRecoveryFailures{0};
+  std::uint64_t recoverySequence{0};
+  std::uint64_t recoveryRuntimeEpoch{0};
 };
 
 struct AdapterDiagnosticsView
@@ -358,6 +367,8 @@ public:
   AdapterManager &manager();
   LiveStateCache &cache();
   LifecycleExecutor &lifecycle();
+  RecoveryService &recovery();
+  const RecoveryService &recovery() const;
 
   /// Test-only: isolation rematerialize pops these before AdapterFactory.
   /// Used to inject gated hang replacements without changing protocol adapters.
@@ -403,6 +414,7 @@ private:
       const AdapterConfigRecord &record, const CommandMappingRecord &cmd);
 
   AdapterSessionDiagnostics &diagnosticsFor(const std::string &adapterId) const;
+  void syncRecoveryDiagnosticsLocked(const std::string &adapterId) const;
   void observeAdapterStateLocked(
       const std::string &adapterId, const std::string &connectionState) const;
   void refreshAllAdapterObservationsLocked() const;
@@ -489,6 +501,10 @@ private:
   std::shared_ptr<LiveStateCache> cache_{std::make_shared<LiveStateCache>()};
   std::shared_ptr<LifecycleExecutor> lifecycle_{
       std::make_shared<LifecycleExecutor>()};
+  /// Authoritative automatic-recovery state/timer (Recovery V2 Phase 1).
+  /// Blocking protocol I/O still uses the TRANSITIONAL LifecycleExecutor
+  /// RecoveryConnect path; this service must not call connect().
+  std::shared_ptr<RecoveryService> recovery_{std::make_shared<RecoveryService>()};
   /// Shared with in-flight lifecycle jobs so abandoned workers can skip
   /// ApplicationService diagnostics after shutdown without touching `this`.
   std::shared_ptr<std::atomic<bool>> shutdown_flag_{
@@ -508,10 +524,12 @@ private:
   /// Adapters currently inside reconnectAdapter() (for recovery event category).
   mutable std::unordered_map<std::string, bool> reconnect_in_progress_;
   /// Operator Connect/Reconnect issued while a connect-style job is already
-  /// in-flight/pending. Coalesced to one flag. On in-flight success the flag
-  /// is cleared; on failure one follow-up Connect is enqueued (same generation,
-  /// no automatic-recovery backoff). Rematerialize/extract must clear this so
-  /// a replacement runtime never inherits the previous instance's intent.
+  /// in-flight/pending. Coalesced to one flag. TRANSITIONAL: not a second
+  /// automatic-recovery timer (RecoveryService owns that). On in-flight
+  /// success the flag is cleared; on failure one follow-up Connect is enqueued
+  /// (same generation, no automatic-recovery backoff). Rematerialize/extract
+  /// must clear this so a replacement runtime never inherits the previous
+  /// instance's intent.
   mutable std::unordered_map<std::string, bool> pending_operator_connect_;
   /// First observation of io_mutex busy for same-adapter recovery isolation
   /// (ControlPlaneTick). Hung poll uses kRecoveryIsolationBusyMs; hung

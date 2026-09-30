@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Recovery V2 Phase 1: timer-driven recovery control
+
+- `RecoveryService` / `RecoveryControl` is the authoritative automatic-recovery owner: `desired`, `DISABLED|CONNECTED|RECOVERY_WAIT|PROBING`, `nextAttemptAt`, backoff (existing 1s doubled to 10s cap), consecutive failures, recovery sequence, `runtimeEpoch`. One control per adapter; **no** `RecoveryConnect` retry queue.
+- Control thread / `tick()` never calls `adapter->connect()`, `poll()`, or waits on `io_mutex`. Due attempts emit a logical `RecoveryDueEvent` (`recovery_probe_due` boundary). `ApplicationService` still hands due adapters to the TRANSITIONAL `LifecycleExecutor` `RecoveryConnect` path.
+- `ProbeExecutor`, `ProbeSession`, quarantine, worker replacement, and logical probe timeout are **NOT IMPLEMENTED**. Long-outage hung SDK `connect()` is **not** solved in this slice.
+- Disable / remove drop the schedule so a stale timer cannot resurrect recovery. Rematerialize bumps `runtimeEpoch`.
+- Tests: `icp_recovery_control_test` (fake clock, 100 adapters, 24h outage bound). Existing ICP recovery/lifecycle tests remain the operational gate.
+
 ### Fixed — lifecycle worker reclamation during repeated runtime isolation
 
 - `LifecycleExecutor::runTeardown` uses `try_lock()` on the extracted adapter `io_mutex`. A busy mutex parks the unique extracted-runtime Teardown outside the adapter FIFO and retries on a 100ms cv wait (no worker held, no busy-spin).

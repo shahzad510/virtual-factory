@@ -42,6 +42,8 @@ PHYSICAL FACTORY
 
 **Phase 6 / ICP today:** ICP **adapter foundation** COMPLETE. **ICP-1A** runtime **IMPLEMENTED** / **TESTED**. **ICP-1B** persistent configuration **IMPLEMENTED** / **TESTED**. **ICP standalone GUI / Application API IMPLEMENTED** / **TESTED** (isolated branch; `docs/icp-gui-architecture.md`). **ICP-1C CIC NOT STARTED.** **ICP Designer NOT STARTED.** **MES Core NOT STARTED.**
 
+**Recovery V2 Phase 1:** `RecoveryService` owns automatic-recovery **state + timer** (no retry queue). **ProbeExecutor is NOT IMPLEMENTED.** Blocking recovery I/O still uses `LifecycleExecutor` `RecoveryConnect`. Long-outage hung `connect()` is **not** solved.
+
 Legacy layer view (still valid inside ICP):
 
 ```text

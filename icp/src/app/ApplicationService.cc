@@ -319,6 +319,7 @@ void ApplicationService::start()
     // PollExecutor owns parallel poll() I/O; PollScheduler only ticks.
     this->shutdown_flag_->store(false);
     this->lifecycle_->start(4);
+    this->recovery_->start();
     this->poll_executor_ =
         std::make_shared<PollExecutor>(this->manager_, this->cache_);
     this->poll_executor_->start(kDefaultPollWorkerCount);
@@ -361,6 +362,9 @@ void ApplicationService::stop()
   {
     scheduler->stop();
   }
+
+  // Recovery control thread performs no protocol I/O; join is wait_until-bounded.
+  this->recovery_->stop();
 
   // Pin graph for abandoned poll + lifecycle workers (smallest safe set).
   // - manager/cache: poll jobs resolve handles and publish telemetry
@@ -595,17 +599,10 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
   IndustrialAdapter *existing = this->manager_->adapter(id);
   const bool had_runtime = existing != nullptr;
   ConnectionState prior_state = ConnectionState::Disconnected;
-  bool auto_connect_desired = false;
+  bool auto_connect_desired = this->recovery_->snapshot(id).desired;
   if (had_runtime)
   {
     prior_state = existing->connectionState();
-  }
-  {
-    std::lock_guard<std::mutex> lock(this->mutex_);
-    if (this->adapter_diagnostics_.count(id) != 0)
-    {
-      auto_connect_desired = this->adapter_diagnostics_.at(id).autoConnectDesired;
-    }
   }
 
   ConfigResult result = this->catalog_.upsertAdapter(std::move(adapter));
@@ -638,12 +635,10 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
     // Disable: invalidate connect/recovery, extract without protocol wait,
     // async Teardown. HTTP must not block on io_mutex / disconnect.
     (void)this->lifecycle_->bumpGeneration(id);
+    this->recovery_->disable(id);
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
-      AdapterSessionDiagnostics &diag = this->diagnosticsFor(id);
-      diag.autoConnectDesired = false;
-      diag.autoReconnectInFlight = false;
-      diag.nextAutoReconnectAt = {};
+      this->syncRecoveryDiagnosticsLocked(id);
       this->reconnect_in_progress_.erase(id);
       this->pending_operator_connect_.erase(id);
     }
@@ -682,11 +677,10 @@ ConfigResult ApplicationService::upsertAdapterConfig(AdapterConfigRecord adapter
 
   if (should_connect)
   {
+    this->recovery_->armDesired(id, true);
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
-      AdapterSessionDiagnostics &diag = this->diagnosticsFor(id);
-      diag.autoConnectDesired = true;
-      diag.nextAutoReconnectAt = std::chrono::steady_clock::now();
+      this->syncRecoveryDiagnosticsLocked(id);
     }
     LifecycleJob job;
     job.adapterId = id;
@@ -713,12 +707,10 @@ ConfigResult ApplicationService::removeAdapterConfig(const std::string &adapterI
   // Cancel queued/in-flight recovery for this adapter before teardown. Extract
   // runtime without waiting on io_mutex; Teardown disconnects asynchronously.
   (void)this->lifecycle_->bumpGeneration(adapterId);
+  this->recovery_->remove(adapterId);
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
-    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
-    diag.autoConnectDesired = false;
-    diag.autoReconnectInFlight = false;
-    diag.nextAutoReconnectAt = {};
+    this->syncRecoveryDiagnosticsLocked(adapterId);
     this->reconnect_in_progress_.erase(adapterId);
     this->pending_operator_connect_.erase(adapterId);
   }
@@ -857,7 +849,8 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
     AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
     ++diag.connectionAttempts;
     // Explicit Connect arms ICP-owned recovery for later outages.
-    diag.autoConnectDesired = true;
+    this->recovery_->setDesired(adapterId, true);
+    this->syncRecoveryDiagnosticsLocked(adapterId);
   }
 
   // Coalesce against ANY-generation connect-style work, including a stale
@@ -928,13 +921,10 @@ AdapterManagerResult ApplicationService::disconnectAdapter(
 
   // Invalidate queued recovery/connect before enqueueing Disconnect.
   const std::uint64_t generation = this->lifecycle_->bumpGeneration(adapterId);
+  this->recovery_->disable(adapterId);
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
-    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
-    // Explicit Disconnect must remain sticky for this process lifetime.
-    diag.autoConnectDesired = false;
-    diag.autoReconnectInFlight = false;
-    diag.nextAutoReconnectAt = {};
+    this->syncRecoveryDiagnosticsLocked(adapterId);
     this->reconnect_in_progress_.erase(adapterId);
     this->pending_operator_connect_.erase(adapterId);
   }
@@ -984,7 +974,8 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
     std::lock_guard<std::mutex> lock(this->mutex_);
     ++this->diagnosticsFor(adapterId).reconnectCount;
     ++this->diagnosticsFor(adapterId).connectionAttempts;
-    this->diagnosticsFor(adapterId).autoConnectDesired = true;
+    this->recovery_->setDesired(adapterId, true);
+    this->syncRecoveryDiagnosticsLocked(adapterId);
     this->reconnect_in_progress_[adapterId] = true;
     this->pending_operator_connect_[adapterId] = true;
     AdapterManagerResult accepted;
@@ -1007,7 +998,8 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
     std::lock_guard<std::mutex> lock(this->mutex_);
     ++this->diagnosticsFor(adapterId).reconnectCount;
     ++this->diagnosticsFor(adapterId).connectionAttempts;
-    this->diagnosticsFor(adapterId).autoConnectDesired = true;
+    this->recovery_->setDesired(adapterId, true);
+    this->syncRecoveryDiagnosticsLocked(adapterId);
     this->reconnect_in_progress_[adapterId] = true;
   }
 
@@ -1401,6 +1393,16 @@ LifecycleExecutor &ApplicationService::lifecycle()
   return *this->lifecycle_;
 }
 
+RecoveryService &ApplicationService::recovery()
+{
+  return *this->recovery_;
+}
+
+const RecoveryService &ApplicationService::recovery() const
+{
+  return *this->recovery_;
+}
+
 void ApplicationService::injectRuntimeAdapterForTest(
     std::unique_ptr<IndustrialAdapter> adapter)
 {
@@ -1478,7 +1480,7 @@ void ApplicationService::maybeEnqueueOperatorFollowUp(const std::string &adapter
     {
       return;
     }
-    if (!this->diagnosticsFor(adapterId).autoConnectDesired)
+    if (!this->recovery_->snapshot(adapterId).desired)
     {
       this->pending_operator_connect_.erase(pending);
       return;
@@ -1635,8 +1637,8 @@ void ApplicationService::emitLifecycleTransitionLocked(
     diag.hasFaultedAt = true;
     diag.lastFaultError = ev.errorDetails.empty() ? runtimeError : ev.errorDetails;
     diag.lastFaultNodeId = ev.nodeId;
-    diag.nextAutoReconnectAt =
-        std::chrono::steady_clock::now() + diag.autoReconnectBackoffMs;
+    this->recovery_->notifyUnavailable(adapterId);
+    this->syncRecoveryDiagnosticsLocked(adapterId);
   }
   else if (newState == "DISCONNECTED" || newState == "NOT_CONFIGURED")
   {
@@ -1731,6 +1733,25 @@ ApplicationService::diagnosticsFor(const std::string &adapterId) const
   return diag;
 }
 
+void ApplicationService::syncRecoveryDiagnosticsLocked(
+    const std::string &adapterId) const
+{
+  if (!this->recovery_)
+  {
+    return;
+  }
+  const RecoveryControlSnapshot snap = this->recovery_->snapshot(adapterId);
+  AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+  diag.autoConnectDesired = snap.desired;
+  diag.nextAutoReconnectAt = snap.nextAttemptAt;
+  diag.autoReconnectBackoffMs = snap.backoffMs;
+  diag.autoReconnectInFlight = snap.state == RecoveryState::Probing;
+  diag.recoveryState = recoveryStateName(snap.state);
+  diag.consecutiveRecoveryFailures = snap.consecutiveFailures;
+  diag.recoverySequence = snap.recoverySequence;
+  diag.recoveryRuntimeEpoch = snap.runtimeEpoch;
+}
+
 
 void ApplicationService::enrichCommunicationErrorFields(ApplicationEvent *event)
 {
@@ -1801,11 +1822,8 @@ void ApplicationService::materializeEnabledAdaptersForRecovery()
 
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
-      AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
-      diag.autoConnectDesired = true;
-      // Eligible on the next poll cycle — do not sleep/connect on this thread.
-      diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
-      diag.nextAutoReconnectAt = std::chrono::steady_clock::now();
+      this->recovery_->armDesired(record.adapterId, true);
+      this->syncRecoveryDiagnosticsLocked(record.adapterId);
       this->observeAdapterStateLocked(record.adapterId, "DISCONNECTED");
     }
   }
@@ -2021,13 +2039,8 @@ ConfigResult ApplicationService::acknowledgeAlarmOccurrence(
 
 void ApplicationService::scheduleAutoReconnectLocked(const std::string &adapterId) const
 {
-  AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
-  if (diag.autoReconnectBackoffMs.count() <= 0)
-  {
-    diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
-  }
-  diag.nextAutoReconnectAt =
-      std::chrono::steady_clock::now() + diag.autoReconnectBackoffMs;
+  this->recovery_->deferRetry(adapterId);
+  this->syncRecoveryDiagnosticsLocked(adapterId);
 }
 
 void ApplicationService::applyConnectOutcome(
@@ -2044,9 +2057,8 @@ void ApplicationService::applyConnectOutcome(
     std::lock_guard<std::mutex> lock(this->mutex_);
     AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
     ++diag.successfulConnections;
-    diag.autoReconnectInFlight = false;
-    diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
-    diag.nextAutoReconnectAt = {};
+    this->recovery_->noteSuccess(adapterId);
+    this->syncRecoveryDiagnosticsLocked(adapterId);
     this->pending_operator_connect_.erase(adapterId);
     this->observeAdapterStateLocked(adapterId, "CONNECTED");
     for (const EquipmentSnapshot &snap : this->cache_->equipment())
@@ -2114,25 +2126,15 @@ void ApplicationService::applyConnectOutcome(
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
-    diag.autoReconnectInFlight = false;
     ++diag.failedConnections;
     this->observeAdapterStateLocked(
         adapterId,
         runtime != nullptr ? connectionStateName(runtime->connectionState())
                            : std::string("FAULTED"));
-    if (diag.autoConnectDesired)
+    if (this->recovery_->snapshot(adapterId).desired)
     {
-      auto next = diag.autoReconnectBackoffMs * 2;
-      if (next > std::chrono::milliseconds(10000))
-      {
-        next = std::chrono::milliseconds(10000);
-      }
-      if (next < std::chrono::milliseconds(1000))
-      {
-        next = std::chrono::milliseconds(1000);
-      }
-      diag.autoReconnectBackoffMs = next;
-      diag.nextAutoReconnectAt = std::chrono::steady_clock::now() + next;
+      this->recovery_->noteFailure(adapterId);
+      this->syncRecoveryDiagnosticsLocked(adapterId);
     }
     this->reconnect_in_progress_.erase(adapterId);
   }
@@ -2161,7 +2163,7 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
       return;
     }
     std::lock_guard<std::mutex> lock(this->mutex_);
-    this->diagnosticsFor(adapterId).autoReconnectInFlight = false;
+    this->syncRecoveryDiagnosticsLocked(adapterId);
     this->reconnect_in_progress_.erase(adapterId);
     this->pending_operator_connect_.erase(adapterId);
   };
@@ -2186,8 +2188,8 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
     if (result.ok && !shutting->load())
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
-      this->diagnosticsFor(job.adapterId).autoConnectDesired = false;
-      this->diagnosticsFor(job.adapterId).autoReconnectInFlight = false;
+      this->recovery_->disable(job.adapterId);
+      this->syncRecoveryDiagnosticsLocked(job.adapterId);
       this->observeAdapterStateLocked(job.adapterId, "DISCONNECTED");
     }
     return;
@@ -2210,7 +2212,7 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
     if (!shutting->load())
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
-      desired = this->diagnosticsFor(job.adapterId).autoConnectDesired;
+      desired = this->recovery_->snapshot(job.adapterId).desired;
     }
     if (!desired || shutting->load())
     {
@@ -2229,7 +2231,7 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
   if (!shutting->load())
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
-    desired = this->diagnosticsFor(job.adapterId).autoConnectDesired;
+    desired = this->recovery_->snapshot(job.adapterId).desired;
     if (job.op == LifecycleOp::RecoveryConnect)
     {
       IndustrialAdapter *before = manager->adapter(job.adapterId);
@@ -2264,7 +2266,7 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
   bool stillDesired = false;
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
-    stillDesired = this->diagnosticsFor(job.adapterId).autoConnectDesired;
+    stillDesired = this->recovery_->snapshot(job.adapterId).desired;
   }
 
   if (connected.ioBusy)
@@ -2274,12 +2276,14 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
       return;
     }
     std::lock_guard<std::mutex> lock(this->mutex_);
-    AdapterSessionDiagnostics &diag = this->diagnosticsFor(job.adapterId);
-    diag.autoReconnectInFlight = false;
     this->reconnect_in_progress_.erase(job.adapterId);
-    if (diag.autoConnectDesired)
+    if (this->recovery_->snapshot(job.adapterId).desired)
     {
       this->scheduleAutoReconnectLocked(job.adapterId);
+    }
+    else
+    {
+      this->syncRecoveryDiagnosticsLocked(job.adapterId);
     }
     return;
   }
@@ -2413,7 +2417,10 @@ void ApplicationService::onPollCycle()
     this->refreshAllAdapterObservationsLocked();
     this->syncAlarmAndEquipmentHistoryLocked();
 
-    const auto now = std::chrono::steady_clock::now();
+    // RecoveryService owns retry timers. This tick only observes connection
+    // state, isolation, and the TRANSITIONAL RecoveryConnect handoff.
+    (void)this->recovery_->tick();
+
     for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
     {
       if (!record.enabled)
@@ -2425,36 +2432,47 @@ void ApplicationService::onPollCycle()
       {
         continue;
       }
-      AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
+      this->syncRecoveryDiagnosticsLocked(record.adapterId);
       const ConnectionState state = runtime->connectionState();
+      if (state == ConnectionState::Connected)
+      {
+        this->recovery_->notifyConnected(record.adapterId);
+        this->syncRecoveryDiagnosticsLocked(record.adapterId);
+        this->recovery_isolation_busy_since_.erase(record.adapterId);
+        continue;
+      }
+      const bool desired = this->recovery_->snapshot(record.adapterId).desired;
+      if (desired)
+      {
+        this->recovery_->notifyUnavailable(record.adapterId);
+        this->syncRecoveryDiagnosticsLocked(record.adapterId);
+      }
       const bool eligible =
           state == ConnectionState::Faulted
-          || (state == ConnectionState::Disconnected && diag.autoConnectDesired);
+          || (state == ConnectionState::Disconnected && desired);
       if (!eligible)
       {
         this->recovery_isolation_busy_since_.erase(record.adapterId);
         continue;
       }
       // Generation bump drops pending RecoveryConnect without running the
-      // handler, so autoReconnectInFlight / reconnect_in_progress_ can stay
-      // true with an idle executor. Reconcile with LifecycleExecutor; keep
-      // backoff and nextAutoReconnectAt. Do not clear a latch that still
-      // matches in-flight/pending Connect, RecoveryConnect, or Reconnect
-      // (operator follow-up and hung connect() stay owned by that job).
+      // handler. PROBING is retained on RecoveryControl; the handoff below
+      // enqueues a replacement RecoveryConnect. Do not clear a latch that
+      // still matches in-flight/pending Connect, RecoveryConnect, or Reconnect.
       const bool connectStyleBusy =
           this->hasConnectStyleLifecycleWork(record.adapterId);
-      if (diag.autoReconnectInFlight
-          || (this->reconnect_in_progress_.count(record.adapterId) != 0
-              && this->reconnect_in_progress_.at(record.adapterId)))
+      const bool probing =
+          this->recovery_->snapshot(record.adapterId).state
+          == RecoveryState::Probing;
+      if ((probing
+           || (this->reconnect_in_progress_.count(record.adapterId) != 0
+               && this->reconnect_in_progress_.at(record.adapterId)))
+          && !connectStyleBusy)
       {
-        if (!connectStyleBusy)
-        {
-          diag.autoReconnectInFlight = false;
-          this->reconnect_in_progress_.erase(record.adapterId);
-        }
+        this->reconnect_in_progress_.erase(record.adapterId);
       }
       if (this->isRecoveryIsolationCandidate(
-              record.adapterId, diag.autoConnectDesired, state, pollExecutor))
+              record.adapterId, desired, state, pollExecutor))
       {
         isolationCandidates.push_back(record.adapterId);
       }
@@ -2463,24 +2481,16 @@ void ApplicationService::onPollCycle()
         this->recovery_isolation_busy_since_.erase(record.adapterId);
       }
       // Do not enqueue another RecoveryConnect while connect-style work already
-      // owns the latch — but still consider isolation above (obstructed poll
-      // or a RecoveryConnect hung past timeoutMs+slack — including a first
-      // DISCONNECTED RecoveryConnect that never returned — must not skip
-      // detection).
+      // owns the latch — but still consider isolation above.
       if (connectStyleBusy
-          && (diag.autoReconnectInFlight
+          && (probing
               || (this->reconnect_in_progress_.count(record.adapterId) != 0
                   && this->reconnect_in_progress_.at(record.adapterId))))
       {
         continue;
       }
-      if (diag.nextAutoReconnectAt.time_since_epoch().count() == 0)
+      if (probing)
       {
-        diag.nextAutoReconnectAt = now + diag.autoReconnectBackoffMs;
-      }
-      if (now >= diag.nextAutoReconnectAt)
-      {
-        diag.autoReconnectInFlight = true;
         due.push_back(record.adapterId);
       }
     }
@@ -2565,11 +2575,6 @@ void ApplicationService::onPollCycle()
     }
     if (skipDue)
     {
-      if (!this->hasConnectStyleLifecycleWork(adapterId))
-      {
-        std::lock_guard<std::mutex> lock(this->mutex_);
-        this->diagnosticsFor(adapterId).autoReconnectInFlight = false;
-      }
       continue;
     }
     // Reserve the last idle live worker for control-plane / operator work.
@@ -2578,11 +2583,11 @@ void ApplicationService::onPollCycle()
     if (this->lifecycle_->idleLiveWorkerCount() == 1
         && !this->hasConnectStyleLifecycleWork(adapterId))
     {
-      std::lock_guard<std::mutex> lock(this->mutex_);
-      this->diagnosticsFor(adapterId).autoReconnectInFlight = false;
       continue;
     }
     // Enqueue only — never call blocking connect() on the poll thread.
+    // TRANSITIONAL: RecoveryService already marked PROBING; this is the
+    // legacy I/O handoff until ProbeExecutor exists.
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       ++this->diagnosticsFor(adapterId).autoReconnectAttempts;
@@ -2596,7 +2601,7 @@ void ApplicationService::onPollCycle()
     if (!this->lifecycle_->enqueue(std::move(job)))
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
-      this->diagnosticsFor(adapterId).autoReconnectInFlight = false;
+      this->syncRecoveryDiagnosticsLocked(adapterId);
     }
   }
 }
@@ -2658,22 +2663,16 @@ void ApplicationService::observeAdapterStateLocked(
       {
         diag.lastFaultError = runtime->lastError();
       }
-      if (diag.autoReconnectBackoffMs.count() <= 0)
-      {
-        diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
-      }
-      diag.nextAutoReconnectAt =
-          std::chrono::steady_clock::now() + diag.autoReconnectBackoffMs;
+      this->recovery_->notifyUnavailable(adapterId);
+      this->syncRecoveryDiagnosticsLocked(adapterId);
     }
     if (state == "CONNECTED")
     {
       diag.connectedAt = now;
       diag.everConnected = true;
       diag.activeFault = false;
-      diag.autoReconnectInFlight = false;
-      diag.autoReconnectAttempts = 0;
-      diag.autoReconnectBackoffMs = std::chrono::milliseconds(1000);
-      diag.nextAutoReconnectAt = {};
+      this->recovery_->notifyConnected(adapterId);
+      this->syncRecoveryDiagnosticsLocked(adapterId);
       // Do not mark successful communication on connect alone; wait for observed
       // Connected poll/cache refresh evidence.
     }
@@ -2836,6 +2835,7 @@ void ApplicationService::refreshAllAdapterObservationsLocked() const
 {
   for (const AdapterConfigRecord &record : this->catalog_.document().adapters)
   {
+    this->syncRecoveryDiagnosticsLocked(record.adapterId);
     std::string state = "DISCONNECTED";
     IndustrialAdapter *runtime =
         const_cast<ApplicationService *>(this)->manager_->adapter(record.adapterId);
@@ -2940,6 +2940,7 @@ DiagnosticsReport ApplicationService::diagnosticsReport() const
 
     view.adapter.runtimePresent =
         this->manager_->adapter(record.adapterId) != nullptr;
+    this->syncRecoveryDiagnosticsLocked(record.adapterId);
     const AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
     if (!diag.lastObservedState.empty())
     {
@@ -3350,8 +3351,7 @@ bool ApplicationService::isolateObstructedRuntime(
   bool pending = false;
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
-    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
-    desired = diag.autoConnectDesired;
+    desired = this->recovery_->snapshot(adapterId).desired;
     const auto pendingIt = this->pending_operator_connect_.find(adapterId);
     pending = pendingIt != this->pending_operator_connect_.end() && pendingIt->second;
   }
@@ -3380,11 +3380,11 @@ bool ApplicationService::isolateObstructedRuntime(
   }
 
   (void)this->lifecycle_->bumpGeneration(adapterId);
+  this->recovery_->rematerialize(adapterId);
   this->invokeIsolationTestHook(IsolationHookPoint::AfterGenerationBump);
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
-    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
-    diag.autoReconnectInFlight = false;
+    this->syncRecoveryDiagnosticsLocked(adapterId);
     this->reconnect_in_progress_.erase(adapterId);
   }
 
@@ -3419,7 +3419,7 @@ bool ApplicationService::isolateObstructedRuntime(
   bool operatorPending = false;
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
-    stillDesired = this->diagnosticsFor(adapterId).autoConnectDesired;
+    stillDesired = this->recovery_->snapshot(adapterId).desired;
     const auto pendingIt = this->pending_operator_connect_.find(adapterId);
     operatorPending =
         pendingIt != this->pending_operator_connect_.end() && pendingIt->second;
@@ -3491,12 +3491,12 @@ bool ApplicationService::isolateObstructedRuntime(
     return true;
   }
 
+  (void)this->recovery_->tick();
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
-    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
-    diag.autoReconnectInFlight = true;
-    ++diag.autoReconnectAttempts;
-    ++diag.reconnectCount;
+    ++this->diagnosticsFor(adapterId).autoReconnectAttempts;
+    ++this->diagnosticsFor(adapterId).reconnectCount;
+    this->syncRecoveryDiagnosticsLocked(adapterId);
   }
   LifecycleJob job;
   job.adapterId = adapterId;
@@ -3505,7 +3505,7 @@ bool ApplicationService::isolateObstructedRuntime(
   if (!this->lifecycle_->enqueue(std::move(job)))
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
-    this->diagnosticsFor(adapterId).autoReconnectInFlight = false;
+    this->syncRecoveryDiagnosticsLocked(adapterId);
   }
   return true;
 }
@@ -3535,13 +3535,11 @@ AdapterManagerResult ApplicationService::ensureRuntimeAdapter(
     // Invalidate stale Connect/Recovery against this id, then extract without
     // waiting on protocol I/O so HTTP/config workers stay responsive.
     (void)this->lifecycle_->bumpGeneration(record.adapterId);
+    this->recovery_->rematerialize(record.adapterId);
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       this->pending_operator_connect_.erase(record.adapterId);
-      // bumpGeneration discards pending RecoveryConnect without clearFlight.
-      // Drop the phantom recovery latch; keep autoConnectDesired and backoff.
-      AdapterSessionDiagnostics &diag = this->diagnosticsFor(record.adapterId);
-      diag.autoReconnectInFlight = false;
+      this->syncRecoveryDiagnosticsLocked(record.adapterId);
       this->reconnect_in_progress_.erase(record.adapterId);
     }
     extracted = this->manager_->extractAdapter(record.adapterId);

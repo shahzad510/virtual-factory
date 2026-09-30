@@ -22,6 +22,7 @@ add_library(virtual_factory_icp STATIC
     src/PollExecutor.cc
     src/PollScheduler.cc
     src/LifecycleExecutor.cc
+    src/RecoveryService.cc
     src/AdapterFactory.cc
     src/config/ConfigurationValidator.cc
     src/config/JsonFileConfigurationRepository.cc

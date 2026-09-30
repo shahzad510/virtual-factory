@@ -22,6 +22,8 @@
 
 **ICP P3 poll isolation:** **IMPLEMENTED** / **TESTED**. Dedicated `PollExecutor` (4 workers) polls adapters in parallel under owner `io_mutex` with per-adapter in-flight/pending coalesce. `PollScheduler` is tick/dispatch + independent ControlPlaneTick only. Enrolled atomic blocks stale cache publication after extract. Poll shutdown uses P2-shaped grace/abandon. `icp_poll_isolation_test` covers hung-peer isolation and bounded stop.
 
+**ICP Recovery V2 Phase 1 (state + timer):** **PARTIALLY IMPLEMENTED** / **TESTED** (`icp_recovery_control_test`). `RecoveryService` / `RecoveryControl` is the authoritative owner of automatic-recovery `desired`, state (`DISABLED` / `CONNECTED` / `RECOVERY_WAIT` / `PROBING`), `nextAttemptAt`, backoff (1s doubled to 10s cap), consecutive failures, recovery sequence, and `runtimeEpoch`. There is **no** retry-job queue. The control thread does **not** call `connect()` / `poll()` or wait on `io_mutex`. **ProbeExecutor is NOT IMPLEMENTED.** Blocking protocol I/O still uses the TRANSITIONAL `LifecycleExecutor` `RecoveryConnect` path. Full Recovery V2 (logical probe timeout, ProbeSession, quarantine, hung-`connect()` long-outage isolation) is **NOT COMPLETE**. Do not claim the original long-outage problem is fixed.
+
 ## 1. Project identity
 
 MES + SCADA + **modular manufacturing platform** (ICP + MES Core). Gazebo Sim 8 is a **simulation plant** used to develop and test the normalized equipment model.
@@ -237,9 +239,10 @@ Gazebo plugin does **not** link `virtual_factory_industrial`, open62541, libmodb
 ### ICP runtime (ICP-1A)
 
 - `virtual_factory::icp::AdapterManager` — owns adapters; fail-fast `connectAdapter` (`ioBusy` if `io_mutex` is held); duplicate adapter id / equipment id collision checks; `forEachAdapterNonBlocking` for poll
-- `virtual_factory::icp::PollScheduler` — one scheduler thread; `pollOnce()`; after-poll hook schedules recovery by **enqueue only**; obstructed poll rematerializes after 2s; obstructed automatic RecoveryConnect rematerializes after `timeoutMs` plus slack whether live state is FAULTED or still DISCONNECTED
+- `virtual_factory::icp::RecoveryService` — Recovery V2 **Phase 1 PARTIALLY IMPLEMENTED**: authoritative automatic-recovery state + timer (`RecoveryControl`, `nextAttemptAt`, no retry queue). Control thread does not call `connect()`. **ProbeExecutor is NOT IMPLEMENTED.** `RecoveryConnect` remains TRANSITIONAL I/O. Long-outage hung `connect()` is **not** solved.
+- `virtual_factory::icp::PollScheduler` — one scheduler thread; `pollOnce()`; after-poll hook observes / hands off due recovery by **enqueue only**; retry **timing** is owned by `RecoveryService`; obstructed poll rematerializes after 2s; obstructed automatic RecoveryConnect rematerializes after `timeoutMs` plus slack whether live state is FAULTED or still DISCONNECTED
 - `virtual_factory::icp::PollExecutor` — parallel `poll()`; `hasInFlight(adapterId)` for isolation detection
-- `virtual_factory::icp::LifecycleExecutor` — bounded worker pool; per-adapter lifecycle serialization; generation cancellation for Disconnect; non-blocking parked Teardown; runtime `abandonStaleInFlight` 1-for-1 spawn-before-detach replacement with bounds 8/2
+- `virtual_factory::icp::LifecycleExecutor` — bounded worker pool; per-adapter lifecycle serialization; generation cancellation for Disconnect; non-blocking parked Teardown; runtime `abandonStaleInFlight` 1-for-1 spawn-before-detach replacement with bounds 8/2. Automatic recovery **timer/state** is owned by `RecoveryService` (`RecoveryConnect` is TRANSITIONAL I/O).
 - `virtual_factory::icp::LiveStateCache` — latest-value snapshots with `observedAtUtc` on **cache DTOs only**
 - `virtual_factory::icp::AdapterFactory` — in-memory create helpers for Phase 6 adapters
 - Library: `virtual_factory_icp` under `icp/`
