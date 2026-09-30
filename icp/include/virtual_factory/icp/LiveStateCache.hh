@@ -41,6 +41,9 @@ struct EquipmentSnapshot
   /// True when the owning adapter is not Connected (data may be outdated).
   bool stale{true};
   std::chrono::system_clock::time_point observedAtUtc{};
+  /// Last time a Connected poll refreshed this equipment. Unset while never connected.
+  std::chrono::system_clock::time_point lastSuccessfulCommunicationUtc{};
+  bool hasSuccessfulCommunication{false};
 };
 
 /// Thread-safe latest-value cache of normalized equipment state (ICP-1A).

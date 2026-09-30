@@ -49,11 +49,22 @@ struct ProfibusSignalMapping
   bool mapped{false};
 };
 
+/// Module layout is ICP mapping metadata. GSD interpretation is applied by
+/// DP Master firmware from the SYCON artifact — not invented here.
+struct ProfibusModuleMapping
+{
+  unsigned slot{0};
+  std::string moduleType;
+  std::size_t inputLength{0};
+  std::size_t outputLength{0};
+};
+
 struct ProfibusSlaveMapping
 {
   unsigned stationAddress{0};
   std::uint16_t vendorId{0};
   std::uint16_t deviceId{0};
+  std::vector<ProfibusModuleMapping> modules;
 };
 
 struct ProfibusEquipmentMapping
@@ -68,12 +79,15 @@ struct ProfibusEquipmentMapping
   ProfibusSignalMapping fault;
 };
 
-/// Native PROFIBUS DP Master adapter (Hilscher cifX target).
+/// Native PROFIBUS DP Master adapter (Hilscher cifX).
 ///
 /// One adapter instance = one DP Master → many DP slaves.
 ///
-/// **Status:** SCAFFOLDING — BLOCKED BY SDK/HARDWARE until cifX integration
-/// and smoke test complete.
+/// **Status:** IMPLEMENTED TO SOFTWARE BOUNDARY. Cyclic DP IO, slave
+/// diagnostics, and recovery require CIFX 50E-DP + DPM firmware/license +
+/// real DP slave. HARDWARE VALIDATION PENDING.
+///
+/// Gateway PROFIBUS remains SUPPORTED.
 class ProfibusIndustrialAdapter : public IndustrialAdapter
 {
 public:
@@ -84,6 +98,8 @@ public:
     unsigned masterAddress{1};
     unsigned baudRateKbps{19200};
     std::string configArtifactPath;
+    /// Optional firmware name substring (e.g. "PROFIBUS"); empty = default check.
+    std::string expectedFirmwareName;
     int pollTimeoutMs{0};
     std::vector<ProfibusEquipmentMapping> equipment;
   };
@@ -109,6 +125,8 @@ public:
 
   bool hilscherSdkPresent() const;
 
+  const AdapterConfig &config() const;
+
 private:
   class BoundEquipment;
   friend class BoundEquipment;
@@ -118,6 +136,10 @@ private:
   void bindEquipment();
   void enterFault(const std::string &reason);
   int operationTimeoutMs() const;
+  bool writeMappedCommand(
+      const ProfibusCommandMapping &mapped, double parameter, std::string *error);
+  std::size_t requiredInputBytes() const;
+  std::size_t requiredOutputBytes() const;
 
   std::string id_;
   AdapterConfig config_;
@@ -125,6 +147,7 @@ private:
   std::string last_error_;
   std::unique_ptr<SessionHandle> session_;
   std::vector<std::unique_ptr<BoundEquipment>> bound_;
+  std::vector<std::uint8_t> output_image_;
 };
 
 }  // namespace virtual_factory

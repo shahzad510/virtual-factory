@@ -1,10 +1,8 @@
 # Native PROFINET — proposed implementation plan (ICP)
 
-**Status:** **PLAN ONLY** — not implemented. Awaiting explicit approval of stack selection + this plan before any production code.
+**Status:** Historical plan. **Hilscher is the active native path** on `cursor/icp-hilscher-native-development-a88d` (**IMPLEMENTED TO SOFTWARE BOUNDARY** / **HARDWARE VALIDATION PENDING**). Softing is a **future alternative** and is **not implemented**.
 
-**Authority:** ADR-040 (amendment 2026-08-29), ADR-042–045, [`profinet-native-evaluation.md`](profinet-native-evaluation.md).
-
-**Git:** Evaluation secured in `docs(6h): reopen native PROFINET evaluation for ICP`. This plan does **not** authorize coding.
+**Authority:** ADR-040 (amendments 2026-08-29 and 2026-08-30), ADR-042–045, [`profinet-native-evaluation.md`](profinet-native-evaluation.md), [`native-fieldbus-implementation-status.md`](native-fieldbus-implementation-status.md).
 
 ---
 
@@ -12,8 +10,8 @@
 
 | Role | Vendor / product | Status |
 | --- | --- | --- |
-| **PRIMARY candidate** | **Softing PROFINET Controller Stack** | Pending procurement + SDK/license verification |
-| **ALTERNATE / fallback** | **Hilscher cifX + PROFINET Controller firmware** | Use if Softing license/platform/Win RT is insufficient |
+| **PRIMARY (active)** | **Hilscher cifX + PROFINET Controller firmware** | Isolated branch software boundary; hardware validation pending |
+| **FUTURE ALTERNATE** | **Softing PROFINET Controller Stack** | Not implemented. Revisit if OEM SDK/terms/platforms/RT are confirmed |
 | **Situational** | Siemens PROFINET Driver | Linux/OEM (esp. SIMATIC/CP1625); **not** first choice for Win soft-NIC |
 
 **Hard gate:** Softing is **not** finally selected until the commercial SDK package, EULA, and redistribution terms are in hand and verified against ICP product needs. Until then: **primary candidate only**.

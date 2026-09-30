@@ -590,7 +590,8 @@ This refines SoT Phase 7 (MES Core + Resource Management: orders, work centers/e
 - `connect()` after `Faulted` recreates the libmodbus client (explicit reconnect). Background auto-reconnect is not implemented.
 - Public headers do not include `<modbus.h>`. Equipment remains protocol-independent. Gazebo is not a dependency of this adapter.
 - Tests use an in-process libmodbus TCP slave (`tests/modbus_test_server.*`) on localhost. Mixer/pump/unknown names are register-map **labels only**. **DEVELOPMENT ONLY:** no authentication, no TLS.
-- Client coverage in this slice: FC 1–6. Batch writes, RTU, TLS, and production capacity claims are **not** implemented.
+- Client coverage in this slice: FC 1–6. Batch writes, TLS, and production capacity claims are **not** implemented.
+- **Amendment (2026-09-03):** Modbus **RTU / RS-485** is supported on the same `ModbusIndustrialAdapter` via `ModbusTransport::Rtu` and libmodbus `modbus_new_rtu`. One adapter instance = one serial session (`serialDevice` + baud/parity/data/stop). Unit ID remains per mapping (optional connection default for link probe). RTU `connect()` opens the serial port and verifies framing with a lightweight probe (mapped register preferred; Modbus exception = link OK; timeout = Faulted). TCP behavior unchanged. PTY loopback tests are **SOFTWARE-INTEGRATION**; real RS-485 hardware validation is separate.
 - Isolation was validated with two independent endpoints and a modest 4-endpoint localhost loop. That is **not** production proof for hundreds of Modbus PLCs.
 - REST, MQTT, EtherNet/IP, and PROFINET were **not** implemented in this increment. MES and SCADA are not started.
 
@@ -836,8 +837,23 @@ Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/pri
 
 - `ProfinetIndustrialAdapter` **scaffolding IMPLEMENTED** with private `profinet_session` stub; **no production cyclic IO** until cifX smoke test.
 - `VF_ENABLE_HILSCHER_PROFINET` / `VF_HILSCHER_CIFX_AVAILABLE` CMake flags; default OFF when SDK absent.
-- Status: **PARTIALLY IMPLEMENTED** / **BLOCKED BY SDK/HARDWARE** — not **TESTED** for plant connectivity.
-- See [`native-fieldbus-implementation-status.md`](../native-fieldbus-implementation-status.md), [`hilscher-environment-audit.md`](../hilscher-environment-audit.md).
+- Status: **PARTIALLY IMPLEMENTED** / **BLOCKED BY SDK/HARDWARE** on master (stubs).
+- See [`native-fieldbus-implementation-status.md`](native-fieldbus-implementation-status.md), [`hilscher-environment-audit.md`](hilscher-environment-audit.md).
+
+### Amendment 2026-08-30 — Isolated native software boundary (Hilscher track)
+
+- Isolated branch `cursor/icp-hilscher-native-development-a88d` (not merged to master).
+- Private `cifx_runtime` uses official cifX host APIs only. Native PROFINET: **IMPLEMENTED TO SOFTWARE BOUNDARY**. **HARDWARE VALIDATION PENDING**.
+- DCP/AR/RT1 remain firmware/Protocol API — not invented. Gateway remains **SUPPORTED**.
+- See [`native-fieldbus-implementation-status.md`](native-fieldbus-implementation-status.md), [`hilscher-sdk-license.md`](hilscher-sdk-license.md), [`hilscher-hardware-smoke-test.md`](hilscher-hardware-smoke-test.md).
+
+### Amendment 2026-08-30 — Hilscher is the primary native path; Softing is a future alternative
+
+- Softing investigation **COMPLETE**. Softing is **not implemented**.
+- **Primary native implementation:** Hilscher cifX (this isolated branch).
+- Softing may be reconsidered later if OEM availability, Windows 10/11, Ubuntu 24.04, RT quality, redistribution terms, and a current SDK are confirmed.
+- Architecture remains vendor-swappable below `IndustrialAdapter` / GenericEquipment.
+- **Do not merge this branch to master** until explicit approval.
 
 ---
 
@@ -863,7 +879,7 @@ Requires **new ADR** choosing Option A or B with: stack/version/license, NIC/pri
 | Path | Status |
 | --- | --- |
 | **Gateway integration** | **APPROVED and SUPPORTED** — same pattern as PROFINET gateway (ADR-040) |
-| **Native DP Master** | **APPROVED FOR IMPLEMENTATION** — Hilscher cifX primary; Softing PBpro alternate if procurement fails |
+| **Native DP Master** | **APPROVED FOR IMPLEMENTATION** — Hilscher cifX primary; Softing PBpro is a **future alternative** (not implemented) |
 | **Fake serial/TCP PROFIBUS** | **Rejected** |
 
 ### Simultaneous PROFINET + PROFIBUS
@@ -872,9 +888,18 @@ One ICP host may run **CIFX 50E-RE** (PROFINET) and **CIFX 50E-DP** (PROFIBUS) s
 
 ### Stage A scaffolding (2026-08-30)
 
-- `ProfibusIndustrialAdapter` + private `profibus_session` stub compile without SDK.
-- Production cyclic IO **BLOCKED BY SDK/HARDWARE**.
+- `ProfibusIndustrialAdapter` + private `profibus_session` stub compile without SDK (on master).
+- Production cyclic IO **HARDWARE VALIDATION PENDING**.
+
+### Isolated branch software boundary (2026-08-30)
+
+- `cursor/icp-hilscher-native-development-a88d`: real cifX host API for DP Master lifecycle + process-image mapping.
+- Native PROFIBUS: **IMPLEMENTED TO SOFTWARE BOUNDARY**. DCP-equivalent DP mailbox commands are **not invented**.
 - Gateway path unchanged.
+
+### Amendment 2026-08-30 — Softing not implemented
+
+- Softing PBpro remains documented as a future alternative. No Softing dependencies on this branch.
 
 **Consequences:** ICP Industrial SKU can add native PB without MES changes. ICP Standard remains gateway-only.
 
@@ -964,7 +989,7 @@ See `docs/connectivity-integration-contract.md`. **PLANNED. NOT IMPLEMENTED.**
 
 **Context:** ICP must be commercially complete without MES. Visual industrial topology configuration is primary product value.
 
-**Decision:** **ICP Designer** is a **major ICP component**. UX: **DRAG → DROP → CONFIGURE → CONNECT → DEPLOY**. Configures sources, equipment, gateways (incl. PROFINET-via-gateway), and northbound CIC targets (MES, SCADA, ERP). Separate from MES GUI. **PLANNED** — slice **ICP-1F**. See `docs/icp-product-architecture.md`.
+**Decision:** **ICP Designer** is a **major ICP component**. UX: **DRAG → DROP → CONFIGURE → CONNECT → DEPLOY**. Configures sources, equipment, gateways (incl. PROFINET-via-gateway), and northbound CIC targets (MES, SCADA, ERP). Separate from MES GUI. **PLANNED** — slice **ICP-1F**. Configuration **backend** for that GUI is ICP-1B (`docs/icp-configuration.md`). See `docs/icp-product-architecture.md`.
 
 **Alternatives:** YAML-only (insufficient for commercial ICP); merged with MES GUI (rejected).
 
@@ -981,3 +1006,60 @@ See `docs/connectivity-integration-contract.md`. **PLANNED. NOT IMPLEMENTED.**
 
 **Alternatives:** MES reads fieldbuses directly (rejected); monolith with ICP (rejected: ADR-042).
 
+---
+
+## ADR-047 — ICP configuration is versioned JSON behind a replaceable repository
+
+- **Status:** Accepted
+- **Date:** 2026-08-30
+
+**Context:** ICP-1A configuration was in-memory only. ICP Designer (ICP-1F) needs a durable, human-readable configuration API. A database is not required at this stage.
+
+**Decision:** Persist ICP adapter/equipment configuration as a versioned JSON document (`schema=virtual-factory.icp.config`, `version=1`) via `ConfigurationRepository`. Default backend: `JsonFileConfigurationRepository` (atomic temp+rename). No MES types. Credential **references** only (`env:`, `file:`, `secret:`) — not a secret-management product. Native PROFINET/PROFIBUS appear as configuration fields only; parsing does not require Hilscher. See `docs/icp-configuration.md`.
+
+**Alternatives:** SQLite (rejected until a requirement is demonstrated); YAML (JSON already used in industrial adapters); embedding secrets in the file (rejected).
+
+
+
+
+## ADR-048 — Embedded SQLite ICP historian (Milestone 1)
+
+- **Status:** Accepted
+- **Date:** 2026-09-14
+
+**Context:** Session diagnostics, alarms, and application events were process-lifetime only. Operators and future MES/SCADA consumers need durable operational facts without making ICP depend on a remote database.
+
+**Decision:** Add an application-level `HistoryRepository` with a local SQLite implementation behind an async writer. Persist transitions/events/audits — not live connection state or high-rate telemetry samples. Historian open failure must not block ICP startup or protocol operation.
+
+**Consequences:** `icp-history.sqlite` beside config; `GET /api/v1/history`; adapters remain persistence-unaware. RBAC (`history.view`) and MES connectors are later milestones.
+
+**Alternatives:** Persist into JSON config (rejected: wrong lifetime/shape); require PostgreSQL at startup (rejected: startup independence); restore CONNECTED from history (rejected: violates runtime independence).
+
+
+
+
+## ADR-049 — Alarm occurrence lifecycle in ICP historian (M1.1)
+
+- **Status:** Accepted
+- **Date:** 2026-09-14
+
+**Context:** M1 `alarm_event` rows mixed identity with changing messages and did not model occurrence duration/ack/clear for later MTTR/MTBF/OEE analysis. GUI needed Active vs History separation without deleting SQLite rows.
+
+**Decision:** Schema v2 introduces `alarm_occurrence` (incident) plus append-only lifecycle actions on `alarm_event`. Stable `alarm_key` = `sourceType:sourceId:category` (no message). Poll cycles do not duplicate open identities; recovery records `cleared` against the open occurrence; new incidents get new occurrence ids. Acknowledge is historical. CSV export is read-only.
+
+**Consequences:** `GET ... kind=alarm_occurrences`, acknowledge POST, GUI Active/Alarm/Event History. Protocol adapters unchanged. RBAC still Milestone 2.
+
+**Alternatives:** Collapse all raises into one permanent row (rejected); delete on clear/ack (rejected); CSV as source of truth (rejected).
+
+## ADR-050 — Dedicated PollExecutor for cross-adapter poll isolation
+
+- **Status:** Accepted
+- **Date:** 2026-09-21
+
+**Context:** A single sequential `PollScheduler` thread called `adapter.poll()` inline. A blocked poll on adapter A prevented polling of B…N, delayed `onPollCycle` (recovery enqueue / observations), and made `PollScheduler::stop()` join unboundedly. P0/P1/P2 isolated configuration, commands, and lifecycle shutdown, but not poll I/O. Protocol timeout hardening alone cannot guarantee process isolation if a poll never returns.
+
+**Decision:** Introduce a dedicated bounded `PollExecutor` (default 4 workers), separate from `LifecycleExecutor`. `PollScheduler` is tick/dispatch only: enqueue due polls, run independent ControlPlaneTick (former `onPollCycle`), never call `poll()` or `connect()`. At most one in-flight poll and one coalesced pending poll per adapter. Protocol serialization remains the per-adapter `io_mutex`. Cache publication after `poll()` requires the adapter still `enrolled` (P0 extract sets `enrolled=false`). Poll shutdown mirrors P2: grace drain then abandon workers with shared `State` + keep-alive; tick thread is joined normally (no protocol I/O on the tick path).
+
+**Consequences:** Cross-adapter poll parallelism; ControlPlaneTick continues while a peer poll hangs; process shutdown remains within `kPollShutdownGrace` (= P2 5s grace) even with hung polls. No protocol-specific scheduler branches. No permanent thread-per-adapter. Lifecycle/command/config semantics unchanged.
+
+**Alternatives:** Permanent worker per adapter (rejected: thread sprawl at scale); reuse `LifecycleExecutor` for polls (rejected: contending FIFO/generation/Teardown with poll); sequential scheduler + timeout hardening only (rejected: does not remove HOL or unbounded stop); naive detach of the old poll thread (rejected: raw lifetime / CV destroy hazards).

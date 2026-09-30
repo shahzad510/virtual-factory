@@ -7,6 +7,7 @@
 
 # Build directories
 build/
+build-hilscher/
 cmake-build-*/
 out/
 
@@ -39,6 +40,15 @@ Makefile
 *.tmp
 *.swp
 *~
+
+# Local cifX / Hilscher build leftovers (never commit)
+build-cifx/
+
+# Proprietary Hilscher firmware / licenses (never commit)
+*.nxf
+*.nxi
+*.nxo
+*NXLIC*
 
 # OS files
 .DS_Store

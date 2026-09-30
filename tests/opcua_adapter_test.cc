@@ -327,14 +327,135 @@ void useAsMes(virtual_factory::IndustrialAdapter &adapter)
 
 }  // namespace
 
+/// GUI/config stores expanded NodeId text; mapping must yield bare identifier
+/// so makeNodeId() builds ns=N;s=Ident — never ns=N;s=ns=N;s=Ident.
+void testOpcUaFixtureSamePortRestart()
+{
+  // Focused DEVELOPMENT fixture check: stop() → start() must reuse the same
+  // port/endpoint without requiring a new endpoint allocation.
+  virtual_factory::test::OpcUaTestServer server;
+  expect(server.start(), "fixture same-port: initial start");
+  if (server.port() == 0)
+  {
+    return;
+  }
+  const std::uint16_t port = server.port();
+  const std::string endpoint = server.endpointUrl();
+
+  for (int i = 0; i < 8; ++i)
+  {
+    server.stop();
+    expect(server.start(), "fixture same-port: restart after stop");
+    expect(server.port() == port, "fixture same-port: port preserved");
+    expect(server.endpointUrl() == endpoint, "fixture same-port: endpoint preserved");
+    // start() probes IPv4 127.0.0.1 accept; also verify OPC UA session works.
+    {
+      virtual_factory::OpcUaAdapterConfig cfg;
+      cfg.endpointUrl = endpoint;
+      cfg.equipment = {mixerMapping()};
+      virtual_factory::OpcUaIndustrialAdapter adapter("fixture-restart", cfg);
+      expect(adapter.connect(), "fixture same-port: connect after restart");
+      expect(adapter.connected(), "fixture same-port: connected after restart");
+      adapter.disconnect();
+    }
+    expect(server.start(), "fixture same-port: idempotent start while running");
+  }
+
+  // Explicit setPort before first start must still be honored.
+  virtual_factory::test::OpcUaTestServer pinned;
+  pinned.setPort(port);
+  // Port may still be held by `server` — stop first, then start pinned.
+  server.stop();
+  expect(pinned.start(), "fixture same-port: start with explicit setPort");
+  expect(pinned.port() == port, "fixture same-port: setPort preserved");
+  expect(pinned.endpointUrl() == endpoint, "fixture same-port: setPort endpoint");
+  pinned.stop();
+}
+
+void testGuiConfigNodeRefMapping()
+{
+  using virtual_factory::opcUaNodeRefFromConfig;
+
+  const auto expanded = opcUaNodeRefFromConfig(2, "ns=2;s=MotorSpeed");
+  expect(expanded.namespaceIndex == 2,
+         "GUI path: namespaceIndex from ns=2;s=MotorSpeed");
+  expect(expanded.identifier == "MotorSpeed",
+         "GUI path: identifier is bare MotorSpeed, not expanded NodeId");
+  expect(expanded.identifier != "ns=2;s=MotorSpeed",
+         "GUI path: identifier must not retain ns=2;s= prefix");
+
+  const std::string constructed =
+      "ns=" + std::to_string(static_cast<unsigned>(expanded.namespaceIndex))
+      + ";s=" + expanded.identifier;
+  expect(constructed == "ns=2;s=MotorSpeed",
+         "GUI path: resulting NodeId is ns=2;s=MotorSpeed");
+  expect(constructed != "ns=2;s=ns=2;s=MotorSpeed",
+         "GUI path: must not double-encode NodeId");
+
+  const auto bare = opcUaNodeRefFromConfig(2, "MotorSpeed");
+  expect(bare.namespaceIndex == 2, "bare identifier keeps explicit namespaceIndex");
+  expect(bare.identifier == "MotorSpeed", "bare identifier preserved");
+
+  // Explicit namespaceIndex with expanded address: address ns wins when parsable.
+  const auto mismatched = opcUaNodeRefFromConfig(9, "ns=2;s=MotorSpeed");
+  expect(mismatched.namespaceIndex == 2,
+         "expanded address namespace takes precedence when present");
+  expect(mismatched.identifier == "MotorSpeed",
+         "expanded address still strips to bare identifier");
+}
+
+/// Simulate GUI JSON mapping: address="ns=1;s=<test node>", namespaceIndex=1.
+void testGuiStyleExpandedAddressReadsFromServer(
+    const std::string &endpoint)
+{
+  using virtual_factory::OpcUaNodeRef;
+  using virtual_factory::opcUaNodeRefFromConfig;
+  using virtual_factory::test::OpcUaTestServer;
+
+  const OpcUaNodeRef speedNode = opcUaNodeRefFromConfig(
+      1, std::string("ns=1;s=") + OpcUaTestServer::kMixerSpeedActual);
+  expect(speedNode.namespaceIndex == 1, "gui-style speed ns");
+  expect(speedNode.identifier == OpcUaTestServer::kMixerSpeedActual,
+         "gui-style speed bare identifier");
+
+  virtual_factory::OpcUaEquipmentMapping mixer;
+  mixer.id = OpcUaTestServer::kMixerId;
+  mixer.type = "mixer";
+  mixer.capabilities = {"start", "stop"};
+  mixer.telemetry = {{"speed", speedNode, "rpm"}};
+  mixer.stateNode = opcUaNodeRefFromConfig(
+      1, std::string("ns=1;s=") + OpcUaTestServer::kMixerRunning);
+  mixer.faultNode = opcUaNodeRefFromConfig(
+      1, std::string("ns=1;s=") + OpcUaTestServer::kMixerFault);
+
+  virtual_factory::OpcUaIndustrialAdapter adapter(
+      "adapter-opcua-gui-style", oneMachineConfig(endpoint, mixer));
+  expect(adapter.connect(), "gui-style adapter connects");
+  adapter.poll();
+  expect(adapter.connectionState() ==
+             virtual_factory::ConnectionState::Connected,
+         "gui-style poll stays Connected (NodeId not double-encoded)");
+  expect(adapter.lastError().empty(),
+         ("gui-style poll has no error: " + adapter.lastError()).c_str());
+  expect(telemetryNear(*adapter.equipmentById(OpcUaTestServer::kMixerId),
+                       "speed", 42.0),
+         "gui-style expanded address reads mixer speed");
+  adapter.disconnect();
+}
+
 int main()
 {
+  testOpcUaFixtureSamePortRestart();
+  testGuiConfigNodeRefMapping();
+
   virtual_factory::test::OpcUaTestServer server;
   expect(server.start(), "test OPC UA server starts");
   if (!server.start())
   {
     return EXIT_FAILURE;
   }
+
+  testGuiStyleExpandedAddressReadsFromServer(server.endpointUrl());
 
   virtual_factory::OpcUaIndustrialAdapter adapter(
       "adapter-opcua-1", singleServerConfig(server.endpointUrl()));
@@ -445,8 +566,15 @@ int main()
          "communication failure is not a machine process fault");
 
   expect(server.start(), "test server restarts on the same port");
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
   expect(server.endpointUrl() == endpoint, "reconnect uses the same endpoint");
+  // Strengthen same-port restart under adapter Faulted recovery pressure.
+  for (int i = 0; i < 3; ++i)
+  {
+    server.stop();
+    expect(server.start(), "repeated same-port restart under reconnect test");
+    expect(server.endpointUrl() == endpoint, "repeated restart keeps endpoint");
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
   expect(adapter.connect(), "connect after Faulted reconnects");
   expect(adapter.connectionState() ==
              virtual_factory::ConnectionState::Connected,
@@ -466,6 +594,53 @@ int main()
              virtual_factory::ConnectionState::Disconnected,
          "disconnect returns to Disconnected");
   expect(adapter.equipment().empty(), "equipment hidden after disconnect");
+
+  // Soft read failure must not tear down lifecycle (CONNECTED stays CONNECTED).
+  {
+    virtual_factory::OpcUaEquipmentMapping soft;
+    soft.id = "SOFT-EQ";
+    soft.type = "soft";
+    soft.telemetry = {
+        {"missing", virtual_factory::OpcUaNodeRef{1, "Does.Not.Exist"}, ""},
+    };
+    virtual_factory::OpcUaIndustrialAdapter softAdapter(
+        "adapter-opcua-soft-fail", oneMachineConfig(endpoint, soft));
+    expect(softAdapter.connect(), "soft-fail adapter connects");
+    softAdapter.poll();
+    expect(softAdapter.connectionState() ==
+               virtual_factory::ConnectionState::Connected,
+           "BadNodeIdUnknown keeps CONNECTED (soft failure)");
+    expect(!softAdapter.lastError().empty(),
+           "soft failure still records lastError");
+    softAdapter.poll();
+    expect(softAdapter.connectionState() ==
+               virtual_factory::ConnectionState::Connected,
+           "repeated soft failure does not escalate to FAULTED/DISCONNECTED");
+    expect(softAdapter.connect(), "connect while CONNECTED remains success");
+    softAdapter.disconnect();
+    expect(softAdapter.connect(), "connect after disconnect recovers");
+    expect(softAdapter.connectionState() ==
+               virtual_factory::ConnectionState::Connected,
+           "recovered to CONNECTED");
+    softAdapter.disconnect();
+  }
+
+  // Disconnect / Connect / Reconnect cycle after genuine session loss.
+  expect(adapter.connect(), "reconnect before cycle test");
+  expect(adapter.connected(), "connected before cycle");
+  adapter.disconnect();
+  expect(adapter.connectionState() ==
+             virtual_factory::ConnectionState::Disconnected,
+         "cycle disconnect");
+  expect(adapter.connect(), "cycle connect");
+  expect(adapter.connected(), "cycle connected");
+  adapter.poll();
+  expect(adapter.connectionState() ==
+             virtual_factory::ConnectionState::Connected,
+         "cycle poll stays connected");
+  adapter.disconnect();
+  expect(adapter.connect(), "second cycle connect");
+  adapter.disconnect();
 
   server.stop();
 

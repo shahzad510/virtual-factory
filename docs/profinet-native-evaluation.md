@@ -1,11 +1,13 @@
 # Native PROFINET evaluation (6H reopen) — ICP product
 
-**Status:** Investigation **COMPLETE** (2026-08-29). Native IO-Controller **APPROVED FOR IMPLEMENTATION** pending commercial stack selection / license acquisition and an explicit implementation-slice approval. **No production PROFINET code in this repository yet.**
+**Status:** Investigation **COMPLETE** (2026-08-29). Native IO-Controller **APPROVED FOR IMPLEMENTATION**.
 
-**Authority:** ADR-040 (amended 2026-08-29), ADR-042–045.  
+**Decision (2026-08-30):** **Hilscher cifX is the primary native PROFINET path for ICP.** Softing is **not** being implemented at this time. Softing remains a **future alternative** if OEM availability, Windows 10/11, Ubuntu 24.04, RT quality, redistribution terms, and a current SDK are all confirmed. Do not add Softing dependencies to the Hilscher branch.
+
+**Authority:** ADR-040 (amended 2026-08-29 and 2026-08-30), ADR-042–045.  
 **Gateway path:** remains **SUPPORTED** — see [`profinet-gateway-integration.md`](profinet-gateway-integration.md). Do **not** remove or demote gateway integration.
 
-**Scope of this document:** repository audit + stack research + platform/licensing feasibility + architectural recommendation. **Not** implementation.
+**Scope of this document:** historical stack research. Implementation status lives in [`native-fieldbus-implementation-status.md`](native-fieldbus-implementation-status.md).
 
 ---
 

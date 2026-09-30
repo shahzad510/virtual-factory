@@ -66,6 +66,9 @@ public:
   bool start();
   void stop();
 
+  /// Pin the listen port before start() (0 = pick an ephemeral free port).
+  void setPort(std::uint16_t port);
+
   std::uint16_t port() const;
   std::string endpointUrl() const;
 
@@ -88,6 +91,8 @@ public:
   void setTemperature(double value);
 
 private:
+  /// Single start attempt. On failure leaves server_/thread_ cleared.
+  bool tryStartOnce();
   bool addBooleanNode(const char *identifier, bool initial);
   bool addDoubleNode(const char *identifier, double initial);
   bool readBoolean(const char *identifier) const;

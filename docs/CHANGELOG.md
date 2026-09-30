@@ -8,23 +8,187 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Native fieldbus Stage A scaffolding (2026-08-30): Hilscher-target `ProfinetIndustrialAdapter` and `ProfibusIndustrialAdapter` with private session stubs, CMake `FindHilscherCifX`, feature flags `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS` (default OFF). **No real cifX integration** — connect fails with **BLOCKED BY SDK/HARDWARE**. Gateway PROFINET/PROFIBUS unchanged. `native_fieldbus_scaffolding_test` + full suite **11/11 passed**. See `docs/hilscher-environment-audit.md`, `docs/native-fieldbus-implementation-status.md`.
+### Fixed — lifecycle worker reclamation during repeated runtime isolation
 
-ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, `PollScheduler`, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES, or persistent config. `icp_runtime_test` + full suite **10/10 passed**. Phase 7 **NOT STARTED**. Native PROFINET production **BLOCKED BY SDK/HARDWARE**.
+- `LifecycleExecutor::runTeardown` uses `try_lock()` on the extracted adapter `io_mutex`. A busy mutex parks the unique extracted-runtime Teardown outside the adapter FIFO and retries on a 100ms cv wait (no worker held, no busy-spin).
+- Runtime isolation may `abandonStaleInFlight(adapterId, generation)` for the identified automatic `RecoveryConnect` only, using spawn-before-detach: the replacement `std::thread` is constructed first; only then is the old worker marked `stayLive=false`, detached, and swapped out of the same `workers_` slot. If construction throws, the executor is unchanged (`workers_.size()` stays 4, no detach, no budget increment). Discarded never-installed threads do not decrement `abandonedCount`. `stop()` remains the P2 whole-cohort shutdown path and is not used for runtime isolation.
+- Operator Connect/Reconnect coalesce against **any-generation** in-flight connect-style work (including a stale RecoveryConnect after isolation's generation bump) so Reconnect cannot bump generation a second time. Isolation revalidates shutdown/enabled/`autoConnectDesired`/`pending_operator_connect_`/current-generation connect-style state immediately before abandon and before enqueueing RecoveryConnect. If operator intent owns the next connection, pending intent is preserved and no additional automatic RecoveryConnect is enqueued. Failed abandon does not assume reclamation; RecoveryConnect is admitted only when `canAdmitBlockingIsolation()` still holds.
+- Parked (deferred) Teardowns may survive P2 `State` replacement as `shared_ptr`-owned jobs on the abandoned cohort's old `State`. They must never mutate the current runtime and do not run on a dedicated unbounded Teardown thread.
+- Hard bounds: `kMaxAbandonedLifecycleWorkers = 8`, `kMaxAbandonedPerAdapter = 2`. Abandoned workers decrement accounting when they exit after their current job and never take another job. Isolation that cannot abandon skips the tick unless at least one live worker would remain reserved.
+- `hasInFlight` / `hasInFlightOrPending` are current-generation-aware. `completeJob` decrements global in-flight once, clears slot occupancy only on generation match, and notifies if **any** slot has runnable work (or parked Teardown).
+- Operator Connect/Reconnect is never auto-abandoned. Pending operator intent skips isolation start and isolation commit. Disconnect/disable/remove still cancel automatic recovery.
+- PollExecutor P3 architecture is unchanged.
+- Regression: `icp_lifecycle_executor_reclaim_test` (H1/H4/H4-global-9/H5/H6) and `icp_lifecycle_recovery_test` cases H1–H9 plus forced-interleaving operator/isolation races, reserve-worker, and H5 cache/telemetry.
+
+### Fixed — isolate first-DISCONNECTED hung automatic RecoveryConnect
+
+- ControlPlaneTick isolation now treats a genuinely in-flight automatic `RecoveryConnect` that still holds `io_mutex` past `timeoutMs` plus `kHungConnectIsolationSlack` as isolation-eligible when live state is **DISCONNECTED** as well as FAULTED. A first RecoveryConnect that never returns never reaches `applyConnectOutcome()` / `enterFault()`, so FAULTED-only isolation left `autoReconnectInFlight` latched and blocked every later recovery tick.
+- Isolation threshold for hung RecoveryConnect remains configured `timeoutMs` + existing safety slack (not the hung-poll 2s window). A timeout-bound `connect()` that returns `{ok=false, ioBusy=false}` still becomes FAULTED on the **same** runtime and uses normal backoff.
+- Operator Connect/Reconnect (including coalesced operator Connect in `pending_operator_connect_`) is not isolated merely because it is slow.
+- Mechanism is protocol-neutral: generic in-flight RecoveryConnect + configured timeout. No OPC UA / `UA_Client_connect` special case.
+- Isolation still uses the existing rematerialize path (replacement runtime, generation bump, unique Teardown FIFO, new-generation RecoveryConnect). Diagnostic event `recovery_runtime_isolated` records adapter, timeout, elapsed duration, and reason `hung automatic recovery connection`.
+- Regression: `icp_lifecycle_recovery_test` case P (first DISCONNECTED hung RecoveryConnect isolated; NEW CONNECTED without HTTP Connect) and case Q (operator Connect is not isolated)
+
+### Fixed — isolate obstructed automatic RecoveryConnect holding io_mutex
+
+- ControlPlaneTick isolation treats an in-flight automatic `RecoveryConnect` on an already-FAULTED adapter as isolation-eligible only after the adapter's `timeoutMs` (default 2000) plus `kHungConnectIsolationSlack` (500ms). A timeout-bound `connect()` that returns `{ok=false, ioBusy=false}` is not rematerialized at the hung-poll 2s mark; it reaches `applyConnectOutcome()` on the same runtime.
+- Hung-poll isolation remains `kRecoveryIsolationBusyMs` (2s). Operator Connect/Reconnect/Disconnect and coalesced operator Connect recorded in `pending_operator_connect_` still forbid isolation. A timeout-bound first connect that returns is not rematerialized at 2s; a first RecoveryConnect that remains in-flight past timeoutMs+slack is isolated (see above).
+- A stale in-flight RecoveryConnect after generation bump no longer occupies the replacement runtime's LifecycleExecutor FIFO (current-generation jobs may start; stale completion cannot clear the new occupant).
+- Slice A latch reconcile, unique Teardown FIFO, and automatic backoff for completed attempts are unchanged.
+- Regression: `icp_lifecycle_recovery_test` case N (peer up while RecoveryConnect `connect()` stays blocked) and case O (timeout-bound RecoveryConnect stays on the same runtime and becomes FAULTED)
+
+### Fixed — same-adapter recovery isolation when hung poll holds io_mutex
+
+- `AdapterManager::connectAdapter` fail-fast: `try_lock` on per-adapter `io_mutex`; returns `ioBusy` instead of occupying the LifecycleExecutor FIFO
+- `PollExecutor::hasInFlight(adapterId)` observes an in-flight poll without waiting
+- ControlPlaneTick detects obstructed poll (FAULTED / auto-recovery eligible, poll in-flight, `io_mutex` busy, `kRecoveryIsolationBusyMs` = 2000) then create-first extract/rematerialize, Teardown(old), and `RecoveryConnect` for the new generation
+- Isolation does not start after `shutdown_flag_` / `running_ == false`
+- Old poll is not cancelled or joined; enrolled gate still blocks stale cache publication
+- Stale lifecycle completion does not overwrite replacement state/diagnostics/cache
+- Operator Connect/Reconnect follow-up, Slice A latch reconcile, and config rematerialize pending-clear are unchanged
+- Extracted `Teardown` uses a distinct LifecycleExecutor FIFO slot so a hung old `poll()` cannot block `RecoveryConnect` on the replacement runtime
+- Regression: `icp_lifecycle_recovery_test` cases I–M
+
+### Fixed — automatic recovery latch after generation-dropped RecoveryConnect
+
+- `onPollCycle` clears `autoReconnectInFlight` / `reconnect_in_progress_` when LifecycleExecutor has no connect-style work, so a generation bump that discards a pending `RecoveryConnect` cannot leave a phantom latch
+- Enabled rematerialize (`ensureRuntimeAdapter`) clears the same recovery latches (keeps `autoConnectDesired` and backoff)
+- Automatic backoff and operator Connect/Reconnect follow-up are unchanged
+- Regression: `icp_lifecycle_recovery_test` case H
+
+### Fixed — Reconnect must not discard an in-flight Connect/RecoveryConnect
+
+- `reconnectAdapter` no longer bumps generation while Connect, RecoveryConnect, or Reconnect is already in-flight/pending
+- A successful connect that is still desired (`autoConnectDesired`) is applied via `applyConnectOutcome` instead of being disconnected as stale
+- Disconnect / disable / extract still cancel in-flight connect (clear desired + bump generation)
+- GUI Connect/Reconnect flash "request accepted" rather than protocol success
+- Regression: `icp_lifecycle_recovery_test`
+
+### Fixed — operator Connect/Reconnect follow-up after in-flight connect failure
+
+- Operator Connect/Reconnect while Connect/RecoveryConnect is in-flight still does not start a parallel `connect()` or bump generation
+- A pending operator intent is recorded; if the in-flight attempt fails, one follow-up `Connect` is queued behind it (`enqueueFollowUp`) and runs without waiting for automatic backoff
+- In-flight success still keeps the connection and clears the pending operator request
+- Automatic RecoveryConnect backoff is unchanged when no operator request is pending
+- Enabled rematerialize (`ensureRuntimeAdapter`) clears `pending_operator_connect_` so a replacement runtime never inherits the previous instance's operator follow-up
+- Regression: `icp_lifecycle_recovery_test` cases A–G
+
+### Fixed — P3 poll isolation (dedicated PollExecutor)
+
+- `PollExecutor`: bounded worker pool (default 4) runs protocol-blind `poll()` with at most one in-flight and one coalesced pending poll per adapter
+- `PollScheduler`: tick/dispatch only — never calls `adapter.poll()` or `connect()`; ControlPlaneTick (`onPollCycle`) runs independently of poll completion
+- Enrolled gate: after P0 `extractAdapter`, in-flight polls must not `updateFromAdapter` when `enrolled==false`
+- Shutdown: stop tick → `PollExecutor::stop(kPollShutdownGrace)` (P2-shaped abandon + shared State) → existing lifecycle/`disconnectAllBounded` path
+- Regression: `icp_poll_isolation_test`
+
+### Fixed — P2 shutdown isolation (bounded stop / abandon hung I/O)
+
+- `LifecycleExecutor::stop(grace, keepAlive)`: drop pending Connect/Reconnect/Recovery/Disconnect; preserve Teardown; wait up to `kLifecycleShutdownGrace` (5s); detach remaining workers with shared_ptr keep-alive (no unbounded join)
+- Teardown executes inline in the executor (adapter shared_ptrs only)
+- `AdapterManager::disconnectAllBounded`: parallel per-adapter disconnect; abandon hung peers; retain adapter shared_ptrs
+- `ApplicationService::stop` pins manager/cache/lifecycle for abandoned work; sets shutdown flag so in-flight jobs skip diagnostics after protocol I/O
+- Regression: `icp_shutdown_isolation_test`
+
+### Fixed — P1 protocol command isolation
+
+- `AdapterManager::executeEquipmentCommand` resolves ownership under `mutex_`, then runs `execute` + optional cache update under **only** the owning adapter's `io_mutex`
+- Enrollment flag cleared on `extractAdapter` so commands refuse unenrolled instances without taking `mutex_` while holding `io_mutex`
+- `ApplicationService::executeEquipmentCommand` no longer unlocks then calls `Equipment::execute` (poll/lifecycle race)
+- HTTP command API remains synchronous; cross-adapter parallelism preserved
+- Regression: `icp_command_isolation_test`
+
+### Fixed — P0 configuration isolation (DELETE/disable/upsert vs protocol I/O)
+
+- `AdapterManager::extractAdapter` removes runtime + clears equipment ownership without waiting on protocol disconnect
+- `LifecycleOp::Teardown` disconnects extracted adapters under their `io_mutex` on the lifecycle pool (never generation-cleared)
+- `removeAdapterConfig` / disable / `ensureRuntimeAdapter` rematerialize no longer call synchronous `removeAdapter` on HTTP/config paths
+- `ConfigResult.accepted` + HTTP JSON distinguish catalog accept vs in-progress runtime teardown
+- Regression: `icp_configuration_isolation_test` (blackhole OPC UA + DELETE/disable/upsert races)
+
+### Fixed — coalesce Connect/Reconnect; stale jobs must not paint DISCONNECTED
+
+- `LifecycleExecutor`: coalesce Connect↔RecoveryConnect and duplicate Reconnect for the same adapter+generation (pending or in-flight); Disconnect never coalesced
+- `ApplicationService::reconnectAdapter`: skip `bumpGeneration` when Reconnect already in-flight/pending
+- Stale lifecycle completion observes live adapter state (keeps FAULTED) instead of forcing DISCONNECTED
+- Strengthened `icp_lifecycle_isolation_test` coalesced blackhole FAULTED windows
+
+### Fixed — cross-adapter io_mutex isolation (equipment ownership index)
+
+- `AdapterManager` keeps a manager-level `equipmentId → adapterId` index under `mutex_`
+- `connectAdapter` collision/claim uses the index only — never blocks on a peer `io_mutex`
+- `equipmentById` / command ownership lock only the owning adapter's `io_mutex`
+- Strengthened `icp_lifecycle_isolation_test`: mock CONNECTED + command while OPC UA blackhole connect is in-flight, with sub-500ms bounds
+
+### Fixed — Connect/Reconnect must not remove/recreate under io_mutex
+
+- Explicit Connect/Reconnect use `ensureRuntimeAdapterPresent()` (create-if-missing only)
+- Config/upsert rematerialization keeps `ensureRuntimeAdapter()` (replace)
+- Hardened `icp_lifecycle_isolation_test` to wait for OPC UA recovery in-flight before HTTP Connect
+
+### Added — ICP lifecycle isolation (per-adapter parallel connect/recovery)
+
+- `LifecycleExecutor`: owned worker pool; **per-adapter** FIFO serialization; **cross-adapter** parallelism; generation tokens invalidate stale recovery after explicit Disconnect
+- `PollScheduler` / `onPollCycle` **enqueue** recovery only — never call blocking `adapter->connect()` on the poll thread
+- Explicit HTTP Connect/Disconnect/Reconnect return `accepted:true` without waiting on industrial I/O
+- `AdapterManager::forEachAdapterNonBlocking` so sibling polling continues while one adapter holds lifecycle I/O
+- Regression: `icp_lifecycle_isolation_test` (deterministic blackhole OPC UA + mock independence + HTTP responsiveness)
+
+### Added — ICP M1.1 historical alarm/event architecture and GUI
+
+- Schema v2 `alarm_occurrence` + lifecycle actions on `alarm_event` (`raised`/`acknowledged`/`cleared`)
+- Stable alarm identity without message text; no poll duplicates for open identities; separate incidents stay separate
+- ISO-8601 UTC fields on history API; pagination (`limit`/`offset`/`truncated`)
+- `POST /api/v1/alarms/occurrences/{id}/acknowledge`; CSV export at `/api/v1/history/export` (read-only)
+- GUI: Active Alarms, Alarm History, Event History (persistent) with filters/pagination/CSV
+- Extended `icp_history_test` for alarm lifecycle A–J
+
+### Added — ICP Milestone 1 persistent historical data (branch `feature/icp-persistence-rbac-milestones`)
+
+Additive SQLite historian on `v0.1.0-icp-runtime-stable` without rewriting runtime reconnect/health/GUI lifecycle:
+
+- `HistoryRepository` + `SqliteHistoryRepository` + `AsyncHistoryWriter`
+- Persist events, communication intervals, health transitions, alarm raise/clear, equipment state intervals, command audit, config revisions
+- `GET /api/v1/history` read API; local `icp-history.sqlite` (non-blocking; failure → degraded historian only)
+- `tests/icp_history_test.cc`, `docs/icp-history.md`
+- **Does not** restore CONNECTED/live telemetry; **does not** implement RBAC or MES/SCADA connectors
+
+
+Standalone ICP GUI / Application API (2026-08-30, isolated branch `cursor/icp-standalone-gui-a88d`): browser SPA (`icp/gui`) + C++ `/api/v1` (`ApplicationService`, `HttpApiServer`, `icp_server`) on ICP Core. Mock E2E configure/connect/equipment/live data/persist. PROFINET/PROFIBUS configure/validate/save without hardware; connect reports Hilscher hardware not detected. No MES/CIC. Hilscher remains optional. **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** **Do not merge to master.**
+
+ICP standalone acceptance validation (2026-08-31, branch `cursor/icp-standalone-validation-a88d`): full acceptance matrix, `icp_standalone_acceptance_test`, first-run config fix, equipment command API, acceptance report (`docs/icp-standalone-acceptance-report.md`). **17/17 ctest passed.** Product gate: **ACCEPTED** (software) with documented limitations. **Do not merge to master.**
+
+Native Hilscher hardware readiness (2026-08-30, isolated branch): cifX discovery enrichment (serial/firmware/IO/host-bus), `HilscherHardwareReadiness` preflight, PN/PB hardware test plans with honest `BLOCKED_PROTOCOL_API` boundaries, ICP-1B example configs, platform/Docker/test-peer docs, hardware procedure + report template. **Still HARDWARE VALIDATION PENDING.** Softing not implemented. **Do not merge to master.**
+
+Native Hilscher software boundary (2026-08-30, **isolated branch** `cursor/icp-hilscher-native-development-a88d`): real libcifx host API (`cifx_runtime`), process-image mapping, optional flags default OFF. Native PROFINET/PROFIBUS **IMPLEMENTED TO SOFTWARE BOUNDARY**. **HARDWARE VALIDATION PENDING**. Gateway unchanged. ICP-1B catalog merged onto this branch only (not master). Softing remains a documented future alternative — **not implemented**. **Do not merge to master** until explicit approval.
+
+ICP-1B persistent configuration (2026-08-30): versioned JSON configuration subsystem (`ConfigurationCatalog`, `ConfigurationValidator`, `JsonFileConfigurationRepository`). Create/modify/remove/validate/save/load/enumerate adapters and equipment mappings. No database. Credential references only. **ICP-1C NOT STARTED.** **ICP Designer NOT STARTED.** **MES NOT STARTED.** ADR-047. See `docs/icp-configuration.md`.
+
+Native fieldbus Stage A scaffolding (2026-08-30): Hilscher-target `ProfinetIndustrialAdapter` and `ProfibusIndustrialAdapter` with private session stubs, CMake `FindHilscherCifX`, feature flags `VF_ENABLE_HILSCHER_PROFINET` / `VF_ENABLE_HILSCHER_PROFIBUS` (default OFF). **On master:** no real cifX integration — connect fails with **BLOCKED BY SDK/HARDWARE**. Gateway PROFINET/PROFIBUS unchanged.
+
+ICP-1A runtime foundation (2026-08-29): `virtual_factory_icp` — `AdapterManager`, PollScheduler, `LiveStateCache`, in-memory `AdapterFactory`. Multi-adapter ownership, scheduler-driven polling, cache DTOs with timestamps, fault isolation, equipment-id collision checks. **No** auto-reconnect, CIC, Designer, MES. Persistent config is ICP-1B. Phase 7 **NOT STARTED**.
 
 ### Added
 
-- `ProfinetIndustrialAdapter`, `ProfibusIndustrialAdapter` (scaffolding; SDK-absent stubs)
-- `industrial/src/hilscher/` private session layer; `industrial/cmake/FindHilscherCifX.cmake`
+- Standalone ICP GUI (`icp/gui`) and Application API (`/api/v1`, `icp_server`)
+- `tests/icp_application_api_test.cc` (Mock E2E + PN/PB configure-without-hardware)
+- `docs/icp-gui-architecture.md`
+- `third_party/cpp-httplib` (MIT) for HTTP API hosting
+- Isolated-branch SOFTWARE-INTEGRATION tests: `process_image_codec_test`, `native_fieldbus_software_integration_test`, `hilscher_hardware_readiness_test`
+- ICP-1B catalog → native AdapterConfig mapper (`NativeFieldbusConfigMapper`)
+- ICP-1B example configs under `icp/examples/native-fieldbus/`
+- Hardware readiness / procedure docs: `hilscher-hardware-validation-procedure.md`, `hilscher-platform-and-docker.md`, `hilscher-test-peer-options.md`, `templates/hilscher-hardware-test-report.md`
+- `docs/hilscher-sdk-license.md`, `docs/hilscher-hardware-smoke-test.md`
+- ICP-1B configuration API under `icp/include/virtual_factory/icp/config/`
+- `tests/icp_configuration_test.cc`
+- `docs/icp-configuration.md`, ADR-047
+- Stage A (master): `ProfinetIndustrialAdapter`, `ProfibusIndustrialAdapter` scaffolding; `FindHilscherCifX.cmake`
 - `AdapterFactory::createProfinet` / `createProfibus`
-- `tests/native_fieldbus_scaffolding_test.cc`
 - Evaluation docs: `profinet-native-evaluation.md`, `profinet-hilscher-evaluation.md`, `profinet-hilscher-final-gate.md`, `profinet-native-implementation-plan.md`, `profibus-native-evaluation.md`
-- `docs/hilscher-environment-audit.md`, `docs/native-fieldbus-implementation-status.md`
-- `icp/` library and `tests/icp_runtime_test.cc` (prior increment)
 
 ### Changed
 
-- Root CMakeLists; `industrial/CMakeLists.txt`; roadmap / implementation-status / architecture / CHANGELOG
+- Root `CMakeLists.txt` and `icp/CMakeLists.txt` for ICP-1B sources and `icp_configuration_test`
+- ICP product architecture, implementation-status, roadmap, architecture, docs index
 
 ---
 

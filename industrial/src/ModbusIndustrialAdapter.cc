@@ -2,7 +2,7 @@
 
 #include <virtual_factory/equipment/GenericEquipment.hh>
 
-#include "modbus_tcp_session.hh"
+#include "modbus_session.hh"
 
 #include <algorithm>
 #include <cmath>
@@ -24,7 +24,7 @@ bool isSetCommand(const std::string &command)
 
 struct ModbusIndustrialAdapter::ClientHandle
 {
-  internal::ModbusTcpSession session;
+  internal::ModbusSession session;
 };
 
 class ModbusIndustrialAdapter::BoundEquipment : public Equipment
@@ -204,10 +204,27 @@ std::string ModbusIndustrialAdapter::lastError() const
   return this->last_error_;
 }
 
-bool ModbusIndustrialAdapter::connect()
+bool ModbusIndustrialAdapter::openSession()
 {
-  if (this->connection_state_ == ConnectionState::Connected)
+  this->client_->session.close();
+  if (this->config_.transport == ModbusTransport::Rtu)
   {
+    if (this->config_.serialDevice.empty())
+    {
+      this->enterFault("missing Modbus RTU serial device");
+      return false;
+    }
+    if (!this->client_->session.connectRtu(
+            this->config_.serialDevice,
+            this->config_.baudRate,
+            this->config_.parity,
+            this->config_.dataBits,
+            this->config_.stopBits,
+            this->config_.timeoutMs))
+    {
+      this->enterFault(this->client_->session.lastError());
+      return false;
+    }
     return true;
   }
 
@@ -216,14 +233,83 @@ bool ModbusIndustrialAdapter::connect()
     this->enterFault("missing Modbus TCP host or port");
     return false;
   }
-
-  this->client_->session.close();
-  if (!this->client_->session.connect(
+  if (!this->client_->session.connectTcp(
           this->config_.host, this->config_.port, this->config_.timeoutMs))
   {
     this->enterFault(
         std::string("Modbus TCP connect failed: ") +
         this->client_->session.lastError());
+    return false;
+  }
+  return true;
+}
+
+bool ModbusIndustrialAdapter::verifyRtuLink()
+{
+  ModbusRef probe;
+  probe.mapped = true;
+  probe.unitId = this->config_.linkUnitId == 0 ? 1 : this->config_.linkUnitId;
+  probe.table = ModbusTable::HoldingRegister;
+  probe.address = 0;
+
+  for (const auto &eq : this->config_.equipment)
+  {
+    if (!eq.telemetry.empty())
+    {
+      probe = eq.telemetry.front().source;
+      break;
+    }
+    if (!eq.commands.empty())
+    {
+      probe = eq.commands.front().target;
+      break;
+    }
+    if (eq.stateCoil.mapped)
+    {
+      probe = eq.stateCoil;
+      break;
+    }
+  }
+
+  double value = 0.0;
+  if (this->readDouble(probe, &value))
+  {
+    return true;
+  }
+  // Slave exception proves RTU framing and a responding Unit ID.
+  if (this->client_->session.lastErrorWasException())
+  {
+    return true;
+  }
+
+  std::string detail = this->client_->session.lastError();
+  if (detail.empty())
+  {
+    detail = "no response";
+  }
+  this->enterFault(
+      "Modbus RTU response timeout from Unit ID "
+      + std::to_string(static_cast<unsigned>(probe.unitId)) + " (" + detail
+      + ")");
+  this->client_->session.close();
+  return false;
+}
+
+bool ModbusIndustrialAdapter::connect()
+{
+  if (this->connection_state_ == ConnectionState::Connected)
+  {
+    return true;
+  }
+
+  if (!this->openSession())
+  {
+    return false;
+  }
+
+  if (this->config_.transport == ModbusTransport::Rtu
+      && !this->verifyRtuLink())
+  {
     return false;
   }
 

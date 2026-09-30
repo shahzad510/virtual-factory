@@ -20,6 +20,17 @@ struct OpcUaNodeRef
   std::string identifier;
 };
 
+/// Map ICP config fields into an OpcUaNodeRef.
+///
+/// ICP configuration stores OPC UA addresses as NodeId text in `address`
+/// (see configuration tests: "ns=1;s=Mixer.SpeedActual") plus optional
+/// `namespaceIndex`. The open62541 string NodeId constructor expects the
+/// bare identifier only. If `address` is already an expanded string NodeId
+/// (`ns=N;s=Ident`), this splits it; otherwise `address` is treated as the
+/// identifier and `namespaceIndex` is used as-is.
+OpcUaNodeRef opcUaNodeRefFromConfig(
+    std::uint16_t namespaceIndex, const std::string &address);
+
 /// Named command → node write. Boolean pulse commands write `true`.
 /// Commands whose names start with `set_` write the execute() double parameter.
 struct OpcUaCommandMapping
@@ -54,6 +65,9 @@ struct OpcUaAdapterConfig
 {
   /// e.g. opc.tcp://192.168.1.10:4840 — this adapter's single endpoint
   std::string endpointUrl;
+  /// Bound OPC UA client request timeout (connect/read/write/disconnect).
+  /// When <= 0, the adapter uses 2000 ms.
+  int timeoutMs{2000};
   std::vector<OpcUaEquipmentMapping> equipment;
 };
 
@@ -99,6 +113,8 @@ private:
 
   void bindEquipment();
   void enterFault(const std::string &reason);
+  void releaseClient();
+  int resolvedTimeoutMs() const;
   bool readBoolean(const OpcUaNodeRef &node, bool *value);
   bool readDouble(const OpcUaNodeRef &node, double *value);
   bool writeBoolean(const OpcUaNodeRef &node, bool value);
@@ -108,6 +124,9 @@ private:
   OpcUaAdapterConfig config_;
   ConnectionState connection_state_{ConnectionState::Disconnected};
   std::string last_error_;
+  /// Last OPC UA service status from read/write (for connectivity vs soft-fail).
+  std::uint32_t last_service_status_{0};
+  bool last_failure_was_connectivity_{false};
   std::unique_ptr<ClientHandle> client_;
   std::vector<std::unique_ptr<BoundEquipment>> bound_;
 };

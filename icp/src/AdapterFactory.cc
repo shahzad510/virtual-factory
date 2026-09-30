@@ -1,4 +1,5 @@
 #include <virtual_factory/icp/AdapterFactory.hh>
+#include <virtual_factory/icp/config/NativeFieldbusConfigMapper.hh>
 
 #include <utility>
 
@@ -60,6 +61,40 @@ std::unique_ptr<ProfibusIndustrialAdapter> AdapterFactory::createProfibus(
 {
   return std::make_unique<ProfibusIndustrialAdapter>(
       std::move(id), std::move(config));
+}
+
+std::unique_ptr<ProfinetIndustrialAdapter> AdapterFactory::createProfinetFromRecord(
+    const AdapterConfigRecord &record, ConfigResult *result)
+{
+  ProfinetIndustrialAdapter::AdapterConfig config;
+  ConfigResult mapped = NativeFieldbusConfigMapper::toProfinet(record, &config);
+  if (result != nullptr)
+  {
+    *result = mapped;
+  }
+  if (!mapped.ok)
+  {
+    return nullptr;
+  }
+  std::string id = record.adapterId;
+  return createProfinet(std::move(id), std::move(config));
+}
+
+std::unique_ptr<ProfibusIndustrialAdapter> AdapterFactory::createProfibusFromRecord(
+    const AdapterConfigRecord &record, ConfigResult *result)
+{
+  ProfibusIndustrialAdapter::AdapterConfig config;
+  ConfigResult mapped = NativeFieldbusConfigMapper::toProfibus(record, &config);
+  if (result != nullptr)
+  {
+    *result = mapped;
+  }
+  if (!mapped.ok)
+  {
+    return nullptr;
+  }
+  std::string id = record.adapterId;
+  return createProfibus(std::move(id), std::move(config));
 }
 
 }  // namespace icp
