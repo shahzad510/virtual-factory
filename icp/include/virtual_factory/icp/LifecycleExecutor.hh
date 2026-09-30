@@ -1,6 +1,7 @@
 #ifndef VIRTUAL_FACTORY_ICP_LIFECYCLE_EXECUTOR_HH_
 #define VIRTUAL_FACTORY_ICP_LIFECYCLE_EXECUTOR_HH_
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -25,6 +26,13 @@ namespace icp
 /// windows (2500) so well-behaved adapters finish cleanly; hung adapters are
 /// abandoned after this grace with shared_ptr lifetime keep-alive.
 inline constexpr std::chrono::milliseconds kLifecycleShutdownGrace{5000};
+
+/// Hard bound on live detached runtime workers (not the shutdown cohort).
+inline constexpr std::size_t kMaxAbandonedLifecycleWorkers = 8;
+/// Hard bound on live detached runtime workers for one adapterId.
+inline constexpr std::size_t kMaxAbandonedPerAdapter = 2;
+/// Parked Teardown retry interval. Not a busy-spin: workers sleep on cv.
+inline constexpr std::chrono::milliseconds kDeferredTeardownRetry{100};
 
 /// Lifecycle operations that may block on industrial I/O (connect/teardown).
 /// Serialized per adapter; different adapters may run concurrently.
@@ -60,6 +68,8 @@ struct LifecycleJob
 /// - Generation tokens invalidate stale recovery/connect after Disconnect.
 /// - Shutdown is bounded: after the grace period, workers may be detached while
 ///   keepAlive + shared State keep referenced adapters / condition_variables alive.
+/// - Runtime isolation may detach a single stale in-flight worker and replace it
+///   1-for-1 on the same State (live joinable count stays at the start() size).
 /// - Not PollScheduler: poll must never call blocking connect().
 class LifecycleExecutor
 {
@@ -108,15 +118,52 @@ public:
   bool enqueueFollowUp(LifecycleJob job);
 
   /// True when this adapter already has the given op in-flight or pending
-  /// (any generation for in-flight; pending matches current slot generation).
-  /// Used by ApplicationService to avoid bumpGeneration on redundant Reconnect
-  /// while Connect, RecoveryConnect, or Reconnect is already running.
+  /// for the current generation. A stale in-flight job after bumpGeneration
+  /// is not current-generation work.
   bool hasInFlightOrPending(const std::string &adapterId, LifecycleOp op) const;
 
-  /// True when this adapter currently has the given op running (not merely
-  /// pending). Used to distinguish a RecoveryConnect that owns io_mutex from
-  /// a queued RecoveryConnect / hung poll.
+  /// True when this adapter has the given op in-flight or pending on any
+  /// generation (including a stale isolated RecoveryConnect). Used for operator
+  /// Connect/Reconnect coalescing so a generation bump cannot hide in-flight work.
+  bool hasInFlightOrPendingAnyGeneration(
+      const std::string &adapterId, LifecycleOp op) const;
+
+  /// True when this adapter currently has the given op running on the current
+  /// generation (not merely pending, not a stale isolated generation).
   bool hasInFlight(const std::string &adapterId, LifecycleOp op) const;
+
+  /// True when the given generation currently owns an in-flight job of this op.
+  bool hasInFlight(
+      const std::string &adapterId, LifecycleOp op, std::uint64_t generation) const;
+
+  /// True when this adapter currently has the given op running on any generation.
+  bool hasInFlightAnyGeneration(const std::string &adapterId, LifecycleOp op) const;
+
+  /// Construct a replacement worker first, then detach the stale in-flight
+  /// worker (spawn-before-detach). If replacement construction fails the
+  /// executor is unchanged: the old worker stays joinable in the pool, budgets
+  /// are not incremented, and workers_.size() stays at the start() size.
+  /// Only RecoveryConnect is eligible. Fails when budgets are exhausted or the
+  /// identified job is no longer in-flight.
+  bool abandonStaleInFlight(const std::string &adapterId, std::uint64_t generation);
+
+  /// True when abandonStaleInFlight would succeed for this adapter/generation.
+  bool canAbandonStaleInFlight(
+      const std::string &adapterId, std::uint64_t generation) const;
+
+  /// True when starting one more blocking lifecycle job would still leave at
+  /// least one idle live worker reserved for control / other adapters.
+  bool canAdmitBlockingIsolation() const;
+
+  /// Idle joinable workers (not currently running an in-flight slot job).
+  std::size_t idleLiveWorkerCount() const;
+
+  /// Joinable workerMain threads owned by this executor (4 while running).
+  std::size_t liveWorkerCount() const;
+
+  /// Live detached runtime workers (not the P2 shutdown cohort).
+  std::size_t abandonedWorkerCount() const;
+  std::size_t abandonedWorkerCount(const std::string &adapterId) const;
 
 private:
   struct AdapterSlot
@@ -125,20 +172,39 @@ private:
     bool inFlight{false};
     LifecycleOp inFlightOp{LifecycleOp::Connect};
     std::uint64_t inFlightGeneration{0};
+    std::thread::id inFlightWorker{};
     std::deque<LifecycleJob> pending;
   };
 
   struct State;
 
+  struct WorkerControl
+  {
+    std::atomic<bool> stayLive{true};
+    /// When stayLive becomes false, decrement abandoned accounting only if this
+    /// worker was actually installed as a runtime-abandoned replacement victim.
+    /// Discarded never-installed threads must not decrement abandonedCount.
+    std::atomic<bool> decrementOnExit{false};
+    std::string abandonedAdapterId;
+  };
+
+  struct WorkerHandle
+  {
+    std::thread thread;
+    std::shared_ptr<WorkerControl> control;
+  };
+
   /// Detached workers + keepAlive + State retained until workers finish.
   struct AbandonedCohort
   {
-    std::vector<std::thread> workers;
+    std::vector<WorkerHandle> workers;
     std::shared_ptr<void> keepAlive;
     std::shared_ptr<State> state;
   };
 
-  static void workerMain(const std::shared_ptr<State> &state);
+  static void workerMain(
+      const std::shared_ptr<State> &state,
+      const std::shared_ptr<WorkerControl> &control);
   static bool takeNextJobLocked(State &state, LifecycleJob *out);
   static void completeJob(State &state, const LifecycleJob &job);
   /// True when the current generation already has a running job. A stale
@@ -147,12 +213,22 @@ private:
   static bool currentGenerationBusy(const AdapterSlot &slot);
   static bool isConnectStyle(LifecycleOp op);
   static void clearInvalidatablePendingLocked(AdapterSlot &slot);
+  static bool hasFifoRunnableLocked(const State &state);
+  static bool drainCompleteLocked(const State &state);
+  static void accountAbandonedExit(State &state, const std::string &adapterId);
   bool shouldCoalesceLocked(
       const AdapterSlot &slot, const LifecycleJob &job, bool includeInFlight) const;
-  static void runTeardown(const LifecycleJob &job);
+  static bool tryRunTeardown(const LifecycleJob &job);
+  void spawnWorkerLocked();
+  WorkerHandle createWorkerHandle();
+  void discardUninstalledWorker(WorkerHandle &handle);
+  bool canAbandonStaleInFlightLocked(
+      const AdapterSlot &slot, std::uint64_t generation) const;
+  std::size_t idleLiveWorkersLocked() const;
 
   std::shared_ptr<State> state_;
-  std::vector<std::thread> workers_;
+  mutable std::mutex workers_mutex_;
+  std::vector<WorkerHandle> workers_;
   std::shared_ptr<AbandonedCohort> abandoned_;
 };
 

@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — lifecycle worker reclamation during repeated runtime isolation
+
+- `LifecycleExecutor::runTeardown` uses `try_lock()` on the extracted adapter `io_mutex`. A busy mutex parks the unique extracted-runtime Teardown outside the adapter FIFO and retries on a 100ms cv wait (no worker held, no busy-spin).
+- Runtime isolation may `abandonStaleInFlight(adapterId, generation)` for the identified automatic `RecoveryConnect` only, using spawn-before-detach: the replacement `std::thread` is constructed first; only then is the old worker marked `stayLive=false`, detached, and swapped out of the same `workers_` slot. If construction throws, the executor is unchanged (`workers_.size()` stays 4, no detach, no budget increment). Discarded never-installed threads do not decrement `abandonedCount`. `stop()` remains the P2 whole-cohort shutdown path and is not used for runtime isolation.
+- Operator Connect/Reconnect coalesce against **any-generation** in-flight connect-style work (including a stale RecoveryConnect after isolation's generation bump) so Reconnect cannot bump generation a second time. Isolation revalidates shutdown/enabled/`autoConnectDesired`/`pending_operator_connect_`/current-generation connect-style state immediately before abandon and before enqueueing RecoveryConnect. If operator intent owns the next connection, pending intent is preserved and no additional automatic RecoveryConnect is enqueued. Failed abandon does not assume reclamation; RecoveryConnect is admitted only when `canAdmitBlockingIsolation()` still holds.
+- Parked (deferred) Teardowns may survive P2 `State` replacement as `shared_ptr`-owned jobs on the abandoned cohort's old `State`. They must never mutate the current runtime and do not run on a dedicated unbounded Teardown thread.
+- Hard bounds: `kMaxAbandonedLifecycleWorkers = 8`, `kMaxAbandonedPerAdapter = 2`. Abandoned workers decrement accounting when they exit after their current job and never take another job. Isolation that cannot abandon skips the tick unless at least one live worker would remain reserved.
+- `hasInFlight` / `hasInFlightOrPending` are current-generation-aware. `completeJob` decrements global in-flight once, clears slot occupancy only on generation match, and notifies if **any** slot has runnable work (or parked Teardown).
+- Operator Connect/Reconnect is never auto-abandoned. Pending operator intent skips isolation start and isolation commit. Disconnect/disable/remove still cancel automatic recovery.
+- PollExecutor P3 architecture is unchanged.
+- Regression: `icp_lifecycle_executor_reclaim_test` (H1/H4/H4-global-9/H5/H6) and `icp_lifecycle_recovery_test` cases H1–H9 plus forced-interleaving operator/isolation races, reserve-worker, and H5 cache/telemetry.
+
 ### Fixed — isolate first-DISCONNECTED hung automatic RecoveryConnect
 
 - ControlPlaneTick isolation now treats a genuinely in-flight automatic `RecoveryConnect` that still holds `io_mutex` past `timeoutMs` plus `kHungConnectIsolationSlack` as isolation-eligible when live state is **DISCONNECTED** as well as FAULTED. A first RecoveryConnect that never returns never reaches `applyConnectOutcome()` / `enterFault()`, so FAULTED-only isolation left `autoReconnectInFlight` latched and blocked every later recovery tick.

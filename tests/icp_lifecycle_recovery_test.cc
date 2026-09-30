@@ -21,9 +21,13 @@
 #include "opcua_test_server.hh"
 
 #include <virtual_factory/icp/app/ApplicationService.hh>
+#include <virtual_factory/icp/app/HttpApiServer.hh>
 #include <virtual_factory/icp/LifecycleExecutor.hh>
 #include <virtual_factory/equipment/GenericEquipment.hh>
 #include <virtual_factory/industrial/IndustrialAdapter.hh>
+
+#define CPPHTTPLIB_THREAD_POOL_COUNT 4
+#include <httplib.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -119,9 +123,13 @@ struct HangGate
 class GatedConnectAdapter : public virtual_factory::IndustrialAdapter
 {
 public:
+  static constexpr double kStaleMarker = 999.0;
+
   GatedConnectAdapter(std::string id, std::shared_ptr<HangGate> gate)
-      : id_(std::move(id)), gate_(std::move(gate))
+      : id_(std::move(id)), gate_(std::move(gate)),
+        equipment_("EQ-" + id_, "motor")
   {
+    this->equipment_.setTelemetry("stale_marker", 0.0, "");
   }
 
   std::string id() const override { return this->id_; }
@@ -139,6 +147,14 @@ public:
   void setHangOnlyWhenFaulted(bool enabled)
   {
     this->hangOnlyWhenFaulted_.store(enabled);
+  }
+  void setStaleMarker(double value)
+  {
+    this->equipment_.setTelemetry("stale_marker", value, "");
+  }
+  void setPublishError(std::string error)
+  {
+    this->publishError_ = std::move(error);
   }
 
   bool connect() override
@@ -160,7 +176,8 @@ public:
     if (!peerUp)
     {
       this->state_ = virtual_factory::ConnectionState::Faulted;
-      this->lastError_ = "peer unavailable";
+      this->lastError_ =
+          this->publishError_.empty() ? "peer unavailable" : this->publishError_;
       ++this->connectFailed_;
       return false;
     }
@@ -179,10 +196,13 @@ public:
 
   void poll() override {}
 
-  std::vector<virtual_factory::Equipment *> equipment() override { return {}; }
-  virtual_factory::Equipment *equipmentById(const std::string &) override
+  std::vector<virtual_factory::Equipment *> equipment() override
   {
-    return nullptr;
+    return {&this->equipment_};
+  }
+  virtual_factory::Equipment *equipmentById(const std::string &eqId) override
+  {
+    return eqId == this->equipment_.id() ? &this->equipment_ : nullptr;
   }
 
   bool waitConnectEntered(std::chrono::milliseconds timeout)
@@ -215,9 +235,11 @@ public:
 private:
   std::string id_;
   std::shared_ptr<HangGate> gate_;
+  virtual_factory::GenericEquipment equipment_;
   virtual_factory::ConnectionState state_{
       virtual_factory::ConnectionState::Disconnected};
   std::string lastError_;
+  std::string publishError_;
   std::atomic<bool> peerAvailable_{false};
   std::atomic<bool> hangOnlyWhenFaulted_{false};
   std::atomic<int> connectEntered_{0};
@@ -439,6 +461,92 @@ bool markerInCache(virtual_factory::icp::ApplicationService &service,
     }
   }
   return false;
+}
+
+int isolationEventCount(
+    virtual_factory::icp::ApplicationService &service, const std::string &id)
+{
+  int n = 0;
+  for (const auto &ev : service.events(100))
+  {
+    if (ev.adapterId == id && ev.eventType == "recovery_runtime_isolated")
+    {
+      ++n;
+    }
+  }
+  return n;
+}
+
+bool statusResponsive(virtual_factory::icp::ApplicationService &service)
+{
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto st = service.status();
+  const auto report = service.diagnosticsReport();
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - t0)
+                      .count();
+  return ms < 500 && st.product == "ICP" && report.icp.serviceRunning;
+}
+
+int currentConnectStyleCount(
+    virtual_factory::icp::ApplicationService &service, const std::string &id)
+{
+  auto &life = service.lifecycle();
+  int n = 0;
+  if (life.hasInFlightOrPending(id, virtual_factory::icp::LifecycleOp::Connect))
+  {
+    ++n;
+  }
+  if (life.hasInFlightOrPending(
+          id, virtual_factory::icp::LifecycleOp::RecoveryConnect))
+  {
+    ++n;
+  }
+  if (life.hasInFlightOrPending(id, virtual_factory::icp::LifecycleOp::Reconnect))
+  {
+    ++n;
+  }
+  return n;
+}
+
+struct IsolationPause
+{
+  std::mutex mu;
+  std::condition_variable cv;
+  bool arrived{false};
+  bool release{false};
+
+  void arrivedAndWait()
+  {
+    {
+      std::lock_guard<std::mutex> lock(this->mu);
+      this->arrived = true;
+      this->cv.notify_all();
+    }
+    std::unique_lock<std::mutex> lock(this->mu);
+    this->cv.wait(lock, [this]() { return this->release; });
+  }
+
+  bool waitArrived(std::chrono::milliseconds timeout)
+  {
+    std::unique_lock<std::mutex> lock(this->mu);
+    return this->cv.wait_for(lock, timeout, [this]() { return this->arrived; });
+  }
+
+  void go()
+  {
+    std::lock_guard<std::mutex> lock(this->mu);
+    this->release = true;
+    this->cv.notify_all();
+  }
+};
+
+std::unique_ptr<GatedConnectAdapter> makeHanging(
+    const std::string &id, std::shared_ptr<HangGate> gate)
+{
+  auto hang = std::make_unique<GatedConnectAdapter>(id, std::move(gate));
+  hang->setPeerAvailable(false);
+  return hang;
 }
 
 }  // namespace
@@ -1740,6 +1848,1051 @@ int main()
     expect(sessionOf(service, "hang-q").successfulConnections >= 1,
            "Q successfulConnections incremented on the original runtime");
 
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // H1 — Run B: two hung RecoveryConnect isolations/abandons; Gen2 connects
+  //      while Gen0 and Gen1 remain blocked. HTTP/status stay responsive.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("h1-cfg.json");
+    const std::string hist = tempPath("h1-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-h1");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "H1 upsert hung");
+    expect(service.upsertAdapterConfig(makeMock("hang-h1-other")).ok,
+           "H1 upsert sibling");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "H1 save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-h1");
+      (void)extracted;
+    }
+    auto gate0 = std::make_shared<HangGate>();
+    auto hang0 = makeHanging("hang-h1", gate0);
+    GatedConnectAdapter *raw0 = hang0.get();
+    raw0->setStaleMarker(GatedConnectAdapter::kStaleMarker);
+    raw0->setPublishError("stale gen0");
+    expect(service.manager().addAdapter(std::move(hang0)).ok, "H1 add Gen0");
+
+    auto gate1 = std::make_shared<HangGate>();
+    auto hang1 = makeHanging("hang-h1", gate1);
+    GatedConnectAdapter *raw1 = hang1.get();
+    service.injectRuntimeAdapterForTest(std::move(hang1));
+
+    service.start();
+    expect(raw0->waitConnectEntered(std::chrono::milliseconds(4000)),
+           "H1 Gen0 RecoveryConnect entered");
+    expect(waitFor(
+               [&]() {
+                 auto v = service.adapter("hang-h1-other");
+                 return v && v->connectionState == "CONNECTED";
+               },
+               std::chrono::milliseconds(4000)),
+           "H1 sibling CONNECTED during Gen0 hang");
+
+    const int httpPort = 19200 + (::getpid() % 800);
+    virtual_factory::icp::HttpApiServer api(service, "", "127.0.0.1", httpPort);
+    expect(api.start(), "H1 HTTP API starts");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    httplib::Client client("127.0.0.1", httpPort);
+    client.set_connection_timeout(1, 0);
+    client.set_read_timeout(2, 0);
+
+    expect(waitFor(
+               [&]() {
+                 return raw1->connectEntered() >= 1
+                     && service.manager().adapter("hang-h1") == raw1
+                     && isolationEventCount(service, "hang-h1") >= 1
+                     && raw0->connectCompleted() == 0
+                     && raw0->connectFailed() == 0;
+               },
+               std::chrono::milliseconds(6000)),
+           "H1 Gen1 hung replacement entered after first isolation");
+    expect(service.lifecycle().liveWorkerCount() == 4,
+           "H1 live workers == 4 after first abandon");
+    expect(service.lifecycle().abandonedWorkerCount() <= 8,
+           "H1 abandonedCount <= 8 after first abandon");
+
+    expect(waitFor(
+               [&]() {
+                 virtual_factory::IndustrialAdapter *runtime =
+                     service.manager().adapter("hang-h1");
+                 auto v = service.adapter("hang-h1");
+                 return runtime != nullptr && runtime != raw0 && runtime != raw1
+                     && v && v->connectionState == "CONNECTED"
+                     && raw0->connectEntered() == 1
+                     && raw1->connectEntered() == 1
+                     && raw0->connectCompleted() == 0
+                     && raw1->connectCompleted() == 0;
+               },
+               std::chrono::milliseconds(8000)),
+           "H1 Gen2 CONNECTED while Gen0 and Gen1 remain blocked");
+    expect(isolationEventCount(service, "hang-h1") >= 2,
+           "H1 two isolation events");
+    expect(service.lifecycle().liveWorkerCount() == 4,
+           "H1 live workers == 4 after Gen2 connected");
+    expect(service.lifecycle().abandonedWorkerCount() <= 8,
+           "H1 abandonedCount <= 8");
+    expect(service.lifecycle().abandonedWorkerCount("hang-h1") <= 2,
+           "H1 per-adapter abandoned <= 2");
+    expect(statusResponsive(service), "H1 status/diagnostics responsive");
+    {
+      const auto tHttp = std::chrono::steady_clock::now();
+      auto res = client.Get("/api/v1/status");
+      const auto httpMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - tHttp)
+                              .count();
+      expect(res && res->status == 200, "H1 HTTP GET /api/v1/status 200");
+      expect(httpMs < 500, "H1 HTTP GET remained under 500ms");
+    }
+    {
+      auto other = service.adapter("hang-h1-other");
+      expect(other && other->connectionState == "CONNECTED",
+             "H1 sibling remains CONNECTED");
+    }
+
+    virtual_factory::IndustrialAdapter *gen2 =
+        service.manager().adapter("hang-h1");
+    const auto successBefore = sessionOf(service, "hang-h1").successfulConnections;
+    gate0->open();
+    gate1->open();
+    expect(waitFor(
+               [&]() {
+                 return (raw0->connectFailed() >= 1 || raw0->connectCompleted() >= 1)
+                     && (raw1->connectFailed() >= 1 || raw1->connectCompleted() >= 1)
+                     && service.lifecycle().abandonedWorkerCount("hang-h1") == 0;
+               },
+               std::chrono::milliseconds(3000)),
+           "H1/H5 stale workers returned and abandoned count decreased");
+    expect(service.manager().adapter("hang-h1") == gen2,
+           "H5 stale return did not replace Gen2 runtime");
+    auto after = service.adapter("hang-h1");
+    expect(after && after->connectionState == "CONNECTED",
+           "H5 Gen2 remains CONNECTED after stale return");
+    expect(sessionOf(service, "hang-h1").successfulConnections >= successBefore,
+           "H5 stale return did not clear Gen2 success counters");
+    expect(sessionOf(service, "hang-h1").failedConnections == 0,
+           "H5 stale return did not mark Gen2 FAULTED");
+    expect(!markerInCache(service, "EQ-hang-h1", 999.0),
+           "H5 Gen0 stale_marker must not land in Gen2 cache");
+
+    api.stop();
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // H2 — Short outage: one isolation, replacement connects, sibling stays up.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("h2-cfg.json");
+    const std::string hist = tempPath("h2-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-h2");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "H2 upsert hung");
+    expect(service.upsertAdapterConfig(makeMock("hang-h2-other")).ok,
+           "H2 upsert sibling");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "H2 save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-h2");
+      (void)extracted;
+    }
+    auto gate = std::make_shared<HangGate>();
+    auto hang = makeHanging("hang-h2", gate);
+    GatedConnectAdapter *raw = hang.get();
+    expect(service.manager().addAdapter(std::move(hang)).ok, "H2 add gated");
+    service.start();
+    expect(raw->waitConnectEntered(std::chrono::milliseconds(4000)),
+           "H2 Gen0 entered");
+    expect(waitFor(
+               [&]() {
+                 virtual_factory::IndustrialAdapter *runtime =
+                     service.manager().adapter("hang-h2");
+                 auto v = service.adapter("hang-h2");
+                 auto other = service.adapter("hang-h2-other");
+                 return runtime != nullptr && runtime != raw && v
+                     && v->connectionState == "CONNECTED" && other
+                     && other->connectionState == "CONNECTED"
+                     && raw->connectEntered() == 1
+                     && raw->connectCompleted() == 0;
+               },
+               std::chrono::milliseconds(8000)),
+           "H2 isolated replacement CONNECTED; sibling Mock CONNECTED");
+    expect(isolationEventCount(service, "hang-h2") == 1,
+           "H2 exactly one isolation event");
+    expect(service.lifecycle().liveWorkerCount() == 4, "H2 live workers == 4");
+    gate->open();
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // H3 — Normal returned failure: no isolation, same runtime, backoff.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("h3-cfg.json");
+    const std::string hist = tempPath("h3-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-h3");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "H3 upsert");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "H3 save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-h3");
+      (void)extracted;
+    }
+    auto hang = std::make_unique<GatedConnectAdapter>("hang-h3", nullptr);
+    hang->setPeerAvailable(false);
+    GatedConnectAdapter *raw = hang.get();
+    expect(service.manager().addAdapter(std::move(hang)).ok, "H3 add returning adapter");
+    service.start();
+    expect(waitFor(
+               [&]() {
+                 return sessionOf(service, "hang-h3").failedConnections >= 1
+                     && raw->connectFailed() >= 1;
+               },
+               std::chrono::milliseconds(4000)),
+           "H3 connect returned failure");
+    virtual_factory::IndustrialAdapter *original =
+        service.manager().adapter("hang-h3");
+    expect(original == raw, "H3 same runtime after returned failure");
+    const auto t0 = std::chrono::steady_clock::now();
+    bool rematerialized = false;
+    while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1500))
+    {
+      if (service.manager().adapter("hang-h3") != original)
+      {
+        rematerialized = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    expect(!rematerialized, "H3 no isolation after returned failure");
+    expect(isolationEventCount(service, "hang-h3") == 0, "H3 no isolation event");
+    expect(sessionOf(service, "hang-h3").failedConnections >= 1,
+           "H3 failedConnections incremented");
+    expect(sessionOf(service, "hang-h3").autoReconnectBackoffMs.count() >= 1000,
+           "H3 backoff remains intact");
+    expect(service.lifecycle().abandonedWorkerCount() == 0,
+           "H3 no runtime worker abandonment");
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // H4 — Budget: more than two isolations on one adapter never abandon >2
+  //      and never grow the live pool.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("h4-cfg.json");
+    const std::string hist = tempPath("h4-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-h4");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "H4 upsert");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "H4 save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-h4");
+      (void)extracted;
+    }
+    std::vector<std::shared_ptr<HangGate>> gates;
+    std::vector<GatedConnectAdapter *> raws;
+    auto gate0 = std::make_shared<HangGate>();
+    gates.push_back(gate0);
+    auto hang0 = makeHanging("hang-h4", gate0);
+    raws.push_back(hang0.get());
+    expect(service.manager().addAdapter(std::move(hang0)).ok, "H4 add Gen0");
+    for (int i = 0; i < 3; ++i)
+    {
+      auto g = std::make_shared<HangGate>();
+      gates.push_back(g);
+      auto h = makeHanging("hang-h4", g);
+      raws.push_back(h.get());
+      service.injectRuntimeAdapterForTest(std::move(h));
+    }
+    service.start();
+    expect(waitFor(
+               [&]() { return isolationEventCount(service, "hang-h4") >= 3; },
+               std::chrono::milliseconds(12000)),
+           "H4 at least three isolation attempts");
+    expect(service.lifecycle().abandonedWorkerCount() <= 8,
+           "H4 abandonedCount never exceeds 8");
+    expect(service.lifecycle().abandonedWorkerCount("hang-h4") <= 2,
+           "H4 per-adapter abandoned never exceeds 2");
+    expect(service.lifecycle().liveWorkerCount() == 4,
+           "H4 no extra joinable workers beyond 4");
+    expect(statusResponsive(service), "H4 status remains responsive");
+    for (auto &g : gates)
+    {
+      g->open();
+    }
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // H6 — Shutdown bounded while stale runtime workers remain blocked.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("h6-cfg.json");
+    const std::string hist = tempPath("h6-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-h6");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "H6 upsert");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "H6 save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-h6");
+      (void)extracted;
+    }
+    auto gate0 = std::make_shared<HangGate>();
+    auto hang0 = makeHanging("hang-h6", gate0);
+    GatedConnectAdapter *raw0 = hang0.get();
+    expect(service.manager().addAdapter(std::move(hang0)).ok, "H6 add Gen0");
+    auto gate1 = std::make_shared<HangGate>();
+    auto hang1 = makeHanging("hang-h6", gate1);
+    GatedConnectAdapter *raw1 = hang1.get();
+    service.injectRuntimeAdapterForTest(std::move(hang1));
+    service.start();
+    expect(raw0->waitConnectEntered(std::chrono::milliseconds(4000)),
+           "H6 Gen0 entered");
+    expect(waitFor(
+               [&]() {
+                 virtual_factory::IndustrialAdapter *runtime =
+                     service.manager().adapter("hang-h6");
+                 auto v = service.adapter("hang-h6");
+                 return runtime != nullptr && runtime != raw0 && runtime != raw1
+                     && v && v->connectionState == "CONNECTED"
+                     && raw0->connectCompleted() == 0
+                     && raw1->connectCompleted() == 0
+                     && raw1->connectEntered() >= 1;
+               },
+               std::chrono::milliseconds(10000)),
+           "H6 replacement CONNECTED while two stale connects remain blocked");
+    expect(raw0->connectFailed() == 0 && raw1->connectFailed() == 0,
+           "H6 stale workers still in-flight at shutdown");
+    const auto t0 = std::chrono::steady_clock::now();
+    service.stop();
+    const auto stopMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0)
+                            .count();
+    expect(stopMs < 12000, "H6 stop bounded under P2 grace while hangs remain");
+    gate0->open();
+    gate1->open();
+    expect(waitFor(
+               [&]() {
+                 return (raw0->connectFailed() >= 1 || raw0->connectCompleted() >= 1)
+                     && (raw1->connectFailed() >= 1 || raw1->connectCompleted() >= 1);
+               },
+               std::chrono::milliseconds(2000)),
+           "H6 stale connects returned after stop + gate open");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // H7 — Cross-adapter: A isolates/hangs; B mock connects and commands.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("h7-cfg.json");
+    const std::string hist = tempPath("h7-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-h7");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "H7 upsert hung");
+    auto sibling = makeMock("hang-h7-other");
+    virtual_factory::icp::CommandMappingRecord start;
+    start.command = "start";
+    sibling.equipment.front().commands.push_back(start);
+    sibling.equipment.front().capabilities.push_back("start");
+    expect(service.upsertAdapterConfig(sibling).ok, "H7 upsert sibling");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "H7 save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-h7");
+      (void)extracted;
+    }
+    auto gate0 = std::make_shared<HangGate>();
+    auto hang0 = makeHanging("hang-h7", gate0);
+    GatedConnectAdapter *raw0 = hang0.get();
+    expect(service.manager().addAdapter(std::move(hang0)).ok, "H7 add Gen0");
+    auto gate1 = std::make_shared<HangGate>();
+    service.injectRuntimeAdapterForTest(makeHanging("hang-h7", gate1));
+    service.start();
+    expect(raw0->waitConnectEntered(std::chrono::milliseconds(4000)),
+           "H7 A entered hang");
+    expect(waitFor(
+               [&]() {
+                 auto v = service.adapter("hang-h7-other");
+                 return v && v->connectionState == "CONNECTED";
+               },
+               std::chrono::milliseconds(4000)),
+           "H7 B CONNECTED while A hangs");
+    expect(waitFor(
+               [&]() { return isolationEventCount(service, "hang-h7") >= 1; },
+               std::chrono::milliseconds(6000)),
+           "H7 A isolated at least once");
+    auto cmd = service.executeEquipmentCommand("EQ-hang-h7-other", "start");
+    expect(cmd.ok, "H7 sibling command succeeds while A hangs");
+    {
+      auto v = service.adapter("hang-h7-other");
+      expect(v && v->connectionState == "CONNECTED",
+             "H7 B remains CONNECTED after command");
+    }
+    expect(statusResponsive(service), "H7 status responsive");
+    gate0->open();
+    gate1->open();
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // H8 — Long outage: budget + backoff; HTTP/diagnostics/scheduler/Mock ok.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("h8-cfg.json");
+    const std::string hist = tempPath("h8-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-h8");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "H8 upsert hung");
+    expect(service.upsertAdapterConfig(makeMock("hang-h8-other")).ok,
+           "H8 upsert sibling");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "H8 save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-h8");
+      (void)extracted;
+    }
+    std::vector<std::shared_ptr<HangGate>> gates;
+    auto gate0 = std::make_shared<HangGate>();
+    gates.push_back(gate0);
+    auto hang0 = makeHanging("hang-h8", gate0);
+    expect(service.manager().addAdapter(std::move(hang0)).ok, "H8 add Gen0");
+    for (int i = 0; i < 4; ++i)
+    {
+      auto g = std::make_shared<HangGate>();
+      gates.push_back(g);
+      service.injectRuntimeAdapterForTest(makeHanging("hang-h8", g));
+    }
+    service.start();
+    const int httpPort = 19300 + (::getpid() % 800);
+    virtual_factory::icp::HttpApiServer api(service, "", "127.0.0.1", httpPort);
+    expect(api.start(), "H8 HTTP API starts");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    httplib::Client client("127.0.0.1", httpPort);
+    client.set_connection_timeout(1, 0);
+    client.set_read_timeout(2, 0);
+
+    expect(waitFor(
+               [&]() { return isolationEventCount(service, "hang-h8") >= 2; },
+               std::chrono::milliseconds(10000)),
+           "H8 at least two isolations during long outage");
+    const auto tHold = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - tHold
+           < std::chrono::milliseconds(1500))
+    {
+      expect(service.lifecycle().abandonedWorkerCount() <= 8,
+             "H8 abandonedCount <= 8 throughout");
+      expect(service.lifecycle().liveWorkerCount() == 4,
+             "H8 live workers == 4 throughout");
+      expect(statusResponsive(service), "H8 status/diagnostics responsive");
+      auto other = service.adapter("hang-h8-other");
+      expect(other && other->connectionState == "CONNECTED",
+             "H8 sibling Mock remains CONNECTED");
+      const auto tHttp = std::chrono::steady_clock::now();
+      auto res = client.Get("/api/v1/status");
+      const auto httpMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - tHttp)
+                              .count();
+      expect(res && res->status == 200, "H8 HTTP GET /api/v1/status 200");
+      expect(httpMs < 500, "H8 HTTP GET under 500ms");
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    expect(service.status().schedulerRunning, "H8 scheduler still running");
+    for (auto &g : gates)
+    {
+      g->open();
+    }
+    api.stop();
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // H9 — Operator Connect is not auto-abandoned; Disconnect cancels recovery.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("h9-cfg.json");
+    const std::string hist = tempPath("h9-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    service.start();
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-h9");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "H9 upsert");
+    auto gate = std::make_shared<HangGate>();
+    GatedConnectAdapter *raw = addGated(service, "hang-h9", gate);
+    raw->setPeerAvailable(true);
+    auto started = service.connectAdapter("hang-h9");
+    expect(started.ok && started.accepted, "H9 operator Connect accepted");
+    expect(raw->waitConnectEntered(std::chrono::milliseconds(2000)),
+           "H9 operator Connect entered");
+    virtual_factory::IndustrialAdapter *original =
+        service.manager().adapter("hang-h9");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    expect(service.manager().adapter("hang-h9") == original,
+           "H9 operator Connect was not isolated/abandoned");
+    expect(isolationEventCount(service, "hang-h9") == 0,
+           "H9 no isolation event for operator Connect");
+    expect(service.lifecycle().abandonedWorkerCount() == 0,
+           "H9 operator Connect was not runtime-abandoned");
+    expect(raw->connectEntered() == 1, "H9 no replacement RecoveryConnect");
+    gate->open();
+    expect(waitFor(
+               [&]() {
+                 auto v = service.adapter("hang-h9");
+                 return v && v->connectionState == "CONNECTED"
+                     && service.manager().adapter("hang-h9") == original;
+               },
+               std::chrono::milliseconds(2000)),
+           "H9 same runtime CONNECTED after operator Connect");
+
+    expect(service.disconnectAdapter("hang-h9").ok, "H9 Disconnect accepted");
+    expect(waitFor(
+               [&]() {
+                 auto v = service.adapter("hang-h9");
+                 return v && v->connectionState == "DISCONNECTED"
+                     && !sessionOf(service, "hang-h9").autoConnectDesired;
+               },
+               std::chrono::milliseconds(3000)),
+           "H9 Disconnect cleared autoConnectDesired");
+    const auto t0 = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(800))
+    {
+      auto v = service.adapter("hang-h9");
+      expect(!(v && v->connectionState == "CONNECTED"),
+             "H9 no unwanted replacement recovery after Disconnect");
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // Race — operator Reconnect after isolation generation bump, before abandon.
+  // Forced interleaving via IsolationHookPoint::AfterGenerationBump.
+  // ---------------------------------------------------------------------
+  for (int raceIter = 0; raceIter < 3; ++raceIter)
+  {
+    const std::string cfg = tempPath("race-re-cfg.json");
+    const std::string hist = tempPath("race-re-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-race");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "race Reconnect upsert");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "race Reconnect save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-race");
+      (void)extracted;
+    }
+    auto gate0 = std::make_shared<HangGate>();
+    auto hang0 = makeHanging("hang-race", gate0);
+    GatedConnectAdapter *raw0 = hang0.get();
+    expect(service.manager().addAdapter(std::move(hang0)).ok, "race add Gen0");
+    auto hang1 = std::make_unique<GatedConnectAdapter>("hang-race", nullptr);
+    hang1->setPeerAvailable(true);
+    hang1->setStaleMarker(2.0);
+    service.injectRuntimeAdapterForTest(std::move(hang1));
+
+    IsolationPause pause;
+    service.setIsolationTestHook(
+        virtual_factory::icp::IsolationHookPoint::AfterGenerationBump,
+        [&]() { pause.arrivedAndWait(); });
+    service.start();
+    expect(raw0->waitConnectEntered(std::chrono::milliseconds(4000)),
+           "race Reconnect Gen0 entered");
+    expect(pause.waitArrived(std::chrono::milliseconds(8000)),
+           "race Reconnect isolation paused after bump");
+    const std::uint64_t genAtPause = service.lifecycle().generation("hang-race");
+    expect(genAtPause == 1, "race Reconnect isolation bumped once to gen 1");
+    expect(service.lifecycle().hasInFlightAnyGeneration(
+               "hang-race", LifecycleOp::RecoveryConnect),
+           "race Reconnect stale RecoveryConnect still tracked");
+    expect(!service.lifecycle().hasInFlightOrPending(
+               "hang-race", LifecycleOp::RecoveryConnect),
+           "race Reconnect stale RecoveryConnect is not current-generation");
+
+    auto recon = service.reconnectAdapter("hang-race");
+    expect(recon.ok && recon.accepted, "race Reconnect accepted during pause");
+    expect(service.lifecycle().generation("hang-race") == genAtPause,
+           "race Reconnect did not bump generation a second time");
+    expect(service.hasPendingOperatorConnectForTest("hang-race"),
+           "race Reconnect preserved operator intent");
+    expect(currentConnectStyleCount(service, "hang-race") == 0,
+           "race Reconnect coalesced; no current-generation connect-style yet");
+
+    pause.go();
+    service.setIsolationTestHook(
+        virtual_factory::icp::IsolationHookPoint::AfterGenerationBump, nullptr);
+
+    expect(waitFor(
+               [&]() {
+                 return service.lifecycle().abandonedWorkerCount("hang-race") == 1
+                     || service.lifecycle().abandonedWorkerCount() == 1;
+               },
+               std::chrono::milliseconds(3000)),
+           "race Reconnect stale Gen0 reclaimed");
+    expect(service.lifecycle().generation("hang-race") == genAtPause,
+           "race Reconnect generation stayed at isolation bump");
+    expect(currentConnectStyleCount(service, "hang-race") <= 1,
+           "race Reconnect at most one current-generation connect-style");
+    expect(!service.lifecycle().hasInFlightOrPending(
+               "hang-race", LifecycleOp::RecoveryConnect)
+               || !service.lifecycle().hasInFlightOrPending(
+                      "hang-race", LifecycleOp::Connect),
+           "race Reconnect no duplicate Connect+RecoveryConnect");
+    expect(waitFor(
+               [&]() {
+                 auto v = service.adapter("hang-race");
+                 return v && v->connectionState == "CONNECTED"
+                     && currentConnectStyleCount(service, "hang-race") == 0;
+               },
+               std::chrono::milliseconds(5000)),
+           "race Reconnect eventual CONNECTED after operator intent");
+    expect(service.lifecycle().liveWorkerCount() == 4,
+           "race Reconnect live workers remain 4");
+    expect(raw0->connectEntered() == 1, "race Reconnect no extra Gen0 connect");
+
+    gate0->open();
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // Race — operator Connect in the extract/add window.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("race-co-cfg.json");
+    const std::string hist = tempPath("race-co-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-race-c");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "race Connect upsert");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "race Connect save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-race-c");
+      (void)extracted;
+    }
+    auto gate0 = std::make_shared<HangGate>();
+    auto hang0 = makeHanging("hang-race-c", gate0);
+    GatedConnectAdapter *raw0 = hang0.get();
+    expect(service.manager().addAdapter(std::move(hang0)).ok, "race Connect add");
+    auto hang1 = std::make_unique<GatedConnectAdapter>("hang-race-c", nullptr);
+    hang1->setPeerAvailable(true);
+    service.injectRuntimeAdapterForTest(std::move(hang1));
+
+    IsolationPause pause;
+    service.setIsolationTestHook(
+        virtual_factory::icp::IsolationHookPoint::AfterExtractBeforeAdd,
+        [&]() { pause.arrivedAndWait(); });
+    service.start();
+    expect(raw0->waitConnectEntered(std::chrono::milliseconds(4000)),
+           "race Connect Gen0 entered");
+    expect(pause.waitArrived(std::chrono::milliseconds(8000)),
+           "race Connect paused in extract/add window");
+    expect(service.manager().adapter("hang-race-c") == nullptr,
+           "race Connect manager empty in extract/add window");
+    const std::uint64_t genAtPause = service.lifecycle().generation("hang-race-c");
+
+    auto started = service.connectAdapter("hang-race-c");
+    expect(started.ok && started.accepted, "race Connect accepted in gap");
+    expect(service.hasPendingOperatorConnectForTest("hang-race-c"),
+           "race Connect recorded pending operator intent");
+    expect(service.lifecycle().generation("hang-race-c") == genAtPause,
+           "race Connect did not bump generation");
+    expect(service.manager().adapter("hang-race-c") == nullptr,
+           "race Connect did not create a runtime in the extract/add gap");
+    expect(currentConnectStyleCount(service, "hang-race-c") == 0,
+           "race Connect coalesced against stale RecoveryConnect");
+
+    pause.go();
+    service.setIsolationTestHook(
+        virtual_factory::icp::IsolationHookPoint::AfterExtractBeforeAdd, nullptr);
+    expect(waitFor(
+               [&]() {
+                 auto v = service.adapter("hang-race-c");
+                 return v && v->connectionState == "CONNECTED"
+                     && currentConnectStyleCount(service, "hang-race-c") <= 1;
+               },
+               std::chrono::milliseconds(5000)),
+           "race Connect eventual CONNECTED");
+    expect(service.lifecycle().liveWorkerCount() == 4,
+           "race Connect live workers remain 4");
+    gate0->open();
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // Race — Disconnect during isolation bump/abandon window cancels recovery.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("race-di-cfg.json");
+    const std::string hist = tempPath("race-di-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-race-d");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "race Disconnect upsert");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "race Disconnect save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-race-d");
+      (void)extracted;
+    }
+    auto gate0 = std::make_shared<HangGate>();
+    auto hang0 = makeHanging("hang-race-d", gate0);
+    GatedConnectAdapter *raw0 = hang0.get();
+    expect(service.manager().addAdapter(std::move(hang0)).ok, "race Disconnect add");
+    service.injectRuntimeAdapterForTest(makeHanging("hang-race-d", gate0));
+
+    IsolationPause pause;
+    service.setIsolationTestHook(
+        virtual_factory::icp::IsolationHookPoint::AfterGenerationBump,
+        [&]() { pause.arrivedAndWait(); });
+    service.start();
+    expect(raw0->waitConnectEntered(std::chrono::milliseconds(4000)),
+           "race Disconnect Gen0 entered");
+    expect(pause.waitArrived(std::chrono::milliseconds(8000)),
+           "race Disconnect isolation paused");
+    const std::uint64_t genAtPause = service.lifecycle().generation("hang-race-d");
+    expect(service.disconnectAdapter("hang-race-d").ok,
+           "race Disconnect accepted during pause");
+    expect(service.lifecycle().generation("hang-race-d") == genAtPause + 1,
+           "race Disconnect bumped generation");
+    expect(!service.hasPendingOperatorConnectForTest("hang-race-d"),
+           "race Disconnect cleared pending operator intent");
+    expect(!sessionOf(service, "hang-race-d").autoConnectDesired,
+           "race Disconnect cleared autoConnectDesired");
+
+    pause.go();
+    service.setIsolationTestHook(
+        virtual_factory::icp::IsolationHookPoint::AfterGenerationBump, nullptr);
+    const auto t0 = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1200))
+    {
+      auto v = service.adapter("hang-race-d");
+      expect(!(v && v->connectionState == "CONNECTED"),
+             "race Disconnect no automatic RecoveryConnect");
+      expect(!service.lifecycle().hasInFlightOrPending(
+                 "hang-race-d", LifecycleOp::RecoveryConnect),
+             "race Disconnect no current-generation RecoveryConnect");
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    expect(service.lifecycle().liveWorkerCount() == 4,
+           "race Disconnect live workers remain 4");
+    gate0->open();
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // Race — disable during BeforeCommit cancels automatic recovery.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("race-dis-cfg.json");
+    const std::string hist = tempPath("race-dis-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-race-z");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "race disable upsert");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "race disable save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-race-z");
+      (void)extracted;
+    }
+    auto gate0 = std::make_shared<HangGate>();
+    auto hang0 = makeHanging("hang-race-z", gate0);
+    GatedConnectAdapter *raw0 = hang0.get();
+    expect(service.manager().addAdapter(std::move(hang0)).ok, "race disable add");
+    service.injectRuntimeAdapterForTest(makeHanging("hang-race-z", gate0));
+
+    IsolationPause pause;
+    service.setIsolationTestHook(
+        virtual_factory::icp::IsolationHookPoint::BeforeCommit,
+        [&]() { pause.arrivedAndWait(); });
+    service.start();
+    expect(raw0->waitConnectEntered(std::chrono::milliseconds(4000)),
+           "race disable Gen0 entered");
+    expect(pause.waitArrived(std::chrono::milliseconds(8000)),
+           "race disable paused before commit");
+    virtual_factory::icp::AdapterConfigRecord disabled = hangCfg;
+    disabled.enabled = false;
+    expect(service.upsertAdapterConfig(disabled).ok, "race disable upsert false");
+    pause.go();
+    service.setIsolationTestHook(
+        virtual_factory::icp::IsolationHookPoint::BeforeCommit, nullptr);
+    const auto t0 = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1200))
+    {
+      expect(!service.lifecycle().hasInFlightOrPending(
+                 "hang-race-z", LifecycleOp::RecoveryConnect),
+             "race disable no automatic RecoveryConnect");
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    expect(!sessionOf(service, "hang-race-z").autoConnectDesired,
+           "race disable cleared autoConnectDesired");
+    gate0->open();
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // Race — remove during BeforeCommit cancels automatic recovery.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("race-rm-cfg.json");
+    const std::string hist = tempPath("race-rm-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-race-r");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "race remove upsert");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "race remove save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-race-r");
+      (void)extracted;
+    }
+    auto gate0 = std::make_shared<HangGate>();
+    auto hang0 = makeHanging("hang-race-r", gate0);
+    GatedConnectAdapter *raw0 = hang0.get();
+    expect(service.manager().addAdapter(std::move(hang0)).ok, "race remove add");
+    service.injectRuntimeAdapterForTest(makeHanging("hang-race-r", gate0));
+
+    IsolationPause pause;
+    service.setIsolationTestHook(
+        virtual_factory::icp::IsolationHookPoint::BeforeCommit,
+        [&]() { pause.arrivedAndWait(); });
+    service.start();
+    expect(raw0->waitConnectEntered(std::chrono::milliseconds(4000)),
+           "race remove Gen0 entered");
+    expect(pause.waitArrived(std::chrono::milliseconds(8000)),
+           "race remove paused before commit");
+    expect(service.removeAdapterConfig("hang-race-r").ok, "race remove accepted");
+    pause.go();
+    service.setIsolationTestHook(
+        virtual_factory::icp::IsolationHookPoint::BeforeCommit, nullptr);
+    const auto t0 = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(1200))
+    {
+      expect(!service.lifecycle().hasInFlightOrPending(
+                 "hang-race-r", LifecycleOp::RecoveryConnect),
+             "race remove no automatic RecoveryConnect");
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    gate0->open();
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // H4-global — 9 distinct hung RecoveryConnect adapters: 8 abandons, 9th fails.
+  // Covered at executor level; ApplicationService must keep liveWorkerCount==4.
+  // ---------------------------------------------------------------------
+  // (executor test H4g). Reserve-worker + H5 cache follow.
+
+  // ---------------------------------------------------------------------
+  // Reserve-worker — 3 live blocking RecoveryConnect jobs; no 4th blocking
+  // RecoveryConnect from hung-poll isolation; HTTP/status stay responsive.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("h8r-cfg.json");
+    const std::string hist = tempPath("h8r-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    service.start();
+    std::vector<std::shared_ptr<HangGate>> gates;
+    std::vector<GatedConnectAdapter *> raws;
+    for (int i = 0; i < 3; ++i)
+    {
+      const std::string id = "hang-res-" + std::to_string(i);
+      expect(service.upsertAdapterConfig(makeMock(id)).ok, "reserve upsert hang");
+      auto g = std::make_shared<HangGate>();
+      gates.push_back(g);
+      auto hang = std::make_unique<GatedConnectAdapter>(id, g);
+      hang->setPeerAvailable(false);
+      raws.push_back(hang.get());
+      expect(service.manager().addAdapter(std::move(hang)).ok, "reserve add " + id);
+      auto started = service.connectAdapter(id);
+      expect(started.ok && started.accepted, "reserve operator Connect");
+      expect(raws.back()->waitConnectEntered(std::chrono::milliseconds(4000)),
+             "reserve hang entered");
+    }
+    expect(service.upsertAdapterConfig(makeMock("hang-res-poll")).ok,
+           "reserve upsert poll");
+    auto pollGate = std::make_shared<HangGate>();
+    GatedPollAdapter *pollRaw =
+        addGatedPoll(service, "hang-res-poll", pollGate);
+    auto pollConnect = service.connectAdapter("hang-res-poll");
+    expect(pollConnect.ok && pollConnect.accepted, "reserve poll Connect");
+    expect(pollRaw->waitPollEntered(std::chrono::milliseconds(4000)),
+           "reserve poll entered");
+    expect(waitFor(
+               [&]() { return !service.lifecycle().canAdmitBlockingIsolation(); },
+               std::chrono::milliseconds(2000)),
+           "reserve canAdmit false with 3 blocking jobs");
+
+    const int httpPort = 19400 + (::getpid() % 800);
+    virtual_factory::icp::HttpApiServer api(service, "", "127.0.0.1", httpPort);
+    expect(api.start(), "reserve HTTP API starts");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    httplib::Client client("127.0.0.1", httpPort);
+    client.set_connection_timeout(1, 0);
+    client.set_read_timeout(2, 0);
+
+    const auto tHold = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - tHold
+           < std::chrono::milliseconds(2500))
+    {
+      expect(isolationEventCount(service, "hang-res-poll") == 0,
+             "reserve poll isolation did not start a 4th RecoveryConnect");
+      expect(service.lifecycle().liveWorkerCount() == 4,
+             "reserve live workers == 4");
+      expect(statusResponsive(service), "reserve status responsive");
+      auto res = client.Get("/api/v1/status");
+      expect(res && res->status == 200, "reserve HTTP 200");
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    expect(pollRaw->connectEntered() == 1,
+           "reserve poll adapter did not start RecoveryConnect");
+    expect(!service.lifecycle().hasInFlightOrPending(
+               "hang-res-poll", LifecycleOp::RecoveryConnect),
+           "reserve no RecoveryConnect on poll adapter");
+
+    for (auto &g : gates)
+    {
+      g->open();
+    }
+    pollGate->open();
+    api.stop();
+    service.stop();
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+  }
+
+  // ---------------------------------------------------------------------
+  // H5-cache — Gen2 CONNECTED; release Gen0; Gen0 cannot publish stale
+  // telemetry/error/state into Gen2.
+  // ---------------------------------------------------------------------
+  {
+    const std::string cfg = tempPath("h5c-cfg.json");
+    const std::string hist = tempPath("h5c-hist.sqlite");
+    ::unlink(cfg.c_str());
+    ::unlink(hist.c_str());
+    ApplicationService service(cfg, hist);
+    virtual_factory::icp::AdapterConfigRecord hangCfg = makeMock("hang-h5c");
+    hangCfg.connection.timeoutMs = 200;
+    expect(service.upsertAdapterConfig(hangCfg).ok, "H5c upsert");
+    expect(service.saveConfiguration().ok && service.loadConfiguration().ok,
+           "H5c save/load");
+    {
+      auto extracted = service.manager().extractAdapter("hang-h5c");
+      (void)extracted;
+    }
+    auto gate0 = std::make_shared<HangGate>();
+    auto hang0 = makeHanging("hang-h5c", gate0);
+    GatedConnectAdapter *raw0 = hang0.get();
+    raw0->setStaleMarker(GatedConnectAdapter::kStaleMarker);
+    raw0->setPublishError("stale gen0");
+    expect(service.manager().addAdapter(std::move(hang0)).ok, "H5c add Gen0");
+    auto hang2 = std::make_unique<GatedConnectAdapter>("hang-h5c", nullptr);
+    hang2->setPeerAvailable(true);
+    hang2->setStaleMarker(2.0);
+    GatedConnectAdapter *raw2 = hang2.get();
+    service.injectRuntimeAdapterForTest(std::move(hang2));
+
+    service.start();
+    expect(raw0->waitConnectEntered(std::chrono::milliseconds(4000)),
+           "H5c Gen0 entered");
+    expect(waitFor(
+               [&]() {
+                 auto v = service.adapter("hang-h5c");
+                 return raw2->connectCompleted() >= 1 && v
+                     && v->connectionState == "CONNECTED"
+                     && markerInCache(service, "EQ-hang-h5c", 2.0);
+               },
+               std::chrono::milliseconds(8000)),
+           "H5c Gen2 CONNECTED with marker 2.0");
+    raw0->setPeerAvailable(true);
+    gate0->open();
+    expect(waitFor(
+               [&]() {
+                 return raw0->connectCompleted() >= 1 || raw0->connectFailed() >= 1;
+               },
+               std::chrono::milliseconds(3000)),
+           "H5c Gen0 returned");
+    expect(markerInCache(service, "EQ-hang-h5c", 2.0),
+           "H5c Gen2 marker remains after Gen0 return");
+    expect(!markerInCache(service, "EQ-hang-h5c", GatedConnectAdapter::kStaleMarker),
+           "H5c Gen0 marker did not overwrite Gen2");
+    auto after = service.adapter("hang-h5c");
+    expect(after && after->connectionState == "CONNECTED",
+           "H5c Gen2 remains CONNECTED");
+    expect(after && after->lastError.find("stale gen0") == std::string::npos,
+           "H5c Gen0 error did not publish into Gen2");
+    expect(service.manager().adapter("hang-h5c") == raw2,
+           "H5c runtime still Gen2");
     service.stop();
     ::unlink(cfg.c_str());
     ::unlink(hist.c_str());

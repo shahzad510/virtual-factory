@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <atomic>
@@ -271,6 +272,16 @@ struct HilscherDiagnosticsView
   std::vector<std::string> manualChecks;
 };
 
+/// Test-only pause points inside isolateObstructedRuntime so races with HTTP
+/// Connect/Reconnect/Disconnect can be forced after generation bump and before
+/// stale-worker abandonment.
+enum class IsolationHookPoint
+{
+  AfterGenerationBump,
+  AfterExtractBeforeAdd,
+  BeforeCommit
+};
+
 /// Standalone ICP application facade for the ICP GUI / Application API.
 /// Not CIC. Not MES. Owns catalog + runtime (manager/cache/scheduler).
 class ApplicationService
@@ -348,6 +359,17 @@ public:
   LiveStateCache &cache();
   LifecycleExecutor &lifecycle();
 
+  /// Test-only: isolation rematerialize pops these before AdapterFactory.
+  /// Used to inject gated hang replacements without changing protocol adapters.
+  void injectRuntimeAdapterForTest(std::unique_ptr<IndustrialAdapter> adapter);
+
+  /// Test-only: invoke `hook` at the given isolation point (poll thread).
+  /// The hook must not be installed while holding ApplicationService::mutex_.
+  void setIsolationTestHook(IsolationHookPoint point, std::function<void()> hook);
+
+  /// Test-only: true when operator Connect/Reconnect recorded coalesced intent.
+  bool hasPendingOperatorConnectForTest(const std::string &adapterId) const;
+
   void recordEvent(
       const std::string &level,
       const std::string &category,
@@ -398,7 +420,9 @@ private:
   /// can RecoveryConnect. Preserves operator intent; does not cancel/join the
   /// old protocol call. elapsedBusy is the observed io_mutex occupancy used
   /// in the isolation diagnostic (timeoutMs + slack for hung RecoveryConnect).
-  void isolateObstructedRuntime(
+  /// Returns false when skipped (operator intent, shutdown, factory failure, or
+  /// abandonment budget exhausted without a reserved live worker).
+  bool isolateObstructedRuntime(
       const std::string &adapterId, std::chrono::milliseconds elapsedBusy);
   /// Hung poll, or in-flight automatic RecoveryConnect (FAULTED or
   /// DISCONNECTED) past timeoutMs+slack. Operator Connect/Reconnect/Disconnect
@@ -422,7 +446,9 @@ private:
       bool reconnectStyleFailure);
   void scheduleAutoReconnectLocked(const std::string &adapterId) const;
   bool hasConnectStyleLifecycleWork(const std::string &adapterId) const;
+  bool hasConnectStyleWorkAnyGeneration(const std::string &adapterId) const;
   void maybeEnqueueOperatorFollowUp(const std::string &adapterId);
+  void invokeIsolationTestHook(IsolationHookPoint point);
   /// Create missing enabled runtime adapters without connecting. Arms ICP-owned
   /// background connect so peer-down at startup cannot block HTTP/control plane.
   void materializeEnabledAdaptersForRecovery();
@@ -492,6 +518,11 @@ private:
   /// RecoveryConnect (FAULTED or DISCONNECTED) uses timeoutMs + slack.
   mutable std::unordered_map<std::string, std::chrono::steady_clock::time_point>
       recovery_isolation_busy_since_;
+  mutable std::unordered_map<
+      std::string, std::deque<std::unique_ptr<IndustrialAdapter>>>
+      test_runtime_injects_;
+  IsolationHookPoint isolation_hook_point_{IsolationHookPoint::BeforeCommit};
+  std::function<void()> isolation_hook_;
   static constexpr std::chrono::milliseconds kRecoveryIsolationBusyMs{2000};
   /// Extra wait beyond protocol timeoutMs before treating an in-flight
   /// automatic RecoveryConnect as hung (FAULTED or still DISCONNECTED).

@@ -326,7 +326,14 @@ if (_VF_NLOHMANN_FOR_ICP_API)
 endif()
 target_link_libraries(icp_lifecycle_recovery_test PRIVATE virtual_factory_icp pthread)
 add_test(NAME icp_lifecycle_recovery_test COMMAND icp_lifecycle_recovery_test)
-set_tests_properties(icp_lifecycle_recovery_test PROPERTIES TIMEOUT 150)
+set_tests_properties(icp_lifecycle_recovery_test PROPERTIES TIMEOUT 300)
+
+add_executable(icp_lifecycle_executor_reclaim_test
+    tests/icp_lifecycle_executor_reclaim_test.cc
+)
+target_link_libraries(icp_lifecycle_executor_reclaim_test PRIVATE virtual_factory_icp pthread)
+add_test(NAME icp_lifecycle_executor_reclaim_test COMMAND icp_lifecycle_executor_reclaim_test)
+set_tests_properties(icp_lifecycle_executor_reclaim_test PROPERTIES TIMEOUT 60)
 
 add_executable(icp_configuration_isolation_test
     tests/icp_configuration_isolation_test.cc

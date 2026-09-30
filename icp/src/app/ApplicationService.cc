@@ -860,6 +860,21 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
     diag.autoConnectDesired = true;
   }
 
+  // Coalesce against ANY-generation connect-style work, including a stale
+  // RecoveryConnect that isolation has already generation-bumped. Checking
+  // before ensureRuntimeAdapterPresent prevents creating a runtime in the
+  // isolation extract/add window.
+  if (this->hasConnectStyleWorkAnyGeneration(adapterId))
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    this->pending_operator_connect_[adapterId] = true;
+    AdapterManagerResult accepted;
+    accepted.ok = true;
+    accepted.accepted = true;
+    accepted.message = "connect accepted";
+    return accepted;
+  }
+
   // Reuse an existing runtime adapter — never remove/recreate on Connect.
   // removeAdapter waits on io_mutex held by in-flight OPC UA connect and would
   // block the HTTP worker for timeoutMs.
@@ -881,12 +896,6 @@ AdapterManagerResult ApplicationService::connectAdapter(const std::string &adapt
       ++this->diagnosticsFor(adapterId).failedConnections;
     }
     return ensured;
-  }
-
-  if (this->hasConnectStyleLifecycleWork(adapterId))
-  {
-    std::lock_guard<std::mutex> lock(this->mutex_);
-    this->pending_operator_connect_[adapterId] = true;
   }
 
   LifecycleJob job;
@@ -966,23 +975,11 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
     return {false, "adapter '" + adapterId + "' is disabled"};
   }
 
-  // Reuse existing runtime — same rule as Connect (no remove under io_mutex).
-  AdapterManagerResult ensured = this->ensureRuntimeAdapterPresent(*record);
-  if (!ensured.ok)
-  {
-    return ensured;
-  }
-
-  // Redundant Reconnect must not bump generation while Connect, RecoveryConnect,
-  // or Reconnect is already in-flight/pending. A bump would make the in-flight
-  // connect-style job stale; if UA_Client_connect then succeeded,
-  // executeLifecycleJob would disconnect it. Genuine cancellation is Disconnect /
-  // disable / extract (those bump generation and clear autoConnectDesired).
-  // Preserve a genuine Reconnect after the current connect-style work finishes.
-  if (this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Reconnect)
-      || this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Connect)
-      || this->lifecycle_->hasInFlightOrPending(
-             adapterId, LifecycleOp::RecoveryConnect))
+  // Treat stale previous-generation RecoveryConnect as connect-style work so
+  // Reconnect does not bump generation a second time after isolation's bump.
+  // Check before ensureRuntimeAdapterPresent so Connect/Reconnect cannot create
+  // a runtime in the isolation extract/add window.
+  if (this->hasConnectStyleWorkAnyGeneration(adapterId))
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     ++this->diagnosticsFor(adapterId).reconnectCount;
@@ -995,6 +992,13 @@ AdapterManagerResult ApplicationService::reconnectAdapter(const std::string &ada
     accepted.accepted = true;
     accepted.message = "reconnect accepted";
     return accepted;
+  }
+
+  // Reuse existing runtime — same rule as Connect (no remove under io_mutex).
+  AdapterManagerResult ensured = this->ensureRuntimeAdapterPresent(*record);
+  if (!ensured.ok)
+  {
+    return ensured;
   }
 
   // Cancel stale recovery for this adapter; reconnect is a fresh intent.
@@ -1397,12 +1401,67 @@ LifecycleExecutor &ApplicationService::lifecycle()
   return *this->lifecycle_;
 }
 
+void ApplicationService::injectRuntimeAdapterForTest(
+    std::unique_ptr<IndustrialAdapter> adapter)
+{
+  if (adapter == nullptr)
+  {
+    return;
+  }
+  const std::string id = adapter->id();
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  this->test_runtime_injects_[id].push_back(std::move(adapter));
+}
+
+void ApplicationService::setIsolationTestHook(
+    IsolationHookPoint point, std::function<void()> hook)
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  this->isolation_hook_point_ = point;
+  this->isolation_hook_ = std::move(hook);
+}
+
+bool ApplicationService::hasPendingOperatorConnectForTest(
+    const std::string &adapterId) const
+{
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  const auto it = this->pending_operator_connect_.find(adapterId);
+  return it != this->pending_operator_connect_.end() && it->second;
+}
+
+void ApplicationService::invokeIsolationTestHook(IsolationHookPoint point)
+{
+  std::function<void()> hook;
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    if (this->isolation_hook_ && this->isolation_hook_point_ == point)
+    {
+      hook = this->isolation_hook_;
+    }
+  }
+  if (hook)
+  {
+    hook();
+  }
+}
+
 bool ApplicationService::hasConnectStyleLifecycleWork(const std::string &adapterId) const
 {
   return this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Connect)
       || this->lifecycle_->hasInFlightOrPending(
              adapterId, LifecycleOp::RecoveryConnect)
       || this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Reconnect);
+}
+
+bool ApplicationService::hasConnectStyleWorkAnyGeneration(
+    const std::string &adapterId) const
+{
+  return this->lifecycle_->hasInFlightOrPendingAnyGeneration(
+             adapterId, LifecycleOp::Connect)
+      || this->lifecycle_->hasInFlightOrPendingAnyGeneration(
+             adapterId, LifecycleOp::RecoveryConnect)
+      || this->lifecycle_->hasInFlightOrPendingAnyGeneration(
+             adapterId, LifecycleOp::Reconnect);
 }
 
 void ApplicationService::maybeEnqueueOperatorFollowUp(const std::string &adapterId)
@@ -2249,6 +2308,13 @@ void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
       (void)manager->disconnectAdapter(job.adapterId);
       cache->removeAdapterEquipment(job.adapterId);
     }
+    // Stale completion must not mutate current runtime, but a coalesced operator
+    // Connect/Reconnect recorded during isolation still needs a follow-up if
+    // the current generation is idle.
+    if (!shutting->load() && !this->hasConnectStyleLifecycleWork(job.adapterId))
+    {
+      this->maybeEnqueueOperatorFollowUp(job.adapterId);
+    }
     return;
   }
 
@@ -2450,7 +2516,6 @@ void ApplicationService::onPollCycle()
         {
           elapsedBusy = std::chrono::duration_cast<std::chrono::milliseconds>(
               isolationNow - since);
-          this->recovery_isolation_busy_since_.erase(adapterId);
           persist = true;
         }
       }
@@ -2463,9 +2528,15 @@ void ApplicationService::onPollCycle()
         shutting = !this->running_
             || (this->shutdown_flag_ && this->shutdown_flag_->load());
       }
-      if (!shutting)
+      if (shutting)
       {
-        this->isolateObstructedRuntime(adapterId, elapsedBusy);
+        std::lock_guard<std::mutex> lock(this->mutex_);
+        this->recovery_isolation_busy_since_.erase(adapterId);
+      }
+      else if (this->isolateObstructedRuntime(adapterId, elapsedBusy))
+      {
+        std::lock_guard<std::mutex> lock(this->mutex_);
+        this->recovery_isolation_busy_since_.erase(adapterId);
         isolated.push_back(adapterId);
       }
     }
@@ -2484,6 +2555,31 @@ void ApplicationService::onPollCycle()
     }
     if (skip)
     {
+      continue;
+    }
+    bool skipDue = false;
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      const auto pending = this->pending_operator_connect_.find(adapterId);
+      skipDue = pending != this->pending_operator_connect_.end() && pending->second;
+    }
+    if (skipDue)
+    {
+      if (!this->hasConnectStyleLifecycleWork(adapterId))
+      {
+        std::lock_guard<std::mutex> lock(this->mutex_);
+        this->diagnosticsFor(adapterId).autoReconnectInFlight = false;
+      }
+      continue;
+    }
+    // Reserve the last idle live worker for control-plane / operator work.
+    // When idle==0 the job stays pending (case H). When idle>=2 it can run
+    // and still leave a reserve. idle==1 would consume the reserve.
+    if (this->lifecycle_->idleLiveWorkerCount() == 1
+        && !this->hasConnectStyleLifecycleWork(adapterId))
+    {
+      std::lock_guard<std::mutex> lock(this->mutex_);
+      this->diagnosticsFor(adapterId).autoReconnectInFlight = false;
       continue;
     }
     // Enqueue only — never call blocking connect() on the poll thread.
@@ -3227,18 +3323,18 @@ std::chrono::milliseconds ApplicationService::recoveryIsolationBusyLimit(
   return kRecoveryIsolationBusyMs;
 }
 
-void ApplicationService::isolateObstructedRuntime(
+bool ApplicationService::isolateObstructedRuntime(
     const std::string &adapterId, std::chrono::milliseconds elapsedBusy)
 {
   if (this->shutdown_flag_ && this->shutdown_flag_->load())
   {
-    return;
+    return false;
   }
 
   const AdapterConfigRecord *record = this->catalog_.adapter(adapterId);
   if (record == nullptr || !record->enabled)
   {
-    return;
+    return false;
   }
 
   const bool hungRecoveryConnect = this->lifecycle_->hasInFlight(
@@ -3259,9 +3355,16 @@ void ApplicationService::isolateObstructedRuntime(
     const auto pendingIt = this->pending_operator_connect_.find(adapterId);
     pending = pendingIt != this->pending_operator_connect_.end() && pendingIt->second;
   }
-  if (!desired)
+  if (!desired || pending)
   {
-    return;
+    return false;
+  }
+
+  const bool canAbandon = hungRecoveryConnect
+      && this->lifecycle_->canAbandonStaleInFlight(adapterId, stuckGeneration);
+  if (!canAbandon && !this->lifecycle_->canAdmitBlockingIsolation())
+  {
+    return false;
   }
 
   std::string error;
@@ -3269,23 +3372,20 @@ void ApplicationService::isolateObstructedRuntime(
       this->createRuntimeAdapter(*record, &error);
   if (!replacement)
   {
-    return;
+    return false;
   }
   if (this->shutdown_flag_ && this->shutdown_flag_->load())
   {
-    return;
+    return false;
   }
 
   (void)this->lifecycle_->bumpGeneration(adapterId);
+  this->invokeIsolationTestHook(IsolationHookPoint::AfterGenerationBump);
   {
     std::lock_guard<std::mutex> lock(this->mutex_);
     AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
     diag.autoReconnectInFlight = false;
     this->reconnect_in_progress_.erase(adapterId);
-    if (pending)
-    {
-      this->pending_operator_connect_[adapterId] = true;
-    }
   }
 
   AdapterManager::ExtractedAdapter extracted;
@@ -3294,6 +3394,7 @@ void ApplicationService::isolateObstructedRuntime(
     extracted = this->manager_->extractAdapter(adapterId);
     this->cache_->removeAdapterEquipment(adapterId);
   }
+  this->invokeIsolationTestHook(IsolationHookPoint::AfterExtractBeforeAdd);
 
   AdapterManagerResult added = this->manager_->addAdapter(std::move(replacement));
   if (extracted.adapter != nullptr)
@@ -3302,11 +3403,42 @@ void ApplicationService::isolateObstructedRuntime(
   }
   if (!added.ok)
   {
-    return;
+    return false;
   }
 
-  if (hungRecoveryConnect)
+  this->invokeIsolationTestHook(IsolationHookPoint::BeforeCommit);
+
+  // Commit barrier: re-read flags after the extract/add window so a concurrent
+  // operator Connect/Reconnect/Disconnect cannot be overwritten by an automatic
+  // RecoveryConnect, and so abandon is not assumed if spawn-before-detach fails.
+  const bool shutting =
+      this->shutdown_flag_ && this->shutdown_flag_->load();
+  const AdapterConfigRecord *latest = this->catalog_.adapter(adapterId);
+  const bool enabled = latest != nullptr && latest->enabled;
+  bool stillDesired = false;
+  bool operatorPending = false;
   {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    stillDesired = this->diagnosticsFor(adapterId).autoConnectDesired;
+    const auto pendingIt = this->pending_operator_connect_.find(adapterId);
+    operatorPending =
+        pendingIt != this->pending_operator_connect_.end() && pendingIt->second;
+  }
+  const bool currentConnect =
+      this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Connect);
+  const bool currentReconnect =
+      this->lifecycle_->hasInFlightOrPending(adapterId, LifecycleOp::Reconnect);
+  const bool currentRecovery =
+      this->lifecycle_->hasInFlightOrPending(
+          adapterId, LifecycleOp::RecoveryConnect);
+  const bool operatorOwns =
+      operatorPending || currentConnect || currentReconnect;
+
+  auto emitIsolationEvent = [&]() {
+    if (!hungRecoveryConnect)
+    {
+      return;
+    }
     ApplicationEvent ev;
     ev.level = "warning";
     ev.category = "recovery";
@@ -3322,22 +3454,41 @@ void ApplicationService::isolateObstructedRuntime(
         + std::to_string(elapsedBusy.count()) + ", generation="
         + std::to_string(stuckGeneration) + ").";
     this->recordEvent(std::move(ev));
+  };
+
+  auto abandonIfSlotMatches = [&]() {
+    if (!hungRecoveryConnect)
+    {
+      return true;
+    }
+    return this->lifecycle_->abandonStaleInFlight(adapterId, stuckGeneration);
+  };
+
+  if (shutting || !enabled || !stillDesired)
+  {
+    (void)abandonIfSlotMatches();
+    emitIsolationEvent();
+    return true;
   }
 
-  bool stillDesired = false;
+  if (operatorOwns)
   {
-    std::lock_guard<std::mutex> lock(this->mutex_);
-    stillDesired = this->diagnosticsFor(adapterId).autoConnectDesired;
-    if (pending)
+    const bool abandoned = abandonIfSlotMatches();
+    emitIsolationEvent();
+    if (!currentConnect && !currentReconnect && !currentRecovery && operatorPending
+        && (abandoned || this->lifecycle_->canAdmitBlockingIsolation()))
     {
-      this->pending_operator_connect_[adapterId] = true;
+      this->maybeEnqueueOperatorFollowUp(adapterId);
     }
+    return true;
   }
-  const AdapterConfigRecord *latest = this->catalog_.adapter(adapterId);
-  if (latest == nullptr || !latest->enabled || !stillDesired
-      || (this->shutdown_flag_ && this->shutdown_flag_->load()))
+
+  const bool abandoned = abandonIfSlotMatches();
+  emitIsolationEvent();
+  if (hungRecoveryConnect && !abandoned
+      && !this->lifecycle_->canAdmitBlockingIsolation())
   {
-    return;
+    return true;
   }
 
   {
@@ -3356,6 +3507,7 @@ void ApplicationService::isolateObstructedRuntime(
     std::lock_guard<std::mutex> lock(this->mutex_);
     this->diagnosticsFor(adapterId).autoReconnectInFlight = false;
   }
+  return true;
 }
 
 AdapterManagerResult ApplicationService::ensureRuntimeAdapter(
@@ -3484,6 +3636,21 @@ AdapterManagerResult ApplicationService::ensureRuntimeAdapterPresent(
 std::unique_ptr<IndustrialAdapter> ApplicationService::createRuntimeAdapter(
     const AdapterConfigRecord &record, std::string *error) const
 {
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    auto it = this->test_runtime_injects_.find(record.adapterId);
+    if (it != this->test_runtime_injects_.end() && !it->second.empty())
+    {
+      std::unique_ptr<IndustrialAdapter> injected = std::move(it->second.front());
+      it->second.pop_front();
+      if (it->second.empty())
+      {
+        this->test_runtime_injects_.erase(it);
+      }
+      return injected;
+    }
+  }
+
   if (record.protocol == "mock")
   {
     auto mock = AdapterFactory::createMock(record.adapterId);
