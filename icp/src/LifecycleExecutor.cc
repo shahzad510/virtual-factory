@@ -213,11 +213,16 @@ void LifecycleExecutor::clearInvalidatablePendingLocked(AdapterSlot &slot)
 
 std::uint64_t LifecycleExecutor::bumpGeneration(const std::string &adapterId)
 {
-  std::lock_guard<std::mutex> lock(this->state_->mutex);
-  AdapterSlot &slot = this->state_->slots[adapterId];
-  ++slot.generation;
-  clearInvalidatablePendingLocked(slot);
-  return slot.generation;
+  {
+    std::lock_guard<std::mutex> lock(this->state_->mutex);
+    AdapterSlot &slot = this->state_->slots[adapterId];
+    ++slot.generation;
+    clearInvalidatablePendingLocked(slot);
+  }
+  // Wake workers: a stale in-flight job must not keep the current generation
+  // from starting (hung RecoveryConnect isolation).
+  this->state_->cv.notify_all();
+  return this->generation(adapterId);
 }
 
 std::uint64_t LifecycleExecutor::generation(const std::string &adapterId) const
@@ -234,6 +239,13 @@ std::uint64_t LifecycleExecutor::generation(const std::string &adapterId) const
 bool LifecycleExecutor::isConnectStyle(LifecycleOp op)
 {
   return op == LifecycleOp::Connect || op == LifecycleOp::RecoveryConnect;
+}
+
+bool LifecycleExecutor::slotHasRunnableWork(const AdapterSlot &slot)
+{
+  const bool currentGenBusy =
+      slot.inFlight && slot.inFlightGeneration == slot.generation;
+  return !currentGenBusy && !slot.pending.empty();
 }
 
 bool LifecycleExecutor::shouldCoalesceLocked(
@@ -298,6 +310,19 @@ bool LifecycleExecutor::hasInFlightOrPending(
   return false;
 }
 
+bool LifecycleExecutor::hasInFlight(
+    const std::string &adapterId, LifecycleOp op) const
+{
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  const auto it = this->state_->slots.find(adapterId);
+  if (it == this->state_->slots.end())
+  {
+    return false;
+  }
+  const AdapterSlot &slot = it->second;
+  return slot.inFlight && slot.inFlightOp == op;
+}
+
 bool LifecycleExecutor::enqueue(LifecycleJob job)
 {
   if (job.adapterId.empty())
@@ -330,7 +355,11 @@ bool LifecycleExecutor::takeNextJobLocked(State &state, LifecycleJob *out)
   for (auto &entry : state.slots)
   {
     AdapterSlot &slot = entry.second;
-    if (slot.inFlight || slot.pending.empty())
+    // Current-generation occupancy blocks the next job. A stale in-flight
+    // job (previous generation) must not prevent replacement work.
+    const bool currentGenBusy =
+        slot.inFlight && slot.inFlightGeneration == slot.generation;
+    if (currentGenBusy || slot.pending.empty())
     {
       continue;
     }
@@ -355,13 +384,19 @@ bool LifecycleExecutor::takeNextJobLocked(State &state, LifecycleJob *out)
   return false;
 }
 
-void LifecycleExecutor::completeJob(State &state, const std::string &adapterId)
+void LifecycleExecutor::completeJob(
+    State &state, const std::string &adapterId, std::uint64_t jobGeneration)
 {
   bool notify = false;
   {
     std::lock_guard<std::mutex> lock(state.mutex);
     AdapterSlot &slot = state.slots[adapterId];
-    slot.inFlight = false;
+    // Only the occupant whose generation still matches may clear inFlight.
+    // A stale hung RecoveryConnect must not clear a replacement job.
+    if (slot.inFlight && slot.inFlightGeneration == jobGeneration)
+    {
+      slot.inFlight = false;
+    }
     if (state.inFlightCount > 0)
     {
       --state.inFlightCount;
@@ -386,7 +421,7 @@ void LifecycleExecutor::workerMain(const std::shared_ptr<State> &state)
         {
           for (const auto &entry : state->slots)
           {
-            if (!entry.second.inFlight && !entry.second.pending.empty())
+            if (slotHasRunnableWork(entry.second))
             {
               return true;
             }
@@ -399,7 +434,7 @@ void LifecycleExecutor::workerMain(const std::shared_ptr<State> &state)
         }
         for (const auto &entry : state->slots)
         {
-          if (!entry.second.inFlight && !entry.second.pending.empty())
+          if (slotHasRunnableWork(entry.second))
           {
             return true;
           }
@@ -437,7 +472,7 @@ void LifecycleExecutor::workerMain(const std::shared_ptr<State> &state)
         handler(job);
       }
     }
-    completeJob(*state, job.adapterId);
+    completeJob(*state, job.adapterId, job.generation);
   }
 }
 

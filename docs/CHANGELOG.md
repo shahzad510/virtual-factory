@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — hung automatic RecoveryConnect isolation (protocol-neutral)
+
+- If `autoReconnectInFlight` / `reconnect_in_progress_` is set but the LifecycleExecutor has no Connect / RecoveryConnect / Reconnect work, `onPollCycle` reconciles the latch so recovery can continue
+- Hung automatic `RecoveryConnect` holding `io_mutex` past `timeoutMs + 500ms` is isolated: create-first rematerialize, generation bump, unique Teardown slot, fresh `io_mutex`, `RecoveryConnect` on the new generation (not FIFO-behind old teardown)
+- Isolation threshold is **not** the ~2s hung-poll window; operator Connect/Reconnect are never auto-isolated; pending operator intent survives automatic isolation; Disconnect/disable/remove still cancel recovery
+- A connect that returns (success or failure) is not rematerialized; failure keeps FAULTED/backoff on the same runtime
+- Stale completion of an extracted runtime cannot mutate the replacement's state, diagnostics, cache, ownership, or recovery latches
+- Regression: `icp_lifecycle_recovery_test` cases HR-A–F
+
 ### Fixed — Reconnect must not discard an in-flight Connect/RecoveryConnect
 
 - `reconnectAdapter` no longer bumps generation while Connect, RecoveryConnect, or Reconnect is already in-flight/pending

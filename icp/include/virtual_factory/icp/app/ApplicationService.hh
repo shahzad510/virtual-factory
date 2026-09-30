@@ -392,6 +392,18 @@ private:
   /// ControlPlaneTick: observations / history / recovery enqueue. Independent of
   /// poll completion (P3). Must not call poll() or connect().
   void onPollCycle();
+  /// Hung automatic RecoveryConnect holding io_mutex past timeoutMs+slack:
+  /// create-first extract/rematerialize so a replacement can RecoveryConnect.
+  void isolateObstructedRuntime(
+      const std::string &adapterId, std::chrono::milliseconds elapsedBusy);
+  bool isRecoveryIsolationCandidate(
+      const std::string &adapterId,
+      bool autoConnectDesired,
+      ConnectionState connectionState) const;
+  std::chrono::milliseconds recoveryIsolationBusyLimit(
+      const std::string &adapterId) const;
+  bool hasConnectStyleLifecycleWork(const std::string &adapterId) const;
+  void maybeEnqueueOperatorFollowUp(const std::string &adapterId);
   void executeLifecycleJob(const LifecycleJob &job);
   void applyConnectOutcome(
       const std::string &adapterId,
@@ -457,6 +469,17 @@ private:
   mutable std::unordered_map<std::string, CommandDiagnostic> command_runtime_;
   /// Adapters currently inside reconnectAdapter() (for recovery event category).
   mutable std::unordered_map<std::string, bool> reconnect_in_progress_;
+  /// Operator Connect/Reconnect issued while a connect-style job is already
+  /// in-flight. Isolation of automatic RecoveryConnect must not drop this.
+  mutable std::unordered_map<std::string, bool> pending_operator_connect_;
+  /// First observation of io_mutex busy for hung automatic RecoveryConnect.
+  mutable std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+      recovery_isolation_busy_since_;
+  /// Hung poll / obstructed-poll isolation stays on this window. Hung
+  /// RecoveryConnect uses timeoutMs + kHungConnectIsolationSlack instead.
+  static constexpr std::chrono::milliseconds kRecoveryIsolationBusyMs{2000};
+  static constexpr std::chrono::milliseconds kHungConnectIsolationSlack{500};
+  static constexpr int kDefaultConnectTimeoutMs{2000};
   /// Open alarm identities → current occurrence (process-lifetime; no poll dupes).
   mutable std::unordered_map<std::string, OpenAlarmTracking> open_alarms_;
   /// Last persisted equipment operational history state per equipment id.

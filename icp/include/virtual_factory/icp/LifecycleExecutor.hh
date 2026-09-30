@@ -90,6 +90,8 @@ public:
 
   /// Invalidate queued/stale work for this adapter; returns the new generation.
   /// Pending Teardown jobs are preserved (extracted adapters must still disconnect).
+  /// A stale in-flight job is not cancelled; current-generation work may start
+  /// on another worker so hung connect() cannot occupy the replacement runtime.
   std::uint64_t bumpGeneration(const std::string &adapterId);
 
   std::uint64_t generation(const std::string &adapterId) const;
@@ -106,6 +108,11 @@ public:
   /// Used by ApplicationService to avoid bumpGeneration on redundant Reconnect
   /// while Connect, RecoveryConnect, or Reconnect is already running.
   bool hasInFlightOrPending(const std::string &adapterId, LifecycleOp op) const;
+
+  /// True when this adapter currently has the given op running (not merely
+  /// pending). Distinguishes a RecoveryConnect that owns protocol I/O from a
+  /// queued RecoveryConnect.
+  bool hasInFlight(const std::string &adapterId, LifecycleOp op) const;
 
 private:
   struct AdapterSlot
@@ -129,8 +136,12 @@ private:
 
   static void workerMain(const std::shared_ptr<State> &state);
   static bool takeNextJobLocked(State &state, LifecycleJob *out);
-  static void completeJob(State &state, const std::string &adapterId);
+  static void completeJob(
+      State &state, const std::string &adapterId, std::uint64_t jobGeneration);
   static bool isConnectStyle(LifecycleOp op);
+  /// Current-generation occupancy only. A stale in-flight job must not hide
+  /// pending replacement work (hung RecoveryConnect isolation).
+  static bool slotHasRunnableWork(const AdapterSlot &slot);
   static void clearInvalidatablePendingLocked(AdapterSlot &slot);
   bool shouldCoalesceLocked(const AdapterSlot &slot, const LifecycleJob &job) const;
   static void runTeardown(const LifecycleJob &job);
