@@ -2235,6 +2235,84 @@ void ApplicationService::applyConnectOutcome(
   }
 }
 
+void ApplicationService::applyConnectOutcome(
+    const std::string &adapterId,
+    const AdapterManagerResult &connected,
+    bool emitFailureEvent,
+    bool reconnectStyleFailure,
+    std::uint64_t probeId,
+    std::uint64_t runtimeEpoch,
+    const IndustrialAdapter *expected)
+{
+  if (probeId == 0)
+  {
+    this->applyConnectOutcome(
+        adapterId, connected, emitFailureEvent, reconnectStyleFailure);
+    return;
+  }
+  const RecoveryControlSnapshot snap = this->recovery_->snapshot(adapterId);
+  if (snap.runtimeEpoch != runtimeEpoch || snap.activeProbeId != probeId
+      || !snap.desired)
+  {
+    return;
+  }
+  IndustrialAdapter *runtime = this->manager_->adapter(adapterId);
+  if (expected != nullptr && runtime != expected)
+  {
+    return;
+  }
+  const AdapterConfigRecord *record = this->catalog_.adapter(adapterId);
+  if (record == nullptr || !record->enabled)
+  {
+    return;
+  }
+
+  if (connected.ok && runtime != nullptr)
+  {
+    this->cache_->updateFromAdapter(*runtime);
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+    ++diag.successfulConnections;
+    (void)this->recovery_->noteSuccess(adapterId, probeId, runtimeEpoch);
+    this->syncRecoveryDiagnosticsLocked(adapterId);
+    this->pending_operator_connect_.erase(adapterId);
+    this->observeAdapterStateLocked(adapterId, "CONNECTED");
+    for (const EquipmentSnapshot &snapEq : this->cache_->equipment())
+    {
+      if (snapEq.adapterId == adapterId && snapEq.hasSuccessfulCommunication)
+      {
+        diag.hasLastSuccessfulCommunication = true;
+        diag.lastSuccessfulCommunicationAt = snapEq.lastSuccessfulCommunicationUtc;
+      }
+    }
+    this->reconnect_in_progress_.erase(adapterId);
+    return;
+  }
+
+  if (runtime != nullptr)
+  {
+    this->cache_->updateFromAdapter(*runtime);
+    this->cache_->markAdapterCommunication(
+        adapterId, runtime->connectionState(), runtime->lastError());
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(this->mutex_);
+    AdapterSessionDiagnostics &diag = this->diagnosticsFor(adapterId);
+    ++diag.failedConnections;
+    this->observeAdapterStateLocked(
+        adapterId,
+        runtime != nullptr ? connectionStateName(runtime->connectionState())
+                           : std::string("FAULTED"));
+    if (this->recovery_->snapshot(adapterId).desired)
+    {
+      (void)this->recovery_->noteFailure(adapterId, probeId, runtimeEpoch);
+      this->syncRecoveryDiagnosticsLocked(adapterId);
+    }
+    this->reconnect_in_progress_.erase(adapterId);
+  }
+}
+
 void ApplicationService::executeLifecycleJob(const LifecycleJob &job)
 {
   if (job.adapterId.empty())
@@ -2549,7 +2627,8 @@ void ApplicationService::submitDueProbe(const RecoveryDueEvent &event)
   AdapterManager::IoHandle handle = this->manager_->resolveIoHandle(event.adapterId);
   if (handle.adapter == nullptr || handle.io_mutex == nullptr)
   {
-    this->recovery_->deferRetry(event.adapterId);
+    (void)this->recovery_->deferRetry(
+        event.adapterId, event.probeId, event.runtimeEpoch);
     return;
   }
 
@@ -2564,7 +2643,8 @@ void ApplicationService::submitDueProbe(const RecoveryDueEvent &event)
   request.timeout = this->probeTimeoutFor(event.adapterId);
   if (!this->probes_->submit(std::move(request)))
   {
-    this->recovery_->deferRetry(event.adapterId);
+    (void)this->recovery_->deferRetry(
+        event.adapterId, event.probeId, event.runtimeEpoch);
     return;
   }
   {
@@ -2588,9 +2668,15 @@ void ApplicationService::handleProbeCompletion(const ProbeCompletion &completion
 
   if (completion.outcome == ProbeOutcome::Timeout)
   {
+    IndustrialAdapter *current = this->manager_->adapter(completion.adapterId);
+    if (current != nullptr && completion.adapter
+        && current == completion.adapter.get()
+        && current->connectionState() == ConnectionState::Connected)
+    {
+      return;
+    }
     const RecoveryControlSnapshot snap =
         this->recovery_->snapshot(completion.adapterId);
-    IndustrialAdapter *current = this->manager_->adapter(completion.adapterId);
     const bool currentRuntime =
         completion.adapter && current == completion.adapter.get();
     if (snap.desired
@@ -2616,7 +2702,8 @@ void ApplicationService::handleProbeCompletion(const ProbeCompletion &completion
 
   if (completion.outcome == ProbeOutcome::IoBusy)
   {
-    this->recovery_->deferRetry(completion.adapterId);
+    (void)this->recovery_->deferRetry(
+        completion.adapterId, completion.probeId, completion.runtimeEpoch);
     {
       std::lock_guard<std::mutex> lock(this->mutex_);
       this->syncRecoveryDiagnosticsLocked(completion.adapterId);
@@ -2662,7 +2749,9 @@ void ApplicationService::handleProbeCompletion(const ProbeCompletion &completion
     return;
   }
 
-  this->applyConnectOutcome(completion.adapterId, connected, false, true);
+  this->applyConnectOutcome(
+      completion.adapterId, connected, false, true, completion.probeId,
+      completion.runtimeEpoch, completion.adapter.get());
   if (!completion.ok)
   {
     this->maybeEnqueueOperatorFollowUp(completion.adapterId);

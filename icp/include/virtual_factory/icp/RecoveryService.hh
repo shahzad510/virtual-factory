@@ -188,6 +188,12 @@ public:
   /// ioBusy / non-protocol defer: wait current backoff, do not double.
   void deferRetry(const std::string &adapterId);
 
+  /// Identity-checked defer. Stale probeId/epoch is ignored.
+  bool deferRetry(
+      const std::string &adapterId,
+      std::uint64_t probeId,
+      std::uint64_t runtimeEpoch);
+
   /// Transitional: a RecoveryConnect was dropped (generation bump) while
   /// still desired. Return to RECOVERY_WAIT with nextAttemptAt=now so a
   /// later tick can emit a new logical due without a retry queue.

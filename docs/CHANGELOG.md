@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — Recovery V2 Phase 2.1: probe capacity protection and terminal outcomes
+
+- Physical `connect()` is admitted only after paying a hang budget: **QUARANTINABLE** (global Q=8, per-adapter q_a=2) or **NON_QUARANTINABLE** (≤ N−R live, one per adapter) or, when those are exhausted, a **zero-occupancy reserved-fresh** slot (≤ R). Ineligible probes stay pending and do **not** occupy a worker. Default **N=4**, **R=2**.
+- At most one live (non-quarantined) physical probe per adapter. A never-return adapter may hold 2 quarantined + 1 nonQ live threads; it cannot occupy all 4 live workers.
+- `ProbeSession::tryClaim` is a single CAS: exactly one of SUCCESS / FAILURE / TIMEOUT / CANCELLED / IOBUSY wins. Late Success after Timeout is not published and cannot isolate a CONNECTED runtime.
+- Automatic-probe `noteSuccess` / `noteFailure` / `noteTimeout` / `deferRetry` require probeId+runtimeEpoch. Operator lifecycle notes remain identity-less.
+- Process isolation is not solved. `RecoveryConnect` is not removed. Operator Disconnect/Reconnect and CONNECTED-only poll are unchanged.
+- Tests: `icp_probe_executor_test` Phase 2.1 A–N (q_a, global Q, reserved live capacity, timeout/success CAS, stale IoBusy, 24h fail-fast).
+
 ### Added — Recovery V2 Phase 2: bounded recovery probe executor
 
 - `ProbeExecutor` / `ProbeSession` execute automatic-recovery `IndustrialAdapter::connect()` on a dedicated bounded pool (default 4 workers, min 1, max 32). `RecoveryService` remains the sole retry-timing owner. HTTP, `PollScheduler`, and the RecoveryService control thread do not perform recovery protocol I/O.

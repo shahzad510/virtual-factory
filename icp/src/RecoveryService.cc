@@ -381,6 +381,38 @@ void RecoveryService::deferRetry(const std::string &adapterId)
   this->notifyThreadLocked();
 }
 
+bool RecoveryService::deferRetry(
+    const std::string &adapterId,
+    std::uint64_t probeId,
+    std::uint64_t runtimeEpoch)
+{
+  if (adapterId.empty() || probeId == 0)
+  {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  auto it = this->controls_.find(adapterId);
+  if (it == this->controls_.end() || !it->second.control.desired)
+  {
+    return false;
+  }
+  ControlEntry &entry = it->second;
+  if (entry.control.runtimeEpoch != runtimeEpoch
+      || entry.control.activeProbeId != probeId)
+  {
+    return false;
+  }
+  auto backoff = entry.control.backoffMs;
+  if (backoff.count() <= 0)
+  {
+    backoff = kRecoveryInitialBackoff;
+    entry.control.backoffMs = backoff;
+  }
+  this->enterWaitLocked(entry, this->nowLocked() + backoff);
+  this->notifyThreadLocked();
+  return true;
+}
+
 void RecoveryService::releaseLogicalProbe(const std::string &adapterId)
 {
   if (adapterId.empty())
