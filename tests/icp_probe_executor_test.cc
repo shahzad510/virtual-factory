@@ -67,8 +67,10 @@ using virtual_factory::icp::ProbeOutcome;
 using virtual_factory::icp::ProbeRequest;
 using virtual_factory::icp::RecoveryService;
 using virtual_factory::icp::RecoveryState;
+using virtual_factory::icp::ProbeSession;
 using virtual_factory::icp::kMaxQuarantinedProbeWorkers;
 using virtual_factory::icp::kMaxQuarantinedProbesPerAdapter;
+using virtual_factory::icp::kReservedProbeWorkerCount;
 using virtual_factory::test::GatedProbeAdapter;
 using virtual_factory::test::ProbeHangGate;
 
@@ -728,6 +730,553 @@ int main()
     expect(exec.quarantinedWorkerCount() <= kMaxQuarantinedProbeWorkers,
            "N quarantine globally bounded");
     (void)maxInFlight;
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 A. One never-return + healthy unrelated adapter
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    auto gate = std::make_shared<ProbeHangGate>();
+    auto hung = std::make_shared<GatedProbeAdapter>("p21-a-hung");
+    hung->setGate(gate);
+    hung->setNeverReturn(true);
+    auto ioH = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(hung, ioH, 1, 0, ms(80))), "2.1 A submit hung");
+    expect(hung->waitConnectEntered(ms(1000)), "2.1 A hung entered");
+    expect(waitFor(
+               [&]() { return sink->count(ProbeOutcome::Timeout) >= 1; },
+               ms(2000)),
+           "2.1 A hung timed out");
+    auto healthy = std::make_shared<GatedProbeAdapter>("p21-a-ok");
+    auto ioOk = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(healthy, ioOk, 2, 0, ms(500))),
+           "2.1 A submit healthy");
+    expect(waitFor(
+               [&]() { return healthy->connectCompleted() >= 1; },
+               ms(2000)),
+           "2.1 A unrelated adapter recovered");
+    expect(exec.liveWorkerCount() == 4, "2.1 A live workers remain 4");
+    expect(exec.quarantinedWorkerCount("p21-a-hung") <= 2,
+           "2.1 A hung quarantine within q_a");
+    gate->open();
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 B. Adapter A reaches q_a=2; B still recovers
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    auto g1 = std::make_shared<ProbeHangGate>();
+    auto g2 = std::make_shared<ProbeHangGate>();
+    auto a1 = std::make_shared<GatedProbeAdapter>("p21-b");
+    auto a2 = std::make_shared<GatedProbeAdapter>("p21-b");
+    a1->setGate(g1);
+    a2->setGate(g2);
+    a1->setNeverReturn(true);
+    a2->setNeverReturn(true);
+    auto io1 = std::make_shared<std::mutex>();
+    auto io2 = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(a1, io1, 1, 0, ms(80))), "2.1 B submit 1");
+    expect(a1->waitConnectEntered(ms(1000)), "2.1 B first entered");
+    expect(waitFor(
+               [&]() { return exec.quarantinedWorkerCount("p21-b") >= 1; },
+               ms(2000)),
+           "2.1 B first quarantined");
+    expect(exec.submit(makeRequest(a2, io2, 2, 1, ms(80))), "2.1 B submit 2");
+    expect(a2->waitConnectEntered(ms(1000)), "2.1 B second entered");
+    expect(waitFor(
+               [&]() {
+                 return exec.quarantinedWorkerCount("p21-b")
+                     == kMaxQuarantinedProbesPerAdapter;
+               },
+               ms(2000)),
+           "2.1 B q_a reached");
+    auto healthy = std::make_shared<GatedProbeAdapter>("p21-b-ok");
+    auto ioOk = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(healthy, ioOk, 3, 0, ms(500))),
+           "2.1 B submit healthy");
+    expect(waitFor(
+               [&]() { return healthy->connectCompleted() >= 1; },
+               ms(2000)),
+           "2.1 B recovers after A q_a");
+    g1->open();
+    g2->open();
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 C. Global Q=8; 9th hung probe is not a 9th quarantine
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    std::vector<std::shared_ptr<ProbeHangGate>> gates;
+    std::vector<std::shared_ptr<GatedProbeAdapter>> hung;
+    std::vector<std::shared_ptr<std::mutex>> ios;
+    for (int i = 0; i < 9; ++i)
+    {
+      auto gate = std::make_shared<ProbeHangGate>();
+      auto a = std::make_shared<GatedProbeAdapter>("p21-c-" + std::to_string(i));
+      a->setGate(gate);
+      a->setNeverReturn(true);
+      auto io = std::make_shared<std::mutex>();
+      gates.push_back(gate);
+      hung.push_back(a);
+      ios.push_back(io);
+      expect(exec.submit(makeRequest(
+                 a, io, static_cast<std::uint64_t>(i + 1), 0, ms(80))),
+             "2.1 C submit " + a->id());
+    }
+    expect(waitFor(
+               [&]() {
+                 return exec.quarantinedWorkerCount()
+                     == kMaxQuarantinedProbeWorkers;
+               },
+               ms(4000)),
+           "2.1 C global Q filled");
+    expect(waitFor(
+               [&]() {
+                 return exec.quarantinedWorkerCount()
+                         == kMaxQuarantinedProbeWorkers
+                     && (exec.nonQuarantinableLiveCount() >= 1
+                         || exec.pendingCount() >= 1);
+               },
+               ms(4000)),
+           "2.1 C 9th is nonQ or pending, not Q");
+    expect(exec.quarantinedWorkerCount() == kMaxQuarantinedProbeWorkers,
+           "2.1 C no 9th quarantine");
+    expect(exec.nonQuarantinableLiveCount() <= 2, "2.1 C nonQ <= N-R");
+    for (const auto &gate : gates)
+    {
+      gate->open();
+    }
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 D. One adapter cannot occupy all 4 live workers
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    auto g0 = std::make_shared<ProbeHangGate>();
+    auto g1 = std::make_shared<ProbeHangGate>();
+    auto g2 = std::make_shared<ProbeHangGate>();
+    auto g3 = std::make_shared<ProbeHangGate>();
+    auto a0 = std::make_shared<GatedProbeAdapter>("p21-d");
+    auto a1 = std::make_shared<GatedProbeAdapter>("p21-d");
+    auto a2 = std::make_shared<GatedProbeAdapter>("p21-d");
+    auto a3 = std::make_shared<GatedProbeAdapter>("p21-d");
+    a0->setGate(g0);
+    a1->setGate(g1);
+    a2->setGate(g2);
+    a3->setGate(g3);
+    a0->setNeverReturn(true);
+    a1->setNeverReturn(true);
+    a2->setNeverReturn(true);
+    a3->setNeverReturn(true);
+    auto io0 = std::make_shared<std::mutex>();
+    auto io1 = std::make_shared<std::mutex>();
+    auto io2 = std::make_shared<std::mutex>();
+    auto io3 = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(a0, io0, 1, 0, ms(80))), "2.1 D gen0");
+    expect(waitFor(
+               [&]() { return exec.quarantinedWorkerCount("p21-d") >= 1; },
+               ms(2000)),
+           "2.1 D gen0 quarantined");
+    expect(exec.submit(makeRequest(a1, io1, 2, 1, ms(80))), "2.1 D gen1");
+    expect(waitFor(
+               [&]() {
+                 return exec.quarantinedWorkerCount("p21-d")
+                     == kMaxQuarantinedProbesPerAdapter;
+               },
+               ms(2000)),
+           "2.1 D gen1 quarantined");
+    expect(exec.submit(makeRequest(a2, io2, 3, 2, ms(80))), "2.1 D gen2 nonQ");
+    expect(a2->waitConnectEntered(ms(2000)), "2.1 D nonQ entered");
+    expect(exec.nonQuarantinableLiveCount() <= (4 - kReservedProbeWorkerCount),
+           "2.1 D nonQ <= N-R");
+    expect(exec.submit(makeRequest(a3, io3, 4, 3, ms(80))), "2.1 D gen3 pending");
+    expect(waitFor(
+               [&]() {
+                 return exec.pendingCount() >= 1 && exec.hasLivePhysical("p21-d")
+                     && exec.liveWorkerCount() == 4;
+               },
+               ms(2000)),
+           "2.1 D fourth stays pending; live pool stays 4");
+    auto healthy = std::make_shared<GatedProbeAdapter>("p21-d-ok");
+    auto ioOk = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(healthy, ioOk, 99, 0, ms(800))),
+           "2.1 D submit healthy");
+    expect(waitFor(
+               [&]() { return healthy->connectCompleted() >= 1; },
+               ms(3000)),
+           "2.1 D unrelated still recovers");
+    g0->open();
+    g1->open();
+    g2->open();
+    g3->open();
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 E. Peer healthy after A reached q_a — nonQ attempt runs
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    auto g1 = std::make_shared<ProbeHangGate>();
+    auto g2 = std::make_shared<ProbeHangGate>();
+    auto a1 = std::make_shared<GatedProbeAdapter>("p21-e");
+    auto a2 = std::make_shared<GatedProbeAdapter>("p21-e");
+    a1->setGate(g1);
+    a2->setGate(g2);
+    a1->setNeverReturn(true);
+    a2->setNeverReturn(true);
+    auto io1 = std::make_shared<std::mutex>();
+    auto io2 = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(a1, io1, 1, 0, ms(80))), "2.1 E gen0");
+    expect(waitFor(
+               [&]() { return exec.quarantinedWorkerCount("p21-e") >= 1; },
+               ms(2000)),
+           "2.1 E gen0 quarantined");
+    expect(exec.submit(makeRequest(a2, io2, 2, 1, ms(80))), "2.1 E gen1");
+    expect(waitFor(
+               [&]() {
+                 return exec.quarantinedWorkerCount("p21-e")
+                     == kMaxQuarantinedProbesPerAdapter;
+               },
+               ms(2000)),
+           "2.1 E q_a full");
+    auto recovered = std::make_shared<GatedProbeAdapter>("p21-e");
+    recovered->setPeerAvailable(true);
+    auto io3 = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(recovered, io3, 3, 2, ms(800))),
+           "2.1 E peer-up probe");
+    expect(waitFor(
+               [&]() { return recovered->connectCompleted() >= 1; },
+               ms(3000)),
+           "2.1 E nonQ probe succeeds after Q cap");
+    expect(sink->count(ProbeOutcome::Success) >= 1, "2.1 E success published");
+    g1->open();
+    g2->open();
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 F. 10 never-return + healthy adapter recovers
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    std::vector<std::shared_ptr<ProbeHangGate>> gates;
+    for (int i = 0; i < 10; ++i)
+    {
+      auto gate = std::make_shared<ProbeHangGate>();
+      auto a = std::make_shared<GatedProbeAdapter>("p21-f-" + std::to_string(i));
+      a->setGate(gate);
+      a->setNeverReturn(true);
+      auto io = std::make_shared<std::mutex>();
+      gates.push_back(gate);
+      expect(exec.submit(makeRequest(
+                 a, io, static_cast<std::uint64_t>(i + 1), 0, ms(80))),
+             "2.1 F submit hung");
+    }
+    expect(waitFor(
+               [&]() {
+                 return exec.quarantinedWorkerCount()
+                     == kMaxQuarantinedProbeWorkers;
+               },
+               ms(4000)),
+           "2.1 F Q filled by never-return adapters");
+    auto healthy = std::make_shared<GatedProbeAdapter>("p21-f-ok");
+    auto ioOk = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(healthy, ioOk, 100, 0, ms(800))),
+           "2.1 F submit healthy");
+    expect(waitFor(
+               [&]() { return healthy->connectCompleted() >= 1; },
+               ms(3000)),
+           "2.1 F healthy recovered among 10 hangs");
+    expect(exec.nonQuarantinableLiveCount() <= 2, "2.1 F nonQ bounded");
+    for (const auto &gate : gates)
+    {
+      gate->open();
+    }
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 G. Timeout vs Success: exactly one terminal claim wins
+  // -------------------------------------------------------------------
+  {
+    auto io = std::make_shared<std::mutex>();
+    auto adapter = std::make_shared<GatedProbeAdapter>("p21-g");
+    ProbeSession session(
+        "p21-g", 1, 0, 1, adapter, io,
+        std::make_shared<std::atomic<bool>>(true), nullptr, ms(100));
+    expect(session.tryClaim(ProbeOutcome::Success), "2.1 G first claim wins");
+    expect(!session.tryClaim(ProbeOutcome::Timeout),
+           "2.1 G timeout cannot steal success");
+    expect(session.terminal() == ProbeOutcome::Success, "2.1 G SUCCESS stuck");
+    ProbeSession session2(
+        "p21-g2", 2, 0, 2, adapter, io,
+        std::make_shared<std::atomic<bool>>(true), nullptr, ms(100));
+    expect(session2.tryClaim(ProbeOutcome::Timeout), "2.1 G timeout can win first");
+    expect(!session2.tryClaim(ProbeOutcome::Success),
+           "2.1 G late success cannot steal timeout");
+    expect(session2.terminal() == ProbeOutcome::Timeout, "2.1 G TIMEOUT stuck");
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 H. Success wins; late watchdog must not publish Timeout
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    auto fast = std::make_shared<GatedProbeAdapter>("p21-h");
+    fast->setPeerAvailable(true);
+    auto io = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(fast, io, 1, 0, ms(400))), "2.1 H submit");
+    expect(waitFor(
+               [&]() { return sink->count(ProbeOutcome::Success) >= 1; },
+               ms(2000)),
+           "2.1 H success");
+    std::this_thread::sleep_for(ms(500));
+    expect(sink->count(ProbeOutcome::Timeout) == 0,
+           "2.1 H no timeout after success");
+    expect(sink->count() == 1, "2.1 H exactly one terminal publish");
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 I. Timeout wins; late Success is stale (not published)
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    auto gate = std::make_shared<ProbeHangGate>();
+    auto hung = std::make_shared<GatedProbeAdapter>("p21-i");
+    hung->setGate(gate);
+    hung->setNeverReturn(true);
+    hung->setPeerAvailable(false);
+    auto io = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(hung, io, 1, 0, ms(80))), "2.1 I submit");
+    expect(waitFor(
+               [&]() { return sink->count(ProbeOutcome::Timeout) >= 1; },
+               ms(2000)),
+           "2.1 I timeout won");
+    hung->setLateSuccess(true);
+    gate->open();
+    expect(waitFor(
+               [&]() { return hung->connectCompleted() >= 1; },
+               ms(2000)),
+           "2.1 I physical success returned");
+    expect(sink->count(ProbeOutcome::Success) == 0,
+           "2.1 I late success not published");
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 J. Late failure after timeout does not publish Failure
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    auto gate = std::make_shared<ProbeHangGate>();
+    auto hung = std::make_shared<GatedProbeAdapter>("p21-j");
+    hung->setGate(gate);
+    hung->setNeverReturn(true);
+    hung->setPeerAvailable(false);
+    auto io = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(hung, io, 7, 0, ms(80))), "2.1 J submit");
+    expect(waitFor(
+               [&]() { return sink->count(ProbeOutcome::Timeout) >= 1; },
+               ms(2000)),
+           "2.1 J timeout");
+    gate->open();
+    expect(waitFor(
+               [&]() { return hung->connectFailed() >= 1; },
+               ms(2000)),
+           "2.1 J physical failure returned");
+    expect(sink->count(ProbeOutcome::Failure) == 0,
+           "2.1 J late failure not published");
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 K. Stale IoBusy does not mutate a newer probe identity
+  // -------------------------------------------------------------------
+  {
+    auto clock = std::make_shared<virtual_factory::icp::FakeRecoveryClock>(
+        std::chrono::steady_clock::time_point(std::chrono::seconds(50)));
+    RecoveryService recovery(clock);
+    recovery.armDesired("p21-k", true);
+    auto due = recovery.tick();
+    expect(!due.empty(), "2.1 K due probe");
+    const auto first = due.front();
+    recovery.rematerialize("p21-k");
+    clock->advance(ms(1));
+    auto due2 = recovery.tick();
+    expect(!due2.empty(), "2.1 K rematerialized due");
+    expect(due2.front().runtimeEpoch != first.runtimeEpoch,
+           "2.1 K epoch bumped");
+    expect(!recovery.deferRetry(first.adapterId, first.probeId, first.runtimeEpoch),
+           "2.1 K stale IoBusy defer ignored");
+    const auto snap = recovery.snapshot("p21-k");
+    expect(snap.activeProbeId == due2.front().probeId,
+           "2.1 K current probeId unchanged by stale defer");
+    expect(recovery.deferRetry(
+               due2.front().adapterId, due2.front().probeId,
+               due2.front().runtimeEpoch),
+           "2.1 K current IoBusy defer applies");
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 L. Shutdown with Q full, nonQ occupied, pending probes
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    std::vector<std::shared_ptr<ProbeHangGate>> gates;
+    for (int i = 0; i < 10; ++i)
+    {
+      auto gate = std::make_shared<ProbeHangGate>();
+      auto a = std::make_shared<GatedProbeAdapter>("p21-l-" + std::to_string(i));
+      a->setGate(gate);
+      a->setNeverReturn(true);
+      auto io = std::make_shared<std::mutex>();
+      gates.push_back(gate);
+      (void)exec.submit(makeRequest(
+          a, io, static_cast<std::uint64_t>(i + 1), 0, ms(80)));
+    }
+    expect(waitFor(
+               [&]() {
+                 return exec.quarantinedWorkerCount()
+                     == kMaxQuarantinedProbeWorkers;
+               },
+               ms(4000)),
+           "2.1 L Q filled before stop");
+    const auto t0 = std::chrono::steady_clock::now();
+    exec.stop();
+    const auto stopMs = std::chrono::duration_cast<ms>(
+                            std::chrono::steady_clock::now() - t0)
+                            .count();
+    expect(stopMs < 12000, "2.1 L stop bounded with exhausted capacity");
+    for (const auto &gate : gates)
+    {
+      gate->open();
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 M. 100 adapters, 24h fake-clock fail-fast, no growth
+  // -------------------------------------------------------------------
+  {
+    auto clock = std::make_shared<virtual_factory::icp::FakeRecoveryClock>(
+        std::chrono::steady_clock::time_point(std::chrono::seconds(2000)));
+    RecoveryService recovery(clock);
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    std::vector<std::shared_ptr<GatedProbeAdapter>> adapters;
+    std::vector<std::shared_ptr<std::mutex>> ios;
+    adapters.reserve(100);
+    ios.reserve(100);
+    for (int i = 0; i < 100; ++i)
+    {
+      const std::string id = "p21m-" + std::to_string(i);
+      recovery.armDesired(id, true);
+      auto a = std::make_shared<GatedProbeAdapter>(id);
+      a->setPeerAvailable(false);
+      adapters.push_back(a);
+      ios.push_back(std::make_shared<std::mutex>());
+    }
+    std::size_t maxPending = 0;
+    for (int step = 0; step < 24 * 60; ++step)
+    {
+      clock->advance(ms(60000));
+      const auto due = recovery.tick();
+      for (const auto &event : due)
+      {
+        const int idx = std::stoi(event.adapterId.substr(5));
+        ProbeRequest request;
+        request.adapterId = event.adapterId;
+        request.probeId = event.probeId;
+        request.runtimeEpoch = event.runtimeEpoch;
+        request.recoverySequence = event.recoverySequence;
+        request.adapter = adapters[static_cast<std::size_t>(idx)];
+        request.ioMutex = ios[static_cast<std::size_t>(idx)];
+        request.enrolled = std::make_shared<std::atomic<bool>>(true);
+        request.timeout = ms(50);
+        (void)exec.submit(std::move(request));
+      }
+      waitFor([&]() { return exec.inFlightCount() == 0 && exec.pendingCount() == 0; },
+              ms(2000));
+      for (const auto &event : due)
+      {
+        recovery.noteFailure(event.adapterId, event.probeId, event.runtimeEpoch);
+      }
+      maxPending = std::max(maxPending, exec.pendingCount());
+    }
+    expect(recovery.controlCount() == 100, "2.1 M 100 RecoveryControl records");
+    expect(maxPending <= 100, "2.1 M pending bounded");
+    expect(exec.quarantinedWorkerCount() == 0, "2.1 M fail-fast has no Q");
+    expect(exec.nonQuarantinableLiveCount() == 0, "2.1 M fail-fast has no nonQ");
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.1 N. Repeated fail-fast; later healthy adapter still runs
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    for (int i = 0; i < 20; ++i)
+    {
+      auto a = std::make_shared<GatedProbeAdapter>("p21-n-" + std::to_string(i));
+      a->setPeerAvailable(false);
+      auto io = std::make_shared<std::mutex>();
+      expect(exec.submit(makeRequest(
+                 a, io, static_cast<std::uint64_t>(100 + i), 0, ms(400))),
+             "2.1 N fail-fast submit");
+    }
+    auto healthy = std::make_shared<GatedProbeAdapter>("p21-n-ok");
+    healthy->setPeerAvailable(true);
+    auto ioOk = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(healthy, ioOk, 1, 0, ms(800))),
+           "2.1 N healthy lower sequence");
+    expect(waitFor(
+               [&]() { return healthy->connectCompleted() >= 1; },
+               ms(3000)),
+           "2.1 N healthy executed despite fail-fast crowd");
     exec.stop();
   }
 

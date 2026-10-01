@@ -28,6 +28,30 @@ void collectEquipmentIds(
   }
 }
 
+std::uint8_t terminalCode(ProbeOutcome outcome)
+{
+  return static_cast<std::uint8_t>(outcome) + 1;
+}
+
+bool sessionBetter(
+    const std::shared_ptr<ProbeSession> &a,
+    const std::shared_ptr<ProbeSession> &b)
+{
+  if (!a)
+  {
+    return false;
+  }
+  if (!b)
+  {
+    return true;
+  }
+  if (a->recoverySequence() != b->recoverySequence())
+  {
+    return a->recoverySequence() < b->recoverySequence();
+  }
+  return a->adapterId() < b->adapterId();
+}
+
 }  // namespace
 
 struct ProbeExecutor::State
@@ -46,9 +70,34 @@ struct ProbeExecutor::State
   std::size_t inFlightCount{0};
   std::size_t quarantinedCount{0};
   std::unordered_map<std::string, std::size_t> quarantinedPerAdapter;
+  std::size_t qReservedCount{0};
+  std::unordered_map<std::string, std::size_t> qReservedPerAdapter;
+  std::size_t nonQCount{0};
+  std::unordered_map<std::string, std::size_t> nonQPerAdapter;
+  std::size_t freshCount{0};
+  std::size_t maxNonQ{0};
+  std::size_t maxFresh{0};
   std::size_t peakOccupancy{0};
   std::size_t liveBusy{0};
 };
+
+bool ProbeSession::tryClaim(ProbeOutcome outcome)
+{
+  std::uint8_t expected = 0;
+  const std::uint8_t desired = terminalCode(outcome);
+  return this->terminal_.compare_exchange_strong(
+      expected, desired, std::memory_order_acq_rel, std::memory_order_acquire);
+}
+
+ProbeOutcome ProbeSession::terminal() const
+{
+  const std::uint8_t code = this->terminal_.load(std::memory_order_acquire);
+  if (code == 0)
+  {
+    return ProbeOutcome::Stale;
+  }
+  return static_cast<ProbeOutcome>(code - 1);
+}
 
 ProbeSession::ProbeSession(std::string adapterId,
                            std::uint64_t probeId,
@@ -145,6 +194,12 @@ void ProbeExecutor::start(std::size_t workerCount)
     }
     this->state_->stopping = false;
     this->state_->running = true;
+    this->state_->maxNonQ = workerCount > kReservedProbeWorkerCount
+                                ? workerCount - kReservedProbeWorkerCount
+                                : 0;
+    this->state_->maxFresh = workerCount < kReservedProbeWorkerCount
+                                 ? workerCount
+                                 : kReservedProbeWorkerCount;
     this->workers_.reserve(workerCount);
     for (std::size_t i = 0; i < workerCount; ++i)
     {
@@ -460,6 +515,12 @@ bool ProbeExecutor::hasPhysicalFor(const std::string &adapterId) const
   return false;
 }
 
+bool ProbeExecutor::hasLivePhysical(const std::string &adapterId) const
+{
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  return hasLivePhysicalLocked(*this->state_, adapterId);
+}
+
 std::uint64_t ProbeExecutor::logicalProbeId(const std::string &adapterId) const
 {
   std::lock_guard<std::mutex> lock(this->state_->mutex);
@@ -522,6 +583,18 @@ std::size_t ProbeExecutor::quarantinedWorkerCount(
   return it->second;
 }
 
+std::size_t ProbeExecutor::quarantineReservationCount() const
+{
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  return this->state_->qReservedCount;
+}
+
+std::size_t ProbeExecutor::nonQuarantinableLiveCount() const
+{
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  return this->state_->nonQCount;
+}
+
 std::size_t ProbeExecutor::peakOccupancy() const
 {
   std::lock_guard<std::mutex> lock(this->state_->mutex);
@@ -538,6 +611,215 @@ void ProbeExecutor::recordOccupancyLocked(State &state)
   }
 }
 
+bool ProbeExecutor::hasLivePhysicalLocked(
+    const State &state, const std::string &adapterId)
+{
+  for (const auto &session : state.physical)
+  {
+    if (!session || session->adapterId() != adapterId || session->finished())
+    {
+      continue;
+    }
+    const ProbeHangClass hang = session->hangClass();
+    if (hang == ProbeHangClass::ReservedQ
+        || hang == ProbeHangClass::ReservedNonQ
+        || hang == ProbeHangClass::ReservedFresh)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ProbeExecutor::canReserveQLocked(
+    const State &state, const std::string &adapterId)
+{
+  if (state.quarantinedCount + state.qReservedCount
+      >= kMaxQuarantinedProbeWorkers)
+  {
+    return false;
+  }
+  std::size_t per = 0;
+  const auto qIt = state.quarantinedPerAdapter.find(adapterId);
+  if (qIt != state.quarantinedPerAdapter.end())
+  {
+    per += qIt->second;
+  }
+  const auto rIt = state.qReservedPerAdapter.find(adapterId);
+  if (rIt != state.qReservedPerAdapter.end())
+  {
+    per += rIt->second;
+  }
+  return per < kMaxQuarantinedProbesPerAdapter;
+}
+
+bool ProbeExecutor::canReserveNonQLocked(
+    const State &state, const std::string &adapterId)
+{
+  if (state.maxNonQ == 0 || state.nonQCount >= state.maxNonQ)
+  {
+    return false;
+  }
+  const auto it = state.nonQPerAdapter.find(adapterId);
+  return it == state.nonQPerAdapter.end() || it->second == 0;
+}
+
+bool ProbeExecutor::canReserveFreshLocked(
+    const State &state, const std::string &adapterId)
+{
+  if (state.maxFresh == 0 || state.freshCount >= state.maxFresh)
+  {
+    return false;
+  }
+  if (hasLivePhysicalLocked(state, adapterId))
+  {
+    return false;
+  }
+  const auto qIt = state.quarantinedPerAdapter.find(adapterId);
+  if (qIt != state.quarantinedPerAdapter.end() && qIt->second > 0)
+  {
+    return false;
+  }
+  const auto rIt = state.qReservedPerAdapter.find(adapterId);
+  if (rIt != state.qReservedPerAdapter.end() && rIt->second > 0)
+  {
+    return false;
+  }
+  const auto nIt = state.nonQPerAdapter.find(adapterId);
+  if (nIt != state.nonQPerAdapter.end() && nIt->second > 0)
+  {
+    return false;
+  }
+  return true;
+}
+
+bool ProbeExecutor::canAdmitLocked(
+    const State &state, const std::string &adapterId)
+{
+  if (hasLivePhysicalLocked(state, adapterId))
+  {
+    return false;
+  }
+  return canReserveQLocked(state, adapterId)
+      || canReserveNonQLocked(state, adapterId)
+      || canReserveFreshLocked(state, adapterId);
+}
+
+bool ProbeExecutor::hasEligiblePendingLocked(const State &state)
+{
+  for (const auto &session : state.pending)
+  {
+    if (!session || session->cancelled() || session->finished())
+    {
+      continue;
+    }
+    if (canAdmitLocked(state, session->adapterId()))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ProbeExecutor::admitLocked(
+    State &state, const std::shared_ptr<ProbeSession> &session)
+{
+  if (!session)
+  {
+    return false;
+  }
+  const std::string &id = session->adapterId();
+  if (hasLivePhysicalLocked(state, id))
+  {
+    return false;
+  }
+  if (canReserveQLocked(state, id))
+  {
+    ++state.qReservedCount;
+    ++state.qReservedPerAdapter[id];
+    session->setHangClass(ProbeHangClass::ReservedQ);
+    return true;
+  }
+  if (canReserveNonQLocked(state, id))
+  {
+    ++state.nonQCount;
+    ++state.nonQPerAdapter[id];
+    session->setHangClass(ProbeHangClass::ReservedNonQ);
+    return true;
+  }
+  if (canReserveFreshLocked(state, id))
+  {
+    ++state.freshCount;
+    session->setHangClass(ProbeHangClass::ReservedFresh);
+    return true;
+  }
+  return false;
+}
+
+void ProbeExecutor::releaseHangBudgetLocked(
+    State &state, const std::shared_ptr<ProbeSession> &session)
+{
+  if (!session)
+  {
+    return;
+  }
+  const ProbeHangClass hang = session->hangClass();
+  const std::string &id = session->adapterId();
+  if (hang == ProbeHangClass::ReservedQ)
+  {
+    if (state.qReservedCount > 0)
+    {
+      --state.qReservedCount;
+    }
+    auto it = state.qReservedPerAdapter.find(id);
+    if (it != state.qReservedPerAdapter.end())
+    {
+      if (it->second > 0)
+      {
+        --it->second;
+      }
+      if (it->second == 0)
+      {
+        state.qReservedPerAdapter.erase(it);
+      }
+    }
+    session->setHangClass(ProbeHangClass::Unreserved);
+    state.cv.notify_all();
+    return;
+  }
+  if (hang == ProbeHangClass::ReservedNonQ)
+  {
+    if (state.nonQCount > 0)
+    {
+      --state.nonQCount;
+    }
+    auto it = state.nonQPerAdapter.find(id);
+    if (it != state.nonQPerAdapter.end())
+    {
+      if (it->second > 0)
+      {
+        --it->second;
+      }
+      if (it->second == 0)
+      {
+        state.nonQPerAdapter.erase(it);
+      }
+    }
+    session->setHangClass(ProbeHangClass::Unreserved);
+    state.cv.notify_all();
+    return;
+  }
+  if (hang == ProbeHangClass::ReservedFresh)
+  {
+    if (state.freshCount > 0)
+    {
+      --state.freshCount;
+    }
+    session->setHangClass(ProbeHangClass::Unreserved);
+    state.cv.notify_all();
+  }
+}
+
 bool ProbeExecutor::takeNextLocked(
     State &state, std::shared_ptr<ProbeSession> *out)
 {
@@ -545,36 +827,43 @@ bool ProbeExecutor::takeNextLocked(
   {
     return false;
   }
-  std::size_t best = 0;
-  for (std::size_t i = 1; i < state.pending.size(); ++i)
+  std::size_t best = state.pending.size();
+  for (std::size_t i = 0; i < state.pending.size(); ++i)
   {
-    const auto &a = state.pending[best];
-    const auto &b = state.pending[i];
-    if (!a)
-    {
-      best = i;
-      continue;
-    }
-    if (!b)
+    const auto &session = state.pending[i];
+    if (!session || session->cancelled() || session->finished())
     {
       continue;
     }
-    if (b->recoverySequence() < a->recoverySequence()
-        || (b->recoverySequence() == a->recoverySequence()
-            && b->adapterId() < a->adapterId()))
+    if (!canAdmitLocked(state, session->adapterId()))
+    {
+      continue;
+    }
+    if (best >= state.pending.size()
+        || sessionBetter(session, state.pending[best]))
     {
       best = i;
     }
+  }
+  if (best >= state.pending.size())
+  {
+    return false;
   }
   *out = std::move(state.pending[best]);
   state.pending.erase(state.pending.begin() + static_cast<std::ptrdiff_t>(best));
-  if (*out)
+  if (!admitLocked(state, *out))
   {
-    state.physical.push_back(*out);
-    ++state.inFlightCount;
-    recordOccupancyLocked(state);
+    if (*out)
+    {
+      state.pending.push_back(*out);
+    }
+    *out = nullptr;
+    return false;
   }
-  return *out != nullptr;
+  state.physical.push_back(*out);
+  ++state.inFlightCount;
+  recordOccupancyLocked(state);
+  return true;
 }
 
 void ProbeExecutor::completeSessionLocked(
@@ -622,25 +911,6 @@ void ProbeExecutor::accountQuarantineExit(
   }
 }
 
-bool ProbeExecutor::canQuarantineLocked(
-    const State &state, const std::string &adapterId)
-{
-  if (state.quarantinedCount >= kMaxQuarantinedProbeWorkers)
-  {
-    return false;
-  }
-  const auto it = state.quarantinedPerAdapter.find(adapterId);
-  if (it != state.quarantinedPerAdapter.end()
-      && it->second >= kMaxQuarantinedProbesPerAdapter)
-  {
-    // Fairness bound: still allow quarantine of a different adapter's worker
-    // by returning false only for THIS adapter. Caller uses this for the
-    // hung session's adapterId.
-    return false;
-  }
-  return true;
-}
-
 void ProbeExecutor::publish(
     const std::shared_ptr<ProbeSession> &session, ProbeCompletion completion)
 {
@@ -668,11 +938,13 @@ void ProbeExecutor::runProbe(
       done.runtimeEpoch = session->runtimeEpoch();
       done.recoverySequence = session->recoverySequence();
       done.adapter = session->adapter();
+      (void)session->tryClaim(ProbeOutcome::Stale);
     }
     done.outcome = ProbeOutcome::Stale;
     done.message = "invalid probe session";
     {
       std::lock_guard<std::mutex> lock(state.mutex);
+      releaseHangBudgetLocked(state, session);
       completeSessionLocked(state, session);
     }
     publish(session, std::move(done));
@@ -688,42 +960,38 @@ void ProbeExecutor::runProbe(
   done.recoverySequence = session->recoverySequence();
   done.adapter = session->adapter();
 
-  if (session->cancelled())
-  {
-    done.outcome = ProbeOutcome::Cancelled;
-    done.message = "probe cancelled before connect";
+  auto finishWithoutConnect = [&](ProbeOutcome outcome, const char *message) {
+    const bool won = session->tryClaim(outcome);
+    done.outcome = won ? outcome : ProbeOutcome::Stale;
+    done.message = message;
     {
       std::lock_guard<std::mutex> lock(state.mutex);
+      releaseHangBudgetLocked(state, session);
       completeSessionLocked(state, session);
     }
-    publish(session, std::move(done));
+    if (won)
+    {
+      publish(session, std::move(done));
+    }
+  };
+
+  if (session->cancelled() || session->hasTerminal())
+  {
+    finishWithoutConnect(ProbeOutcome::Cancelled, "probe cancelled before connect");
     return;
   }
 
   std::unique_lock<std::mutex> io(*session->ioMutex(), std::try_to_lock);
   if (!io.owns_lock())
   {
-    done.outcome = ProbeOutcome::IoBusy;
-    done.ioBusy = true;
-    done.message = "adapter I/O busy";
-    {
-      std::lock_guard<std::mutex> lock(state.mutex);
-      completeSessionLocked(state, session);
-    }
-    publish(session, std::move(done));
+    finishWithoutConnect(ProbeOutcome::IoBusy, "adapter I/O busy");
     return;
   }
 
-  if (session->cancelled())
+  if (session->cancelled() || session->hasTerminal())
   {
     io.unlock();
-    done.outcome = ProbeOutcome::Cancelled;
-    done.message = "probe cancelled before connect";
-    {
-      std::lock_guard<std::mutex> lock(state.mutex);
-      completeSessionLocked(state, session);
-    }
-    publish(session, std::move(done));
+    finishWithoutConnect(ProbeOutcome::Cancelled, "probe cancelled before connect");
     return;
   }
 
@@ -741,30 +1009,34 @@ void ProbeExecutor::runProbe(
   }
   io.unlock();
 
-  if (session->cancelled() || session->timeoutNotified())
+  const ProbeOutcome claimed =
+      ok ? ProbeOutcome::Success : ProbeOutcome::Failure;
+  const bool won = session->tryClaim(claimed);
+  if (won)
   {
-    done.outcome = session->timeoutNotified() ? ProbeOutcome::Stale
-                                              : ProbeOutcome::Cancelled;
-    done.ok = false;
-    done.message = "stale probe completion ignored";
-  }
-  else if (ok)
-  {
-    done.outcome = ProbeOutcome::Success;
-    done.ok = true;
-    done.message = "connected";
+    done.outcome = claimed;
+    done.ok = ok;
+    if (ok)
+    {
+      done.message = "connected";
+    }
   }
   else
   {
-    done.outcome = ProbeOutcome::Failure;
+    done.outcome = ProbeOutcome::Stale;
     done.ok = false;
+    done.message = "stale probe completion ignored";
   }
 
   {
     std::lock_guard<std::mutex> lock(state.mutex);
+    releaseHangBudgetLocked(state, session);
     completeSessionLocked(state, session);
   }
-  publish(session, std::move(done));
+  if (won)
+  {
+    publish(session, std::move(done));
+  }
 }
 
 void ProbeExecutor::workerMain(
@@ -781,14 +1053,15 @@ void ProbeExecutor::workerMain(
     {
       std::unique_lock<std::mutex> lock(state->mutex);
       state->cv.wait(lock, [&]() {
-        return state->stopping || !control->stayLive.load(std::memory_order_acquire)
-            || !state->pending.empty();
+        return state->stopping
+            || !control->stayLive.load(std::memory_order_acquire)
+            || hasEligiblePendingLocked(*state);
       });
       if (!control->stayLive.load(std::memory_order_acquire))
       {
         break;
       }
-      if (state->stopping && state->pending.empty())
+      if (state->stopping && !hasEligiblePendingLocked(*state))
       {
         break;
       }
@@ -861,6 +1134,10 @@ bool ProbeExecutor::tryQuarantine(const std::shared_ptr<ProbeSession> &session)
   {
     return false;
   }
+  if (session->hangClass() != ProbeHangClass::ReservedQ)
+  {
+    return false;
+  }
   const std::thread::id tid = session->workerId();
   if (tid == std::thread::id{})
   {
@@ -873,7 +1150,7 @@ bool ProbeExecutor::tryQuarantine(const std::shared_ptr<ProbeSession> &session)
   {
     return false;
   }
-  if (!canQuarantineLocked(*this->state_, session->adapterId()))
+  if (session->hangClass() != ProbeHangClass::ReservedQ)
   {
     return false;
   }
@@ -928,11 +1205,30 @@ bool ProbeExecutor::tryQuarantine(const std::shared_ptr<ProbeSession> &session)
   {
     old.control->stayLive.store(false, std::memory_order_release);
   }
-  // Runtime quarantine keeps the worker joinable. Detach happens only if
-  // stop() grace expires with the physical call still executing.
   this->quarantined_.push_back(std::move(old));
+
+  // Convert the Q reservation into an actual quarantine slot. Capacity
+  // (reserved + quarantined) is unchanged.
+  if (this->state_->qReservedCount > 0)
+  {
+    --this->state_->qReservedCount;
+  }
+  auto reservedIt =
+      this->state_->qReservedPerAdapter.find(session->adapterId());
+  if (reservedIt != this->state_->qReservedPerAdapter.end())
+  {
+    if (reservedIt->second > 0)
+    {
+      --reservedIt->second;
+    }
+    if (reservedIt->second == 0)
+    {
+      this->state_->qReservedPerAdapter.erase(reservedIt);
+    }
+  }
   ++this->state_->quarantinedCount;
   ++this->state_->quarantinedPerAdapter[session->adapterId()];
+  session->setHangClass(ProbeHangClass::Quarantined);
   this->state_->cv.notify_all();
   return true;
 }
@@ -958,7 +1254,7 @@ void ProbeExecutor::watchdogLoop()
       const auto now = std::chrono::steady_clock::now();
       for (const auto &session : this->state_->physical)
       {
-        if (!session || session->finished() || session->cancelled())
+        if (!session || session->finished() || session->hasTerminal())
         {
           continue;
         }
@@ -970,7 +1266,7 @@ void ProbeExecutor::watchdogLoop()
         {
           continue;
         }
-        if (!session->markTimeoutNotified())
+        if (!session->tryClaim(ProbeOutcome::Timeout))
         {
           continue;
         }
@@ -995,7 +1291,17 @@ void ProbeExecutor::watchdogLoop()
       done.outcome = ProbeOutcome::Timeout;
       done.message = "logical probe timeout";
       publish(session, done);
-      (void)this->tryQuarantine(session);
+      if (session->hangClass() == ProbeHangClass::ReservedQ)
+      {
+        const bool quarantined = this->tryQuarantine(session);
+        if (!quarantined
+            && session->hangClass() == ProbeHangClass::ReservedQ)
+        {
+          // Invariant: a paid Q reservation must convert or remain held.
+          // Spawn failure leaves the worker live with the reservation so we
+          // do not admit another unpaid Q hang on this adapter.
+        }
+      }
     }
     this->reapFinishedQuarantine();
   }

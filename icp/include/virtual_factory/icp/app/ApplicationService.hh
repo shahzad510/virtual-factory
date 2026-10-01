@@ -465,6 +465,15 @@ private:
       const AdapterManagerResult &connected,
       bool emitFailureEvent,
       bool reconnectStyleFailure);
+  /// Automatic-probe path: identity-checked RecoveryControl mutation.
+  void applyConnectOutcome(
+      const std::string &adapterId,
+      const AdapterManagerResult &connected,
+      bool emitFailureEvent,
+      bool reconnectStyleFailure,
+      std::uint64_t probeId,
+      std::uint64_t runtimeEpoch,
+      const IndustrialAdapter *expected);
   void scheduleAutoReconnectLocked(const std::string &adapterId) const;
   bool hasConnectStyleLifecycleWork(const std::string &adapterId) const;
   bool hasConnectStyleWorkAnyGeneration(const std::string &adapterId) const;

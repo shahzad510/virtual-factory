@@ -28,8 +28,11 @@ inline constexpr std::size_t kMaxProbeWorkerCount{32};
 
 /// Hard bound on joinable quarantined probe workers (runtime, not shutdown).
 inline constexpr std::size_t kMaxQuarantinedProbeWorkers = 8;
-/// Per-adapter fairness bound. Not an admission stop for new logical probes.
+/// Per-adapter bound on quarantined workers plus outstanding Q reservations.
 inline constexpr std::size_t kMaxQuarantinedProbesPerAdapter = 2;
+/// Live workers reserved for quarantinable / zero-occupancy probes (R).
+/// max non-quarantinable live connects = N - R (default 4 - 2 = 2).
+inline constexpr std::size_t kReservedProbeWorkerCount = 2;
 
 /// Probe shutdown grace matches lifecycle/poll so well-behaved connects finish.
 inline constexpr std::chrono::milliseconds kProbeShutdownGrace =
@@ -43,6 +46,17 @@ enum class ProbeOutcome
   Cancelled,
   Timeout,
   Stale
+};
+
+/// Hang-budget class paid before physical connect(). Unreserved sessions
+/// must not enter connect(). ReservedQ converts to Quarantined on TIMEOUT.
+enum class ProbeHangClass : std::uint8_t
+{
+  Unreserved,
+  ReservedQ,
+  ReservedNonQ,
+  ReservedFresh,
+  Quarantined
 };
 
 /// Result published only after IndustrialAdapter::connect() has returned, or
@@ -125,16 +139,19 @@ public:
   {
     return this->enteredConnect_.load(std::memory_order_acquire);
   }
-  bool timeoutNotified() const
+  /// First caller wins. Watchdog and runProbe use this instead of timestamps.
+  bool tryClaim(ProbeOutcome outcome);
+  bool hasTerminal() const
   {
-    return this->timeoutNotified_.load(std::memory_order_acquire);
+    return this->terminal_.load(std::memory_order_acquire) != 0;
   }
-  bool markTimeoutNotified()
+  ProbeOutcome terminal() const;
+  bool timeoutWon() const
   {
-    bool expected = false;
-    return this->timeoutNotified_.compare_exchange_strong(
-        expected, true, std::memory_order_acq_rel);
+    return this->hasTerminal() && this->terminal() == ProbeOutcome::Timeout;
   }
+  ProbeHangClass hangClass() const { return this->hangClass_; }
+  void setHangClass(ProbeHangClass hangClass) { this->hangClass_ = hangClass; }
   void markEnteredConnect()
   {
     this->enteredConnect_.store(true, std::memory_order_release);
@@ -165,7 +182,8 @@ private:
   std::atomic<bool> cancelled_{false};
   std::atomic<bool> finished_{false};
   std::atomic<bool> enteredConnect_{false};
-  std::atomic<bool> timeoutNotified_{false};
+  std::atomic<std::uint8_t> terminal_{0};
+  ProbeHangClass hangClass_{ProbeHangClass::Unreserved};
 };
 
 /// Submit description for one logical recovery probe.
@@ -187,8 +205,14 @@ struct ProbeRequest
 /// - At most one logical probe per adapterId.
 /// - No retry-job queue: pending occupancy is one slot per adapter.
 /// - Hung SDK calls are logically cancelled; the ProbeSession keeps the
-///   physical call alive. Timed-out workers may be quarantined (joinable)
-///   and replaced 1-for-1 so future logical probes keep capacity.
+///   physical call alive. A physical connect is admitted only after paying
+///   a QUARANTINABLE or NON_QUARANTINABLE hang budget. Timed-out
+///   QUARANTINABLE workers are quarantined (joinable) and replaced 1-for-1.
+///   NON_QUARANTINABLE timeouts stay on the live worker, globally capped at
+///   N-R so at least R live workers remain for quarantinable work.
+/// - At most one live (non-quarantined) physical connect per adapterId.
+///   Pending logical probes do not consume workers.
+/// - Exactly one terminal ProbeSession outcome wins (CAS).
 /// - Runtime quarantine never detaches. Shutdown after grace may detach a
 ///   cohort with shared State + keepAlive (same P2 pin model as lifecycle).
 class ProbeExecutor
@@ -243,6 +267,10 @@ public:
   std::size_t idleLiveWorkerCount() const;
   std::size_t quarantinedWorkerCount() const;
   std::size_t quarantinedWorkerCount(const std::string &adapterId) const;
+  std::size_t quarantineReservationCount() const;
+  std::size_t nonQuarantinableLiveCount() const;
+  /// Live (ReservedQ / ReservedNonQ) unfinished physical connect for this id.
+  bool hasLivePhysical(const std::string &adapterId) const;
   /// Peak pending+in-flight+logical observed (test bound for long outages).
   std::size_t peakOccupancy() const;
 
@@ -273,6 +301,21 @@ private:
       const std::shared_ptr<WorkerControl> &control);
   static bool takeNextLocked(
       State &state, std::shared_ptr<ProbeSession> *out);
+  static bool hasLivePhysicalLocked(
+      const State &state, const std::string &adapterId);
+  static bool canReserveQLocked(
+      const State &state, const std::string &adapterId);
+  static bool canReserveNonQLocked(
+      const State &state, const std::string &adapterId);
+  static bool canReserveFreshLocked(
+      const State &state, const std::string &adapterId);
+  static bool canAdmitLocked(
+      const State &state, const std::string &adapterId);
+  static bool hasEligiblePendingLocked(const State &state);
+  static bool admitLocked(
+      State &state, const std::shared_ptr<ProbeSession> &session);
+  static void releaseHangBudgetLocked(
+      State &state, const std::shared_ptr<ProbeSession> &session);
   static void runProbe(
       State &state, const std::shared_ptr<ProbeSession> &session);
   static void publish(
@@ -281,8 +324,6 @@ private:
       State &state, const std::shared_ptr<ProbeSession> &session);
   static void accountQuarantineExit(
       State &state, const std::string &adapterId);
-  static bool canQuarantineLocked(
-      const State &state, const std::string &adapterId);
   void spawnWorkerLocked();
   WorkerHandle createWorkerHandle();
   void discardUninstalledWorker(WorkerHandle &handle);
