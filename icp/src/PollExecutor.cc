@@ -183,6 +183,21 @@ bool PollExecutor::hasAbandonedWorkers() const
   return this->abandoned_ != nullptr;
 }
 
+bool PollExecutor::hasInFlight(const std::string &adapterId) const
+{
+  if (adapterId.empty())
+  {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(this->state_->mutex);
+  const auto it = this->state_->slots.find(adapterId);
+  if (it == this->state_->slots.end())
+  {
+    return false;
+  }
+  return it->second.inFlight;
+}
+
 bool PollExecutor::waitUntilIdle(std::chrono::milliseconds timeout)
 {
   std::unique_lock<std::mutex> lock(this->state_->mutex);

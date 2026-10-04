@@ -8,6 +8,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — isolate first-DISCONNECTED hung automatic RecoveryConnect
+
+- ControlPlaneTick isolation now treats a genuinely in-flight automatic `RecoveryConnect` that still holds `io_mutex` past `timeoutMs` plus `kHungConnectIsolationSlack` as isolation-eligible when live state is **DISCONNECTED** as well as FAULTED. A first RecoveryConnect that never returns never reaches `applyConnectOutcome()` / `enterFault()`, so FAULTED-only isolation left `autoReconnectInFlight` latched and blocked every later recovery tick.
+- Isolation threshold for hung RecoveryConnect remains configured `timeoutMs` + existing safety slack (not the hung-poll 2s window). A timeout-bound `connect()` that returns `{ok=false, ioBusy=false}` still becomes FAULTED on the **same** runtime and uses normal backoff.
+- Operator Connect/Reconnect (including coalesced operator Connect in `pending_operator_connect_`) is not isolated merely because it is slow.
+- Mechanism is protocol-neutral: generic in-flight RecoveryConnect + configured timeout. No OPC UA / `UA_Client_connect` special case.
+- Isolation still uses the existing rematerialize path (replacement runtime, generation bump, unique Teardown FIFO, new-generation RecoveryConnect). Diagnostic event `recovery_runtime_isolated` records adapter, timeout, elapsed duration, and reason `hung automatic recovery connection`.
+- Regression: `icp_lifecycle_recovery_test` case P (first DISCONNECTED hung RecoveryConnect isolated; NEW CONNECTED without HTTP Connect) and case Q (operator Connect is not isolated)
+
+### Fixed — isolate obstructed automatic RecoveryConnect holding io_mutex
+
+- ControlPlaneTick isolation treats an in-flight automatic `RecoveryConnect` on an already-FAULTED adapter as isolation-eligible only after the adapter's `timeoutMs` (default 2000) plus `kHungConnectIsolationSlack` (500ms). A timeout-bound `connect()` that returns `{ok=false, ioBusy=false}` is not rematerialized at the hung-poll 2s mark; it reaches `applyConnectOutcome()` on the same runtime.
+- Hung-poll isolation remains `kRecoveryIsolationBusyMs` (2s). Operator Connect/Reconnect/Disconnect and coalesced operator Connect recorded in `pending_operator_connect_` still forbid isolation. A timeout-bound first connect that returns is not rematerialized at 2s; a first RecoveryConnect that remains in-flight past timeoutMs+slack is isolated (see above).
+- A stale in-flight RecoveryConnect after generation bump no longer occupies the replacement runtime's LifecycleExecutor FIFO (current-generation jobs may start; stale completion cannot clear the new occupant).
+- Slice A latch reconcile, unique Teardown FIFO, and automatic backoff for completed attempts are unchanged.
+- Regression: `icp_lifecycle_recovery_test` case N (peer up while RecoveryConnect `connect()` stays blocked) and case O (timeout-bound RecoveryConnect stays on the same runtime and becomes FAULTED)
+
+### Fixed — same-adapter recovery isolation when hung poll holds io_mutex
+
+- `AdapterManager::connectAdapter` fail-fast: `try_lock` on per-adapter `io_mutex`; returns `ioBusy` instead of occupying the LifecycleExecutor FIFO
+- `PollExecutor::hasInFlight(adapterId)` observes an in-flight poll without waiting
+- ControlPlaneTick detects obstructed poll (FAULTED / auto-recovery eligible, poll in-flight, `io_mutex` busy, `kRecoveryIsolationBusyMs` = 2000) then create-first extract/rematerialize, Teardown(old), and `RecoveryConnect` for the new generation
+- Isolation does not start after `shutdown_flag_` / `running_ == false`
+- Old poll is not cancelled or joined; enrolled gate still blocks stale cache publication
+- Stale lifecycle completion does not overwrite replacement state/diagnostics/cache
+- Operator Connect/Reconnect follow-up, Slice A latch reconcile, and config rematerialize pending-clear are unchanged
+- Extracted `Teardown` uses a distinct LifecycleExecutor FIFO slot so a hung old `poll()` cannot block `RecoveryConnect` on the replacement runtime
+- Regression: `icp_lifecycle_recovery_test` cases I–M
+
+### Fixed — automatic recovery latch after generation-dropped RecoveryConnect
+
+- `onPollCycle` clears `autoReconnectInFlight` / `reconnect_in_progress_` when LifecycleExecutor has no connect-style work, so a generation bump that discards a pending `RecoveryConnect` cannot leave a phantom latch
+- Enabled rematerialize (`ensureRuntimeAdapter`) clears the same recovery latches (keeps `autoConnectDesired` and backoff)
+- Automatic backoff and operator Connect/Reconnect follow-up are unchanged
+- Regression: `icp_lifecycle_recovery_test` case H
+
 ### Fixed — Reconnect must not discard an in-flight Connect/RecoveryConnect
 
 - `reconnectAdapter` no longer bumps generation while Connect, RecoveryConnect, or Reconnect is already in-flight/pending
@@ -15,6 +51,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Disconnect / disable / extract still cancel in-flight connect (clear desired + bump generation)
 - GUI Connect/Reconnect flash "request accepted" rather than protocol success
 - Regression: `icp_lifecycle_recovery_test`
+
+### Fixed — operator Connect/Reconnect follow-up after in-flight connect failure
+
+- Operator Connect/Reconnect while Connect/RecoveryConnect is in-flight still does not start a parallel `connect()` or bump generation
+- A pending operator intent is recorded; if the in-flight attempt fails, one follow-up `Connect` is queued behind it (`enqueueFollowUp`) and runs without waiting for automatic backoff
+- In-flight success still keeps the connection and clears the pending operator request
+- Automatic RecoveryConnect backoff is unchanged when no operator request is pending
+- Enabled rematerialize (`ensureRuntimeAdapter`) clears `pending_operator_connect_` so a replacement runtime never inherits the previous instance's operator follow-up
+- Regression: `icp_lifecycle_recovery_test` cases A–G
 
 ### Fixed — P3 poll isolation (dedicated PollExecutor)
 

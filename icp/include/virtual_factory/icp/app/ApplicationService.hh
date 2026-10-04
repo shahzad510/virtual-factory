@@ -346,6 +346,7 @@ public:
   const ConfigurationCatalog &catalog() const;
   AdapterManager &manager();
   LiveStateCache &cache();
+  LifecycleExecutor &lifecycle();
 
   void recordEvent(
       const std::string &level,
@@ -392,6 +393,27 @@ private:
   /// ControlPlaneTick: observations / history / recovery enqueue. Independent of
   /// poll completion (P3). Must not call poll() or connect().
   void onPollCycle();
+  /// Same-adapter recovery isolation: extract a runtime whose hung poll() or
+  /// obstructed automatic RecoveryConnect is holding io_mutex so a replacement
+  /// can RecoveryConnect. Preserves operator intent; does not cancel/join the
+  /// old protocol call. elapsedBusy is the observed io_mutex occupancy used
+  /// in the isolation diagnostic (timeoutMs + slack for hung RecoveryConnect).
+  void isolateObstructedRuntime(
+      const std::string &adapterId, std::chrono::milliseconds elapsedBusy);
+  /// Hung poll, or in-flight automatic RecoveryConnect (FAULTED or
+  /// DISCONNECTED) past timeoutMs+slack. Operator Connect/Reconnect/Disconnect
+  /// (including coalesced operator Connect recorded as pending_operator_connect_)
+  /// are never isolation-eligible. A timeout-bound connect() that returns is
+  /// not a hung connect.
+  bool isRecoveryIsolationCandidate(
+      const std::string &adapterId,
+      bool autoConnectDesired,
+      ConnectionState connectionState,
+      const std::shared_ptr<PollExecutor> &pollExecutor) const;
+  /// Hung poll: kRecoveryIsolationBusyMs (2s). Hung RecoveryConnect that owns
+  /// io_mutex: adapter timeoutMs (default 2000) + kHungConnectIsolationSlack.
+  std::chrono::milliseconds recoveryIsolationBusyLimit(
+      const std::string &adapterId) const;
   void executeLifecycleJob(const LifecycleJob &job);
   void applyConnectOutcome(
       const std::string &adapterId,
@@ -399,6 +421,8 @@ private:
       bool emitFailureEvent,
       bool reconnectStyleFailure);
   void scheduleAutoReconnectLocked(const std::string &adapterId) const;
+  bool hasConnectStyleLifecycleWork(const std::string &adapterId) const;
+  void maybeEnqueueOperatorFollowUp(const std::string &adapterId);
   /// Create missing enabled runtime adapters without connecting. Arms ICP-owned
   /// background connect so peer-down at startup cannot block HTTP/control plane.
   void materializeEnabledAdaptersForRecovery();
@@ -457,6 +481,24 @@ private:
   mutable std::unordered_map<std::string, CommandDiagnostic> command_runtime_;
   /// Adapters currently inside reconnectAdapter() (for recovery event category).
   mutable std::unordered_map<std::string, bool> reconnect_in_progress_;
+  /// Operator Connect/Reconnect issued while a connect-style job is already
+  /// in-flight/pending. Coalesced to one flag. On in-flight success the flag
+  /// is cleared; on failure one follow-up Connect is enqueued (same generation,
+  /// no automatic-recovery backoff). Rematerialize/extract must clear this so
+  /// a replacement runtime never inherits the previous instance's intent.
+  mutable std::unordered_map<std::string, bool> pending_operator_connect_;
+  /// First observation of io_mutex busy for same-adapter recovery isolation
+  /// (ControlPlaneTick). Hung poll uses kRecoveryIsolationBusyMs; hung
+  /// RecoveryConnect (FAULTED or DISCONNECTED) uses timeoutMs + slack.
+  mutable std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+      recovery_isolation_busy_since_;
+  static constexpr std::chrono::milliseconds kRecoveryIsolationBusyMs{2000};
+  /// Extra wait beyond protocol timeoutMs before treating an in-flight
+  /// automatic RecoveryConnect as hung (FAULTED or still DISCONNECTED).
+  /// Timeout-bound connect() must be allowed to return and reach
+  /// applyConnectOutcome() on the same runtime.
+  static constexpr std::chrono::milliseconds kHungConnectIsolationSlack{500};
+  static constexpr int kDefaultConnectTimeoutMs{2000};
   /// Open alarm identities → current occurrence (process-lifetime; no poll dupes).
   mutable std::unordered_map<std::string, OpenAlarmTracking> open_alarms_;
   /// Last persisted equipment operational history state per equipment id.

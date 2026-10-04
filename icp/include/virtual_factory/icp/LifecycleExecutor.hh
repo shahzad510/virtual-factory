@@ -101,11 +101,22 @@ public:
   /// is stale.
   bool enqueue(LifecycleJob job);
 
+  /// Queue a job behind the current in-flight work for this adapter. Does not
+  /// coalesce with the in-flight job (so a follow-up Connect after a failing
+  /// RecoveryConnect actually runs). Still coalesces with an existing pending
+  /// job of the same kind+generation. Same generation/stop rules as enqueue().
+  bool enqueueFollowUp(LifecycleJob job);
+
   /// True when this adapter already has the given op in-flight or pending
   /// (any generation for in-flight; pending matches current slot generation).
   /// Used by ApplicationService to avoid bumpGeneration on redundant Reconnect
   /// while Connect, RecoveryConnect, or Reconnect is already running.
   bool hasInFlightOrPending(const std::string &adapterId, LifecycleOp op) const;
+
+  /// True when this adapter currently has the given op running (not merely
+  /// pending). Used to distinguish a RecoveryConnect that owns io_mutex from
+  /// a queued RecoveryConnect / hung poll.
+  bool hasInFlight(const std::string &adapterId, LifecycleOp op) const;
 
 private:
   struct AdapterSlot
@@ -129,10 +140,15 @@ private:
 
   static void workerMain(const std::shared_ptr<State> &state);
   static bool takeNextJobLocked(State &state, LifecycleJob *out);
-  static void completeJob(State &state, const std::string &adapterId);
+  static void completeJob(State &state, const LifecycleJob &job);
+  /// True when the current generation already has a running job. A stale
+  /// in-flight job (generation bumped while connect() is blocked) must not
+  /// occupy the replacement runtime's FIFO.
+  static bool currentGenerationBusy(const AdapterSlot &slot);
   static bool isConnectStyle(LifecycleOp op);
   static void clearInvalidatablePendingLocked(AdapterSlot &slot);
-  bool shouldCoalesceLocked(const AdapterSlot &slot, const LifecycleJob &job) const;
+  bool shouldCoalesceLocked(
+      const AdapterSlot &slot, const LifecycleJob &job, bool includeInFlight) const;
   static void runTeardown(const LifecycleJob &job);
 
   std::shared_ptr<State> state_;

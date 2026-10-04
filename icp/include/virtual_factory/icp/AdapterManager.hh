@@ -26,6 +26,9 @@ struct AdapterManagerResult
   /// True when ICP accepted lifecycle work for async execution (connect /
   /// disconnect / reconnect). Callers observe outcomes via adapter state.
   bool accepted{false};
+  /// True when connectAdapter() could not acquire io_mutex without waiting.
+  /// Not a protocol failure: the adapter session was not attempted.
+  bool ioBusy{false};
 };
 
 /// Outcome of a managed equipment command (protocol I/O under owner io_mutex).
