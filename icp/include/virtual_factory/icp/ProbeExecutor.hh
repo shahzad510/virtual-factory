@@ -38,6 +38,10 @@ inline constexpr std::size_t kReservedProbeWorkerCount = 2;
 inline constexpr std::chrono::milliseconds kProbeShutdownGrace =
     kLifecycleShutdownGrace;
 
+/// Bounded diagnostic trace queue (Phase 2.2 Step 1). Overflow is counted and
+/// dropped so instrumentation can never grow without bound.
+inline constexpr std::size_t kMaxQueuedProbeTraceEvents = 4096;
+
 enum class ProbeOutcome
 {
   Success,
@@ -57,6 +61,55 @@ enum class ProbeHangClass : std::uint8_t
   ReservedNonQ,
   ReservedFresh,
   Quarantined
+};
+
+const char *probeHangClassName(ProbeHangClass hangClass);
+
+/// Phase 2.2 Step 1 (evidence gathering only): observation points on the
+/// existing probe lifecycle. Trace emission never changes admission,
+/// accounting, quarantine, timeout, or session lifetime.
+enum class ProbeTraceKind : std::uint8_t
+{
+  /// A pending session paid a hang budget and is about to run on a worker.
+  Admitted,
+  /// The worker is about to call IndustrialAdapter::connect().
+  EnteredConnect,
+  /// The watchdog won the terminal CAS with Timeout.
+  TimeoutClaimed,
+  /// Existing timeout/quarantine path ran for a timed-out session.
+  QuarantineOrDetach,
+  /// A pending session could not be admitted; carries the denial reason.
+  PendingNotAdmitted,
+  /// IndustrialAdapter::connect() actually returned. Never inferred.
+  PhysicalReturn
+};
+
+const char *probeTraceKindName(ProbeTraceKind kind);
+
+/// One observation record. Queued by the emitting thread; dispatched by the
+/// watchdog with no probe lock held.
+struct ProbeTraceEvent
+{
+  ProbeTraceKind kind{ProbeTraceKind::Admitted};
+  std::string adapterId;
+  std::uint64_t probeId{0};
+  std::uint64_t runtimeEpoch{0};
+  std::uint64_t recoverySequence{0};
+  ProbeHangClass hangClass{ProbeHangClass::Unreserved};
+  /// Identity only (never dereferenced) so a stale return can be matched
+  /// against the currently enrolled runtime by the sink.
+  std::uintptr_t adapterPtr{0};
+  std::string workerId;
+  std::chrono::system_clock::time_point atUtc{};
+  /// TimeoutClaimed: since probe start. PhysicalReturn: since connect entry.
+  std::int64_t elapsedMs{-1};
+  /// TimeoutClaimed / PhysicalReturn: whether this path won the terminal CAS.
+  bool terminalClaimWon{false};
+  bool hasTerminalClaim{false};
+  /// PhysicalReturn only: "success" | "failure". Empty otherwise.
+  std::string physicalResult;
+  /// PendingNotAdmitted denial reason or QuarantineOrDetach action/reason.
+  std::string detail;
 };
 
 /// Result published only after IndustrialAdapter::connect() has returned, or
@@ -83,6 +136,9 @@ class ProbeCompletionSink
 public:
   virtual ~ProbeCompletionSink() = default;
   virtual void onProbeCompleted(const ProbeCompletion &completion) = 0;
+  /// Diagnostic observation only. Default no-op so sinks that do not collect
+  /// evidence are unaffected. Must not block or perform protocol I/O.
+  virtual void onProbeTrace(const ProbeTraceEvent &) {}
 };
 
 /// Everything required for one recovery probe to outlive the logical runtime
@@ -226,6 +282,15 @@ public:
 
   void setSink(std::shared_ptr<ProbeCompletionSink> sink);
 
+  /// Phase 2.2 Step 1 evidence gathering. Observation only: enabling or
+  /// disabling this never changes admission, accounting, quarantine, timeout,
+  /// or session lifetime. Records are queued by the emitting thread and
+  /// dispatched by the watchdog, so no sink call happens under a probe lock.
+  void setTraceEnabled(bool enabled);
+  bool traceEnabled() const;
+  /// Records dropped because the bounded trace queue was full.
+  std::size_t droppedTraceCount() const;
+
   void start(std::size_t workerCount = kDefaultProbeWorkerCount);
 
   /// Idempotent for the same adapterId+probeId. A newer probeId supersedes
@@ -311,6 +376,10 @@ private:
       const State &state, const std::string &adapterId);
   static bool canAdmitLocked(
       const State &state, const std::string &adapterId);
+  /// Mirrors canAdmitLocked and reports every budget that refused. Returns an
+  /// empty string when the adapter is admissible. Read-only.
+  static std::string admissionDenialReasonLocked(
+      const State &state, const std::string &adapterId);
   static bool hasEligiblePendingLocked(const State &state);
   static bool admitLocked(
       State &state, const std::shared_ptr<ProbeSession> &session);
@@ -331,6 +400,13 @@ private:
   void reapFinishedQuarantine();
   void watchdogLoop();
   static void recordOccupancyLocked(State &state);
+  static ProbeTraceEvent makeTrace(
+      ProbeTraceKind kind, const std::shared_ptr<ProbeSession> &session);
+  /// Append to the bounded trace queue. Takes only State::traceMutex (a leaf
+  /// lock) so it can be called from a worker without nesting or blocking.
+  static void pushTrace(State &state, ProbeTraceEvent event);
+  /// Drain the queue and dispatch to the sink without holding any probe lock.
+  static void drainTrace(State &state);
 
   std::shared_ptr<State> state_;
   mutable std::mutex workers_mutex_;

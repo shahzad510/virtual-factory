@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <sstream>
 #include <utility>
 
 namespace virtual_factory
@@ -150,6 +152,30 @@ struct ApplicationProbeSink final : ProbeCompletionSink
     app->handleProbeCompletion(completion);
   }
 
+  void onProbeTrace(const ProbeTraceEvent &trace) override
+  {
+    if (this->shutdown_ && this->shutdown_->load())
+    {
+      return;
+    }
+    ApplicationService *app = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(this->mu_);
+      app = this->app_;
+    }
+    if (app == nullptr)
+    {
+      return;
+    }
+    try
+    {
+      app->handleProbeTrace(trace);
+    }
+    catch (...)
+    {
+    }
+  }
+
 private:
   std::mutex mu_;
   ApplicationService *app_{nullptr};
@@ -168,6 +194,9 @@ ApplicationService::ApplicationService(
   this->probe_sink_ = std::make_shared<ApplicationProbeSink>(
       this, this->shutdown_flag_);
   this->probes_->setSink(this->probe_sink_);
+  // Evidence gathering is opt-in so the default runtime emits no extra
+  // events and the existing event ring/historian volume is unchanged.
+  this->probes_->setTraceEnabled(probeTraceEnabledFromEnv());
   this->lifecycle_->setHandler(
       [this](const LifecycleJob &job) { this->executeLifecycleJob(job); });
 }
@@ -2653,6 +2682,104 @@ void ApplicationService::submitDueProbe(const RecoveryDueEvent &event)
     ++this->diagnosticsFor(event.adapterId).reconnectCount;
     this->syncRecoveryDiagnosticsLocked(event.adapterId);
   }
+}
+
+bool ApplicationService::probeTraceEnabledFromEnv()
+{
+  const char *raw = std::getenv("VF_ICP_PROBE_TRACE");
+  if (raw == nullptr)
+  {
+    return false;
+  }
+  const std::string value(raw);
+  return value == "1" || value == "true" || value == "TRUE" || value == "on"
+      || value == "yes";
+}
+
+void ApplicationService::handleProbeTrace(const ProbeTraceEvent &trace)
+{
+  if (this->shutdown_flag_ && this->shutdown_flag_->load())
+  {
+    return;
+  }
+  if (trace.adapterId.empty())
+  {
+    return;
+  }
+
+  std::ostringstream message;
+  message << probeTraceKindName(trace.kind)
+          << " adapterId=" << trace.adapterId
+          << " probeId=" << trace.probeId
+          << " runtimeEpoch=" << trace.runtimeEpoch
+          << " recoverySequence=" << trace.recoverySequence
+          << " hangClass=" << probeHangClassName(trace.hangClass);
+  if (trace.adapterPtr != 0)
+  {
+    message << " adapter=0x" << std::hex << trace.adapterPtr << std::dec;
+  }
+  if (!trace.workerId.empty())
+  {
+    message << " worker=" << trace.workerId;
+  }
+  if (trace.elapsedMs >= 0)
+  {
+    message << (trace.kind == ProbeTraceKind::PhysicalReturn
+                    ? " elapsedMsSinceConnectEntry="
+                    : " elapsedMs=")
+            << trace.elapsedMs;
+  }
+  if (trace.hasTerminalClaim)
+  {
+    message << " terminalClaimResult="
+            << (trace.terminalClaimWon ? "claimed" : "stale");
+  }
+  if (!trace.physicalResult.empty())
+  {
+    message << " physicalResult=" << trace.physicalResult;
+  }
+  if (!trace.detail.empty())
+  {
+    message << " detail=" << trace.detail;
+  }
+
+  if (trace.kind == ProbeTraceKind::PhysicalReturn
+      || trace.kind == ProbeTraceKind::TimeoutClaimed)
+  {
+    const IndustrialAdapter *current = this->manager_->adapter(trace.adapterId);
+    const bool runtimeMatch = current != nullptr
+        && reinterpret_cast<std::uintptr_t>(current) == trace.adapterPtr;
+    const RecoveryControlSnapshot snap =
+        this->recovery_->snapshot(trace.adapterId);
+    message << " currentRuntimeMatch=" << (runtimeMatch ? "yes" : "no")
+            << " currentEpochMatch="
+            << (snap.runtimeEpoch == trace.runtimeEpoch ? "yes" : "no")
+            << " currentRecoveryState=" << recoveryStateName(snap.state);
+  }
+
+  ApplicationEvent ev;
+  ev.atUtc = trace.atUtc;
+  // Not an operator-facing condition: "debug" keeps warning/error accounting
+  // and GUI severity buckets untouched.
+  ev.level = "debug";
+  ev.category = "recovery_trace";
+  ev.eventType = probeTraceKindName(trace.kind);
+  ev.adapterId = trace.adapterId;
+  ev.reason = trace.detail;
+  ev.correlationId = std::to_string(trace.probeId);
+  if (trace.elapsedMs >= 0)
+  {
+    ev.durationMs = trace.elapsedMs;
+  }
+  ev.message = message.str();
+
+  std::lock_guard<std::mutex> lock(this->mutex_);
+  if (const AdapterConfigRecord *record =
+          this->catalog_.adapter(trace.adapterId))
+  {
+    ev.protocol = record->protocol;
+  }
+  this->recordEventLocked(std::move(ev));
 }
 
 void ApplicationService::handleProbeCompletion(const ProbeCompletion &completion)

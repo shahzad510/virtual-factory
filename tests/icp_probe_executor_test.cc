@@ -68,6 +68,8 @@ using virtual_factory::icp::ProbeRequest;
 using virtual_factory::icp::RecoveryService;
 using virtual_factory::icp::RecoveryState;
 using virtual_factory::icp::ProbeSession;
+using virtual_factory::icp::ProbeTraceEvent;
+using virtual_factory::icp::ProbeTraceKind;
 using virtual_factory::icp::kMaxQuarantinedProbeWorkers;
 using virtual_factory::icp::kMaxQuarantinedProbesPerAdapter;
 using virtual_factory::icp::kReservedProbeWorkerCount;
@@ -78,11 +80,18 @@ struct RecordingSink : ProbeCompletionSink
 {
   mutable std::mutex mu;
   std::vector<ProbeCompletion> completions;
+  std::vector<ProbeTraceEvent> traces;
 
   void onProbeCompleted(const ProbeCompletion &completion) override
   {
     std::lock_guard<std::mutex> lock(this->mu);
     this->completions.push_back(completion);
+  }
+
+  void onProbeTrace(const ProbeTraceEvent &trace) override
+  {
+    std::lock_guard<std::mutex> lock(this->mu);
+    this->traces.push_back(trace);
   }
 
   std::size_t count() const
@@ -103,6 +112,70 @@ struct RecordingSink : ProbeCompletionSink
       }
     }
     return n;
+  }
+
+  std::vector<ProbeTraceEvent> tracesFor(const std::string &adapterId) const
+  {
+    std::lock_guard<std::mutex> lock(this->mu);
+    std::vector<ProbeTraceEvent> out;
+    for (const auto &t : this->traces)
+    {
+      if (t.adapterId == adapterId)
+      {
+        out.push_back(t);
+      }
+    }
+    return out;
+  }
+
+  std::size_t traceCount(
+      const std::string &adapterId, ProbeTraceKind kind) const
+  {
+    std::lock_guard<std::mutex> lock(this->mu);
+    std::size_t n = 0;
+    for (const auto &t : this->traces)
+    {
+      if (t.adapterId == adapterId && t.kind == kind)
+      {
+        ++n;
+      }
+    }
+    return n;
+  }
+
+  int traceIndex(const std::string &adapterId, ProbeTraceKind kind) const
+  {
+    std::lock_guard<std::mutex> lock(this->mu);
+    int seen = 0;
+    for (const auto &t : this->traces)
+    {
+      if (t.adapterId != adapterId)
+      {
+        continue;
+      }
+      if (t.kind == kind)
+      {
+        return seen;
+      }
+      ++seen;
+    }
+    return -1;
+  }
+
+  bool hasTrace(
+      const std::string &adapterId,
+      ProbeTraceKind kind,
+      const std::string &detail) const
+  {
+    std::lock_guard<std::mutex> lock(this->mu);
+    for (const auto &t : this->traces)
+    {
+      if (t.adapterId == adapterId && t.kind == kind && t.detail == detail)
+      {
+        return true;
+      }
+    }
+    return false;
   }
 };
 
@@ -1277,6 +1350,269 @@ int main()
                [&]() { return healthy->connectCompleted() >= 1; },
                ms(3000)),
            "2.1 N healthy executed despite fail-fast crowd");
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.2 I1. Successful probe: admitted → entered → physical return
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    expect(exec.traceEnabled(), "2.2 I1 trace on by default in the executor");
+    auto a = std::make_shared<GatedProbeAdapter>("p22-i1");
+    a->setPeerAvailable(true);
+    auto io = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(a, io, 1, 0, ms(800))), "2.2 I1 submit");
+    expect(waitFor(
+               [&]() {
+                 return sink->traceCount(
+                            "p22-i1", ProbeTraceKind::PhysicalReturn)
+                     >= 1;
+               },
+               ms(3000)),
+           "2.2 I1 physical return observed");
+    const int admitted =
+        sink->traceIndex("p22-i1", ProbeTraceKind::Admitted);
+    const int entered =
+        sink->traceIndex("p22-i1", ProbeTraceKind::EnteredConnect);
+    const int returned =
+        sink->traceIndex("p22-i1", ProbeTraceKind::PhysicalReturn);
+    expect(admitted >= 0 && entered > admitted && returned > entered,
+           "2.2 I1 order admitted < entered_connect < physical_return");
+    expect(sink->traceCount("p22-i1", ProbeTraceKind::TimeoutClaimed) == 0,
+           "2.2 I1 no timeout on a fast success");
+    for (const auto &t : sink->tracesFor("p22-i1"))
+    {
+      expect(t.probeId == 1 && t.runtimeEpoch == 0,
+             "2.2 I1 identity carried on every record");
+      if (t.kind == ProbeTraceKind::PhysicalReturn)
+      {
+        expect(t.physicalResult == "success", "2.2 I1 physical result success");
+        expect(t.terminalClaimWon, "2.2 I1 physical return won terminal CAS");
+        expect(t.elapsedMs >= 0, "2.2 I1 physical duration measured");
+      }
+    }
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.2 I1b. Fast failure: same order, physicalResult=failure
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    auto a = std::make_shared<GatedProbeAdapter>("p22-i1b");
+    a->setPeerAvailable(false);
+    auto io = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(a, io, 2, 0, ms(800))), "2.2 I1b submit");
+    expect(waitFor(
+               [&]() {
+                 return sink->traceCount(
+                            "p22-i1b", ProbeTraceKind::PhysicalReturn)
+                     >= 1;
+               },
+               ms(3000)),
+           "2.2 I1b physical return observed");
+    const int admitted =
+        sink->traceIndex("p22-i1b", ProbeTraceKind::Admitted);
+    const int entered =
+        sink->traceIndex("p22-i1b", ProbeTraceKind::EnteredConnect);
+    const int returned =
+        sink->traceIndex("p22-i1b", ProbeTraceKind::PhysicalReturn);
+    expect(admitted >= 0 && entered > admitted && returned > entered,
+           "2.2 I1b order admitted < entered_connect < physical_return");
+    for (const auto &t : sink->tracesFor("p22-i1b"))
+    {
+      if (t.kind == ProbeTraceKind::PhysicalReturn)
+      {
+        expect(t.physicalResult == "failure", "2.2 I1b physical result failure");
+        expect(t.terminalClaimWon, "2.2 I1b fast failure claimed terminal");
+      }
+    }
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.2 I2. Logical timeout, then a late physical return (stale).
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    auto gate = std::make_shared<ProbeHangGate>();
+    auto a = std::make_shared<GatedProbeAdapter>("p22-i2");
+    a->setGate(gate);
+    a->setNeverReturn(true);
+    a->setLateSuccess(true);
+    auto io = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(a, io, 7, 0, ms(80))), "2.2 I2 submit");
+    expect(waitFor(
+               [&]() {
+                 return sink->traceCount(
+                            "p22-i2", ProbeTraceKind::TimeoutClaimed)
+                     >= 1;
+               },
+               ms(3000)),
+           "2.2 I2 timeout claimed observed");
+    expect(sink->traceCount("p22-i2", ProbeTraceKind::PhysicalReturn) == 0,
+           "2.2 I2 no physical return while the call is still blocked");
+    gate->open();
+    expect(waitFor(
+               [&]() {
+                 return sink->traceCount(
+                            "p22-i2", ProbeTraceKind::PhysicalReturn)
+                     >= 1;
+               },
+               ms(3000)),
+           "2.2 I2 late physical return observed after the gate opens");
+    for (const auto &t : sink->tracesFor("p22-i2"))
+    {
+      if (t.kind == ProbeTraceKind::TimeoutClaimed)
+      {
+        expect(t.terminalClaimWon, "2.2 I2 watchdog won the terminal CAS");
+        expect(t.elapsedMs >= 80, "2.2 I2 timeout age at least the budget");
+      }
+      if (t.kind == ProbeTraceKind::PhysicalReturn)
+      {
+        expect(!t.terminalClaimWon,
+               "2.2 I2 late return is stale: terminal CAS already lost");
+        expect(t.physicalResult == "success",
+               "2.2 I2 late physical result recorded verbatim");
+        expect(t.elapsedMs >= 80,
+               "2.2 I2 physical duration exceeds the logical budget");
+      }
+    }
+    expect(sink->count(ProbeOutcome::Timeout) >= 1,
+           "2.2 I2 timeout completion still published unchanged");
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.2 I3. Timeout with the physical call still blocked: no
+  // physical-return record until the gate is released.
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    auto gate = std::make_shared<ProbeHangGate>();
+    auto a = std::make_shared<GatedProbeAdapter>("p22-i3");
+    a->setGate(gate);
+    a->setNeverReturn(true);
+    auto io = std::make_shared<std::mutex>();
+    expect(exec.submit(makeRequest(a, io, 3, 0, ms(80))), "2.2 I3 submit");
+    expect(waitFor(
+               [&]() {
+                 return sink->traceCount(
+                            "p22-i3", ProbeTraceKind::TimeoutClaimed)
+                     >= 1;
+               },
+               ms(3000)),
+           "2.2 I3 timeout claimed");
+    expect(sink->traceCount("p22-i3", ProbeTraceKind::EnteredConnect) >= 1,
+           "2.2 I3 entered connect recorded before the timeout");
+    std::this_thread::sleep_for(ms(400));
+    expect(sink->traceCount("p22-i3", ProbeTraceKind::PhysicalReturn) == 0,
+           "2.2 I3 still no physical return: the call has not returned");
+    expect(sink->traceCount("p22-i3", ProbeTraceKind::QuarantineOrDetach) >= 1,
+           "2.2 I3 post-timeout disposition recorded");
+    expect(sink->hasTrace(
+               "p22-i3", ProbeTraceKind::QuarantineOrDetach, "quarantined"),
+           "2.2 I3 first hang on an adapter converts to quarantine");
+    gate->open();
+    expect(waitFor(
+               [&]() {
+                 return sink->traceCount(
+                            "p22-i3", ProbeTraceKind::PhysicalReturn)
+                     >= 1;
+               },
+               ms(3000)),
+           "2.2 I3 physical return only after the gate is released");
+    exec.stop();
+  }
+
+  // -------------------------------------------------------------------
+  // Phase 2.2 I4. Pending probe denied by admission records the reason.
+  // -------------------------------------------------------------------
+  {
+    auto sink = std::make_shared<RecordingSink>();
+    ProbeExecutor exec;
+    exec.setSink(sink);
+    exec.start(4);
+    std::vector<std::shared_ptr<ProbeHangGate>> gates;
+    std::vector<std::shared_ptr<GatedProbeAdapter>> adapters;
+    std::vector<std::shared_ptr<std::mutex>> ios;
+    for (int i = 0; i < 4; ++i)
+    {
+      auto gate = std::make_shared<ProbeHangGate>();
+      auto a = std::make_shared<GatedProbeAdapter>("p22-i4");
+      a->setGate(gate);
+      a->setNeverReturn(true);
+      gates.push_back(gate);
+      adapters.push_back(a);
+      ios.push_back(std::make_shared<std::mutex>());
+    }
+    expect(exec.submit(makeRequest(adapters[0], ios[0], 1, 0, ms(80))),
+           "2.2 I4 gen0");
+    expect(waitFor(
+               [&]() { return exec.quarantinedWorkerCount("p22-i4") >= 1; },
+               ms(2000)),
+           "2.2 I4 gen0 quarantined");
+    expect(exec.submit(makeRequest(adapters[1], ios[1], 2, 1, ms(80))),
+           "2.2 I4 gen1");
+    expect(waitFor(
+               [&]() {
+                 return exec.quarantinedWorkerCount("p22-i4")
+                     == kMaxQuarantinedProbesPerAdapter;
+               },
+               ms(2000)),
+           "2.2 I4 q_a full");
+    expect(exec.submit(makeRequest(adapters[2], ios[2], 3, 2, ms(80))),
+           "2.2 I4 gen2 nonQ");
+    expect(adapters[2]->waitConnectEntered(ms(2000)), "2.2 I4 nonQ entered");
+    expect(exec.submit(makeRequest(adapters[3], ios[3], 4, 3, ms(80))),
+           "2.2 I4 gen3 pending");
+    expect(waitFor(
+               [&]() {
+                 return sink->traceCount(
+                            "p22-i4", ProbeTraceKind::PendingNotAdmitted)
+                     >= 1;
+               },
+               ms(3000)),
+           "2.2 I4 denial of the pending probe is recorded");
+    bool sawLivePhysical = false;
+    for (const auto &t : sink->tracesFor("p22-i4"))
+    {
+      if (t.kind != ProbeTraceKind::PendingNotAdmitted)
+      {
+        continue;
+      }
+      expect(!t.detail.empty(), "2.2 I4 denial reason is never blank");
+      if (t.detail == "livePhysical")
+      {
+        sawLivePhysical = true;
+        expect(t.probeId == 4 && t.runtimeEpoch == 3,
+               "2.2 I4 denial names the refused generation");
+      }
+    }
+    expect(sawLivePhysical,
+           "2.2 I4 exact reason is livePhysical: the stuck nonQ call still "
+           "occupies the adapter");
+    expect(adapters[3]->connectEntered() == 0,
+           "2.2 I4 denied probe never entered connect");
+    expect(sink->traceCount("p22-i4", ProbeTraceKind::PhysicalReturn) == 0,
+           "2.2 I4 no physical return while every call is blocked");
+    for (const auto &gate : gates)
+    {
+      gate->open();
+    }
     exec.stop();
   }
 
