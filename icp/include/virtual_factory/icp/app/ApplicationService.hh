@@ -459,6 +459,12 @@ private:
   void executeLifecycleJob(const LifecycleJob &job);
   void submitDueProbe(const RecoveryDueEvent &event);
   void handleProbeCompletion(const ProbeCompletion &completion);
+  /// Phase 2.2 Step 1 evidence only: record one ProbeExecutor lifecycle
+  /// observation as a "recovery_trace" ApplicationEvent. Never mutates
+  /// RecoveryControl, diagnostics counters, or probe state. Disabled unless
+  /// VF_ICP_PROBE_TRACE is set to a truthy value.
+  void handleProbeTrace(const ProbeTraceEvent &trace);
+  static bool probeTraceEnabledFromEnv();
   std::chrono::milliseconds probeTimeoutFor(const std::string &adapterId) const;
   void applyConnectOutcome(
       const std::string &adapterId,

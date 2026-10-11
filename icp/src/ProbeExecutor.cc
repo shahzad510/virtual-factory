@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <sstream>
+#include <unordered_map>
 #include <utility>
 
 namespace virtual_factory
@@ -54,6 +56,44 @@ bool sessionBetter(
 
 }  // namespace
 
+const char *probeHangClassName(ProbeHangClass hangClass)
+{
+  switch (hangClass)
+  {
+  case ProbeHangClass::Unreserved:
+    return "Unreserved";
+  case ProbeHangClass::ReservedQ:
+    return "ReservedQ";
+  case ProbeHangClass::ReservedNonQ:
+    return "ReservedNonQ";
+  case ProbeHangClass::ReservedFresh:
+    return "ReservedFresh";
+  case ProbeHangClass::Quarantined:
+    return "Quarantined";
+  }
+  return "Unreserved";
+}
+
+const char *probeTraceKindName(ProbeTraceKind kind)
+{
+  switch (kind)
+  {
+  case ProbeTraceKind::Admitted:
+    return "probe_admitted";
+  case ProbeTraceKind::EnteredConnect:
+    return "probe_entered_connect";
+  case ProbeTraceKind::TimeoutClaimed:
+    return "probe_timeout_claimed";
+  case ProbeTraceKind::QuarantineOrDetach:
+    return "probe_quarantine_or_detach";
+  case ProbeTraceKind::PendingNotAdmitted:
+    return "probe_pending_not_admitted";
+  case ProbeTraceKind::PhysicalReturn:
+    return "probe_physical_return";
+  }
+  return "probe_admitted";
+}
+
 struct ProbeExecutor::State
 {
   std::mutex mutex;
@@ -79,6 +119,17 @@ struct ProbeExecutor::State
   std::size_t maxFresh{0};
   std::size_t peakOccupancy{0};
   std::size_t liveBusy{0};
+
+  /// Diagnostic trace (Phase 2.2 Step 1). traceMutex is a leaf lock: it is
+  /// never taken while another probe lock is being acquired, and no sink
+  /// callback runs while it is held.
+  std::atomic<bool> traceEnabled{true};
+  /// Live pool size for trace only. Quarantine replaces 1-for-1, so this is
+  /// set by start()/stop() and never participates in an admission decision.
+  std::size_t liveWorkers{0};
+  std::mutex traceMutex;
+  std::vector<ProbeTraceEvent> traceQueue;
+  std::size_t traceDropped{0};
 };
 
 bool ProbeSession::tryClaim(ProbeOutcome outcome)
@@ -134,6 +185,112 @@ void ProbeExecutor::setSink(std::shared_ptr<ProbeCompletionSink> sink)
 {
   std::lock_guard<std::mutex> lock(this->state_->mutex);
   this->state_->sink = std::move(sink);
+}
+
+void ProbeExecutor::setTraceEnabled(bool enabled)
+{
+  this->state_->traceEnabled.store(enabled, std::memory_order_release);
+}
+
+bool ProbeExecutor::traceEnabled() const
+{
+  return this->state_->traceEnabled.load(std::memory_order_acquire);
+}
+
+std::size_t ProbeExecutor::droppedTraceCount() const
+{
+  std::lock_guard<std::mutex> lock(this->state_->traceMutex);
+  return this->state_->traceDropped;
+}
+
+ProbeTraceEvent ProbeExecutor::makeTrace(
+    ProbeTraceKind kind, const std::shared_ptr<ProbeSession> &session)
+{
+  ProbeTraceEvent event;
+  event.kind = kind;
+  event.atUtc = std::chrono::system_clock::now();
+  if (!session)
+  {
+    return event;
+  }
+  event.adapterId = session->adapterId();
+  event.probeId = session->probeId();
+  event.runtimeEpoch = session->runtimeEpoch();
+  event.recoverySequence = session->recoverySequence();
+  event.hangClass = session->hangClass();
+  event.adapterPtr =
+      reinterpret_cast<std::uintptr_t>(session->adapter().get());
+  if (session->workerId() != std::thread::id{})
+  {
+    std::ostringstream stream;
+    stream << session->workerId();
+    event.workerId = stream.str();
+  }
+  return event;
+}
+
+void ProbeExecutor::pushTrace(State &state, ProbeTraceEvent event)
+{
+  try
+  {
+    if (!state.traceEnabled.load(std::memory_order_acquire))
+    {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(state.traceMutex);
+    if (state.traceQueue.size() >= kMaxQueuedProbeTraceEvents)
+    {
+      ++state.traceDropped;
+      return;
+    }
+    state.traceQueue.push_back(std::move(event));
+  }
+  catch (...)
+  {
+    // Tracing must never affect recovery.
+  }
+}
+
+void ProbeExecutor::drainTrace(State &state)
+{
+  std::vector<ProbeTraceEvent> batch;
+  try
+  {
+    std::lock_guard<std::mutex> lock(state.traceMutex);
+    if (state.traceQueue.empty())
+    {
+      return;
+    }
+    batch.swap(state.traceQueue);
+  }
+  catch (...)
+  {
+    return;
+  }
+  std::shared_ptr<ProbeCompletionSink> sink;
+  try
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    sink = state.sink;
+  }
+  catch (...)
+  {
+    return;
+  }
+  if (!sink)
+  {
+    return;
+  }
+  for (const ProbeTraceEvent &event : batch)
+  {
+    try
+    {
+      sink->onProbeTrace(event);
+    }
+    catch (...)
+    {
+    }
+  }
 }
 
 std::size_t ProbeExecutor::clampWorkerCount(std::size_t workerCount)
@@ -200,6 +357,7 @@ void ProbeExecutor::start(std::size_t workerCount)
     this->state_->maxFresh = workerCount < kReservedProbeWorkerCount
                                  ? workerCount
                                  : kReservedProbeWorkerCount;
+    this->state_->liveWorkers = workerCount;
     this->workers_.reserve(workerCount);
     for (std::size_t i = 0; i < workerCount; ++i)
     {
@@ -217,40 +375,66 @@ bool ProbeExecutor::submit(ProbeRequest request)
     return false;
   }
   std::shared_ptr<ProbeSession> superseded;
+  // Observation only: submit-time refusals never reach the pending queue, so
+  // the watchdog cannot see them. Recorded under the lock, pushed after it.
+  const char *submitDenial = nullptr;
   {
     std::lock_guard<std::mutex> lock(this->state_->mutex);
     if (this->state_->stopping || !this->state_->running)
     {
-      return false;
+      submitDenial = "stopping";
     }
-    auto existing = this->state_->logical.find(request.adapterId);
-    if (existing != this->state_->logical.end() && existing->second)
+    else
     {
-      if (existing->second->probeId() == request.probeId
-          && existing->second->runtimeEpoch() == request.runtimeEpoch)
+      auto existing = this->state_->logical.find(request.adapterId);
+      if (existing != this->state_->logical.end() && existing->second)
       {
-        return true;
+        if (existing->second->probeId() == request.probeId
+            && existing->second->runtimeEpoch() == request.runtimeEpoch)
+        {
+          submitDenial = "duplicate";
+        }
+        else
+        {
+          superseded = existing->second;
+          superseded->cancel();
+          this->state_->pending.erase(
+              std::remove(this->state_->pending.begin(),
+                          this->state_->pending.end(), superseded),
+              this->state_->pending.end());
+        }
       }
-      superseded = existing->second;
-      superseded->cancel();
-      this->state_->pending.erase(
-          std::remove(this->state_->pending.begin(), this->state_->pending.end(),
-                      superseded),
-          this->state_->pending.end());
+      if (submitDenial == nullptr)
+      {
+        auto session = std::make_shared<ProbeSession>(
+            request.adapterId,
+            request.probeId,
+            request.runtimeEpoch,
+            request.recoverySequence,
+            std::move(request.adapter),
+            std::move(request.ioMutex),
+            std::move(request.enrolled),
+            this->state_->sink,
+            request.timeout);
+        this->state_->logical[request.adapterId] = session;
+        this->state_->pending.push_back(session);
+        recordOccupancyLocked(*this->state_);
+      }
     }
-    auto session = std::make_shared<ProbeSession>(
-        request.adapterId,
-        request.probeId,
-        request.runtimeEpoch,
-        request.recoverySequence,
-        std::move(request.adapter),
-        std::move(request.ioMutex),
-        std::move(request.enrolled),
-        this->state_->sink,
-        request.timeout);
-    this->state_->logical[request.adapterId] = session;
-    this->state_->pending.push_back(session);
-    recordOccupancyLocked(*this->state_);
+  }
+  if (submitDenial != nullptr)
+  {
+    ProbeTraceEvent trace;
+    trace.kind = ProbeTraceKind::PendingNotAdmitted;
+    trace.atUtc = std::chrono::system_clock::now();
+    trace.adapterId = request.adapterId;
+    trace.probeId = request.probeId;
+    trace.runtimeEpoch = request.runtimeEpoch;
+    trace.recoverySequence = request.recoverySequence;
+    trace.adapterPtr = reinterpret_cast<std::uintptr_t>(request.adapter.get());
+    trace.detail = submitDenial;
+    pushTrace(*this->state_, std::move(trace));
+    return submitDenial == "duplicate";
   }
   this->state_->cv.notify_all();
   (void)superseded;
@@ -447,6 +631,7 @@ void ProbeExecutor::stop(
     state->stopping = false;
     state->inFlightCount = 0;
     state->liveBusy = 0;
+    state->liveWorkers = 0;
     state->pending.clear();
     state->physical.clear();
     state->logical.clear();
@@ -703,6 +888,53 @@ bool ProbeExecutor::canAdmitLocked(
   return canReserveQLocked(state, adapterId)
       || canReserveNonQLocked(state, adapterId)
       || canReserveFreshLocked(state, adapterId);
+}
+
+std::string ProbeExecutor::admissionDenialReasonLocked(
+    const State &state, const std::string &adapterId)
+{
+  if (hasLivePhysicalLocked(state, adapterId))
+  {
+    return "livePhysical";
+  }
+  if (canAdmitLocked(state, adapterId))
+  {
+    return {};
+  }
+
+  // Every budget refused. Report each refusal so the evidence shows which
+  // bound actually bites, instead of collapsing them into one guess.
+  std::string reason;
+  auto add = [&reason](const char *part) {
+    if (!reason.empty())
+    {
+      reason += "+";
+    }
+    reason += part;
+  };
+
+  if (state.quarantinedCount + state.qReservedCount
+      >= kMaxQuarantinedProbeWorkers)
+  {
+    add("q_capacity");
+  }
+  else
+  {
+    add("perAdapterQ_capacity");
+  }
+  if (!canReserveNonQLocked(state, adapterId))
+  {
+    add("nonQ_capacity");
+  }
+  if (!canReserveFreshLocked(state, adapterId))
+  {
+    add("fresh_occupancy");
+  }
+  if (reason.empty())
+  {
+    return "other";
+  }
+  return reason;
 }
 
 bool ProbeExecutor::hasEligiblePendingLocked(const State &state)
@@ -995,8 +1227,11 @@ void ProbeExecutor::runProbe(
     return;
   }
 
+  const auto connectEnteredAt = std::chrono::steady_clock::now();
   session->markEnteredConnect();
+  pushTrace(state, makeTrace(ProbeTraceKind::EnteredConnect, session));
   const bool ok = session->adapter()->connect();
+  const auto physicalReturnedAt = std::chrono::steady_clock::now();
   if (ok)
   {
     collectEquipmentIds(*session->adapter(), &done.equipmentIds);
@@ -1012,6 +1247,18 @@ void ProbeExecutor::runProbe(
   const ProbeOutcome claimed =
       ok ? ProbeOutcome::Success : ProbeOutcome::Failure;
   const bool won = session->tryClaim(claimed);
+  {
+    // Physical return is observed here and nowhere else. A watchdog timeout
+    // does not emit this event.
+    ProbeTraceEvent trace = makeTrace(ProbeTraceKind::PhysicalReturn, session);
+    trace.elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          physicalReturnedAt - connectEnteredAt)
+                          .count();
+    trace.physicalResult = ok ? "success" : "failure";
+    trace.hasTerminalClaim = true;
+    trace.terminalClaimWon = won;
+    pushTrace(state, std::move(trace));
+  }
   if (won)
   {
     done.outcome = claimed;
@@ -1079,6 +1326,7 @@ void ProbeExecutor::workerMain(
       }
       ++state->liveBusy;
     }
+    pushTrace(*state, makeTrace(ProbeTraceKind::Admitted, session));
     runProbe(*state, session);
     {
       std::lock_guard<std::mutex> lock(state->mutex);
@@ -1235,13 +1483,20 @@ bool ProbeExecutor::tryQuarantine(const std::shared_ptr<ProbeSession> &session)
 
 void ProbeExecutor::watchdogLoop()
 {
+  // Trace-only dedupe so a pending session that stays denied does not emit
+  // one record per 25 ms tick. Local to this thread; no shared state.
+  std::unordered_map<std::string, std::string> lastDenial;
+
   for (;;)
   {
     std::vector<std::shared_ptr<ProbeSession>> timedOut;
+    std::vector<ProbeTraceEvent> traces;
     {
       std::unique_lock<std::mutex> lock(this->state_->mutex);
       if (this->state_->stopping)
       {
+        lock.unlock();
+        drainTrace(*this->state_);
         return;
       }
       this->state_->cv.wait_for(lock, std::chrono::milliseconds(25), [this]() {
@@ -1249,6 +1504,8 @@ void ProbeExecutor::watchdogLoop()
       });
       if (this->state_->stopping)
       {
+        lock.unlock();
+        drainTrace(*this->state_);
         return;
       }
       const auto now = std::chrono::steady_clock::now();
@@ -1270,6 +1527,14 @@ void ProbeExecutor::watchdogLoop()
         {
           continue;
         }
+        ProbeTraceEvent trace =
+            makeTrace(ProbeTraceKind::TimeoutClaimed, session);
+        trace.elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              now - session->startedAt())
+                              .count();
+        trace.hasTerminalClaim = true;
+        trace.terminalClaimWon = true;
+        traces.push_back(std::move(trace));
         session->cancel();
         timedOut.push_back(session);
         auto it = this->state_->logical.find(session->adapterId());
@@ -1279,6 +1544,57 @@ void ProbeExecutor::watchdogLoop()
           this->state_->logical.erase(it);
         }
       }
+
+      // Observation of the pending queue: why a logically due probe is not
+      // running. Read-only; admission is untouched.
+      std::vector<std::string> seen;
+      for (const auto &session : this->state_->pending)
+      {
+        if (!session || session->cancelled() || session->finished())
+        {
+          continue;
+        }
+        std::string reason =
+            admissionDenialReasonLocked(*this->state_, session->adapterId());
+        if (reason.empty())
+        {
+          if (this->state_->liveWorkers != 0
+              && this->state_->liveBusy >= this->state_->liveWorkers)
+          {
+            reason = "worker_capacity";
+          }
+          else
+          {
+            continue;
+          }
+        }
+        const std::string key = session->adapterId();
+        std::string stamp = std::to_string(session->probeId()) + "|" + reason;
+        seen.push_back(key);
+        const auto previous = lastDenial.find(key);
+        if (previous != lastDenial.end() && previous->second == stamp)
+        {
+          continue;
+        }
+        lastDenial[key] = stamp;
+        ProbeTraceEvent trace =
+            makeTrace(ProbeTraceKind::PendingNotAdmitted, session);
+        trace.detail = std::move(reason);
+        traces.push_back(std::move(trace));
+      }
+      for (auto it = lastDenial.begin(); it != lastDenial.end();)
+      {
+        if (std::find(seen.begin(), seen.end(), it->first) == seen.end())
+        {
+          it = lastDenial.erase(it);
+          continue;
+        }
+        ++it;
+      }
+    }
+    for (ProbeTraceEvent &trace : traces)
+    {
+      pushTrace(*this->state_, std::move(trace));
     }
     for (const auto &session : timedOut)
     {
@@ -1291,6 +1607,8 @@ void ProbeExecutor::watchdogLoop()
       done.outcome = ProbeOutcome::Timeout;
       done.message = "logical probe timeout";
       publish(session, done);
+      ProbeTraceEvent trace =
+          makeTrace(ProbeTraceKind::QuarantineOrDetach, session);
       if (session->hangClass() == ProbeHangClass::ReservedQ)
       {
         const bool quarantined = this->tryQuarantine(session);
@@ -1300,10 +1618,25 @@ void ProbeExecutor::watchdogLoop()
           // Invariant: a paid Q reservation must convert or remain held.
           // Spawn failure leaves the worker live with the reservation so we
           // do not admit another unpaid Q hang on this adapter.
+          trace.detail = "not_quarantined:quarantine_attempt_failed";
+        }
+        else
+        {
+          trace.detail = "quarantined";
         }
       }
+      else
+      {
+        // Current Phase 2.1 behaviour: only ReservedQ converts. A timed-out
+        // ReservedNonQ / ReservedFresh keeps its live worker and its budget
+        // until the physical call returns.
+        trace.detail = std::string("not_quarantined:hang_class_")
+            + probeHangClassName(session->hangClass());
+      }
+      pushTrace(*this->state_, std::move(trace));
     }
     this->reapFinishedQuarantine();
+    drainTrace(*this->state_);
   }
 }
 
